@@ -93,10 +93,10 @@ window.showModal = function(title, htmlContent, onReady, onConfirm, options = {}
     overlay.id = 'global-modal-overlay'; overlay.className = 'custom-modal-overlay';
     overlay.innerHTML = `
       <div class="custom-modal">
-        <h3 id="global-modal-title" style="margin-top:0; color:#f8f9fa; border-bottom:1px solid rgba(255,255,255,0.1); padding-bottom:15px; margin-bottom:20px;"></h3>
+        <h3 id="global-modal-title" style="margin-top:0; color:var(--text-main); border-bottom:1px solid var(--border-medium); padding-bottom:15px; margin-bottom:20px;"></h3>
         <div id="global-modal-body"></div>
-        <div class="modal-actions" style="display:flex; justify-content:flex-end; gap:12px; margin-top:25px; border-top:1px dashed rgba(255,255,255,0.1); padding-top:15px;">
-          <button id="global-modal-cancel" class="primary-btn" style="background:transparent; border:1px solid rgba(255,255,255,0.2); color:#94A3B8; width:auto; padding:8px 16px; margin:0;">取消</button>
+        <div class="modal-actions" style="display:flex; justify-content:flex-end; gap:12px; margin-top:25px; border-top:1px dashed var(--border-medium); padding-top:15px;">
+          <button id="global-modal-cancel" class="primary-btn" style="background:transparent; border:1px solid var(--border-medium); color:var(--text-muted); width:auto; padding:8px 16px; margin:0;">取消</button>
           <button id="global-modal-confirm" class="primary-btn" style="width:auto; padding:8px 20px; margin:0;"></button>
         </div>
       </div>`;

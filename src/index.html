@@ -203,7 +203,7 @@
 
           <div class="input-card" style="margin-top: 30px;">
             <h2>🧹 自动化设置</h2>
-            <div style="display: flex; align-items: center; justify-content: space-between; background: rgba(255, 255, 255, 0.03); padding: 15px; border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.08);">
+            <div style="display: flex; align-items: center; justify-content: space-between; background: var(--overlay-light); padding: 15px; border-radius: 8px; border: 1px solid var(--border-light);">
               <div>
                 <div style="font-size: 15px; font-weight: bold; color: var(--text-main);">已完成待办自动清理</div>
                 <div style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">超过设定天数后，彻底删除已完成的待办。</div>
@@ -221,21 +221,20 @@
                 <button id="cleanup-save-btn" class="primary-btn" style="width: auto; margin: 0; padding: 6px 12px;">确定</button>
               </div>
             </div>
-
-          <div class="input-card" style="margin-top: 30px;">
+          </div> <div class="input-card" style="margin-top: 30px;">
             <h2>🏷️ 标签库管理</h2>
             
-            <div style="display: flex; align-items: center; gap: 12px; background: rgba(255, 255, 255, 0.03); padding: 12px 16px; border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.08); margin-bottom: 24px; margin-top: 20px;">
+            <div style="display: flex; align-items: center; gap: 12px; background: var(--overlay-light); padding: 12px 16px; border-radius: 8px; border: 1px solid var(--border-light); margin-bottom: 24px; margin-top: 20px;">
               
               <span style="display: flex; align-items: center; font-size: 14px; color: #94A3B8; white-space: nowrap; font-weight: bold;">
                 🏷️ 添加主标签
               </span>
               
               <input type="text" id="new-tag-input" 
-                    style="box-sizing: border-box; margin: 0; height: 38px; flex: 1; padding: 0 12px; font-size: 14px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; color: var(--text-main); outline: none; transition: border-color 0.2s;"
+                    style="box-sizing: border-box; margin: 0; height: 38px; flex: 1; padding: 0 12px; font-size: 14px; background: var(--bg-input); border: 1px solid var(--border-medium); border-radius: 6px; color: var(--text-main); outline: none; transition: border-color 0.2s;"
                     placeholder="输入新主标签..."
-                    onfocus="this.style.borderColor='#3b82f6'"
-                    onblur="this.style.borderColor='rgba(255,255,255,0.1)'">
+                    onfocus="this.style.borderColor='var(--color-primary)'"
+                    onblur="this.style.borderColor='var(--border-medium)'">
                     
               <button id="add-tag-btn" class="primary-btn" style="margin: 0; height: 38px; width: auto; padding: 0 16px; font-size: 14px; display: flex; align-items: center; justify-content: center;">
                 ＋ 创建标签
@@ -254,6 +253,18 @@
             
             <div id="tags-library-container" style="display: flex; flex-direction: column; gap: 10px;"></div>
           </div>
+
+          <div class="input-card" style="margin-top: 30px;">
+            <h2>ℹ️ 关于与更新</h2>
+            <div style="display: flex; align-items: center; justify-content: space-between; background: var(--overlay-light); padding: 15px; border-radius: 8px; border: 1px solid var(--border-light);">
+              <div>
+                <div style="font-size: 15px; font-weight: bold; color: var(--text-main);">当前版本：v1.0.3</div>
+                <div style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">自动从云端获取最新代码并静默升级，不丢失任何数据。</div>
+              </div>
+              <button id="check-update-btn" class="primary-btn" style="width: auto; margin: 0;">🔍 检查更新</button>
+            </div>
+          </div>
+
         </div>
 
       </div>

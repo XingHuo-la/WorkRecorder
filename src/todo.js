@@ -85,9 +85,10 @@ export async function renderTodoList() {
       let deadlineHtml = "";
       if (todo.deadline) {
           const isOverdue = new Date(todo.deadline) < new Date();
-          const bg = isOverdue ? 'rgba(255, 107, 107, 0.15)' : 'rgba(96, 165, 250, 0.15)';
-          const color = isOverdue ? '#ff6b6b' : '#60a5fa';
-          deadlineHtml = `<span style="background: ${bg}; color: ${color}; border: 1px solid ${color}; padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-left: 10px; white-space: nowrap;">📅 截至 ${todo.deadline}</span>`;
+          const bg = isOverdue ? 'rgba(var(--color-danger-rgb), 0.15)' : 'rgba(var(--color-primary-rgb), 0.15)';
+          const color = isOverdue ? 'var(--color-danger)' : 'var(--color-primary)';
+          const borderColor = isOverdue ? 'rgba(var(--color-danger-rgb), 0.5)' : 'rgba(var(--color-primary-rgb), 0.5)';
+          deadlineHtml = `<span style="background: ${bg}; color: ${color}; border: 1px solid ${borderColor}; padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-left: 10px; white-space: nowrap;">📅 截至 ${todo.deadline}</span>`;
       }
       
       const idx = appData.todos.indexOf(todo);
@@ -96,8 +97,8 @@ export async function renderTodoList() {
       let remarkHtml = todo.remark ? `<div class="item-remark">${todo.remark.replace(/\n/g, '<br>')}</div>` : "";
       
       // 在折叠状态下显示的徽标
-      let detailBadge = todo.detail ? `<span style="background: rgba(148, 163, 184, 0.15); color: #94A3B8; border: 1px solid rgba(148, 163, 184, 0.3); padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-left: 8px; white-space: nowrap;">详</span>` : "";
-      let remarkBadge = todo.remark ? `<span style="background: rgba(250, 204, 21, 0.15); color: #facc15; border: 1px solid rgba(250, 204, 21, 0.3); padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-left: 8px; white-space: nowrap;">补</span>` : "";
+      let detailBadge = todo.detail ? `<span style="background: var(--overlay-light); color: var(--text-muted); border: 1px solid var(--border-medium); padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-left: 8px; white-space: nowrap;">详</span>` : "";
+      let remarkBadge = todo.remark ? `<span style="background: rgba(var(--color-warning-rgb), 0.15); color: var(--color-warning); border: 1px solid rgba(var(--color-warning-rgb), 0.3); padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-left: 8px; white-space: nowrap;">补</span>` : "";
 
       const htmlString = `
         <details class="glass-accordion border-primary" style="margin-bottom: 8px;">
@@ -108,7 +109,7 @@ export async function renderTodoList() {
           <div class="expanded-content">
             <div style="margin-bottom: 15px;">${todo.detail ? todo.detail : '(未填写详细说明)'}</div>
             ${remarkHtml}
-            <div style="display: flex; gap: 10px; border-top: 1px dashed rgba(255,255,255,0.1); padding-top: 10px; justify-content: flex-end;">
+            <div style="display: flex; gap: 10px; border-top: 1px dashed var(--border-light); padding-top: 10px; justify-content: flex-end;">
               <div class="dropdown-wrapper" onclick="event.preventDefault(); event.stopPropagation();">
                   <button class="dots-btn icon-btn" style="padding: 4px 10px; margin: 0; font-size: 13px;" onclick="
                       const menu = this.nextElementSibling; const isShow = menu.classList.contains('show');
@@ -203,7 +204,7 @@ export async function renderTodoList() {
       btn.onclick = async (e) => {
         closeMenus();
         const idx = e.target.getAttribute('data-index'); const todo = appData.todos[idx];
-        window.showModal("⚠️ 确认删除待办", `<div style="font-size: 15px; color: #e2e8f0;">确定要永久删除待办 <b>"${todo.task}"</b> 吗？</div>`, null, async () => {
+        window.showModal("⚠️ 确认删除待办", `<div style="font-size: 15px; color: var(--text-main);">确定要永久删除待办 <b>"${todo.task}"</b> 吗？</div>`, null, async () => {
             appData.todos.splice(idx, 1); await saveData(); renderTodoList(); 
         }, { danger: true });
       };
@@ -271,7 +272,7 @@ export async function renderTodoList() {
 
       const delBtn = document.createElement('button'); delBtn.className = 'icon-btn del-btn'; delBtn.innerText = '🗑️';
       delBtn.onclick = async () => { 
-          window.showModal("⚠️ 永久删除", `<div style="font-size: 15px; color: #e2e8f0;">确定永久删除已完成的待办 <b>"${todo.task}"</b> 吗？此操作不可恢复。</div>`, null, async () => {
+          window.showModal("⚠️ 永久删除", `<div style="font-size: 15px; color: var(--text-main);">确定永久删除已完成的待办 <b>"${todo.task}"</b> 吗？此操作不可恢复。</div>`, null, async () => {
               const idx = appData.todos.indexOf(todo); if (idx > -1) { appData.todos.splice(idx, 1); await saveData(); renderTodoList(); }
           }, { danger: true });
       };
@@ -281,10 +282,10 @@ export async function renderTodoList() {
       drawer.appendChild(itemDiv);
     });
 
-    const clearAllBtn = document.createElement('button'); clearAllBtn.className = 'primary-btn'; clearAllBtn.style.width = '100%'; clearAllBtn.style.marginTop = '15px'; clearAllBtn.style.backgroundColor = 'rgba(255, 107, 107, 0.2)'; clearAllBtn.style.color = '#ff6b6b'; clearAllBtn.style.border = '1px solid rgba(255, 107, 107, 0.4)'; clearAllBtn.innerText = '🧹 一键清理所有已完成待办 (无法恢复)';
+    const clearAllBtn = document.createElement('button'); clearAllBtn.className = 'primary-btn'; clearAllBtn.style.width = '100%'; clearAllBtn.style.marginTop = '15px'; clearAllBtn.style.backgroundColor = 'rgba(var(--color-danger-rgb), 0.2)'; clearAllBtn.style.color = 'var(--color-danger)'; clearAllBtn.style.border = '1px solid rgba(var(--color-danger-rgb), 0.4)'; clearAllBtn.innerText = '🧹 一键清理所有已完成待办 (无法恢复)';
     
     clearAllBtn.onclick = async () => { 
-        window.showModal("🧹 清理已完成待办", `<div style="font-size: 15px; color: #e2e8f0;">确定要永久清理 <b>所有已完成的待办</b> 吗？<br><br><span style="color:#ff6b6b;font-size:13px;">⚠️ 此操作彻底无法撤销。</span></div>`, null, async () => {
+        window.showModal("🧹 清理已完成待办", `<div style="font-size: 15px; color: var(--text-main);">确定要永久清理 <b>所有已完成的待办</b> 吗？<br><br><span style="color:#ff6b6b;font-size:13px;">⚠️ 此操作彻底无法撤销。</span></div>`, null, async () => {
             appData.todos = appData.todos.filter(t => !t.done); await saveData(); renderTodoList(); 
         }, { danger: true, btnText: "🧹 立即清理" });
     };

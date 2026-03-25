@@ -89,12 +89,10 @@ export function renderTimeline() {
       const themeClass = isCompletedTodo ? "border-success" : "border-primary";
       const detailText = log.detail ? log.detail : "(未填写详细说明)";
       
-      let subTagHtml = log.sub_tag ? `<span style="background: rgba(255,255,255,0.1); padding: 2px 8px; border-radius: 12px; font-size: 12px; margin-left: 10px;">📁 ${log.sub_tag}</span>` : "";
-      let deadlineHtml = log.deadline ? `<span style="margin-left: 10px; font-weight: normal; font-size: 12px; color: #60a5fa; background: rgba(96, 165, 250, 0.15); border: 1px solid rgba(96,165,250,0.5); padding: 2px 6px; border-radius: 4px;">📅 截至 ${log.deadline}</span>` : "";
-      
-      const detailBadge = log.detail ? `<span style="background: rgba(148, 163, 184, 0.15); color: #94A3B8; border: 1px solid rgba(148, 163, 184, 0.3); padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-left: 8px; white-space: nowrap;">📝 详情</span>` : "";
-      const remarkBadge = log.remark ? `<span style="background: rgba(250, 204, 21, 0.15); color: #facc15; border: 1px solid rgba(250, 204, 21, 0.3); padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-left: 8px; white-space: nowrap;">💡 有补述</span>` : "";
-
+      let subTagHtml = log.sub_tag ? `<span style="background: var(--overlay-light); padding: 2px 8px; border-radius: 12px; font-size: 12px; margin-left: 10px;">📁 ${log.sub_tag}</span>` : "";
+      let deadlineHtml = log.deadline ? `<span style="margin-left: 10px; font-weight: normal; font-size: 12px; color: var(--color-primary); background: rgba(var(--color-primary-rgb), 0.15); border: 1px solid rgba(var(--color-primary-rgb), 0.5); padding: 2px 6px; border-radius: 4px;">📅 截至 ${log.deadline}</span>` : "";
+      const detailBadge = log.detail ? `<span style="background: var(--overlay-light); color: var(--text-muted); border: 1px solid var(--border-medium); padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-left: 8px; white-space: nowrap;">📝 详情</span>` : "";
+      const remarkBadge = log.remark ? `<span style="background: rgba(var(--color-warning-rgb), 0.15); color: var(--color-warning); border: 1px solid rgba(var(--color-warning-rgb), 0.3); padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-left: 8px; white-space: nowrap;">💡 有补述</span>` : "";
       let displayText = log.text;
       if (displayText.startsWith("完成待办: ")) displayText = displayText.replace("完成待办: ", "").trim();
 
@@ -273,7 +271,7 @@ export function renderTimeline() {
         const idx = btn.getAttribute('data-index');
         const dayLogs = appData.logs[dateStr];
         
-        window.showModal("⚠️ 删除时间轴记录", `<div style="font-size: 15px; color: #e2e8f0;">确定要永久删除这条时间轴记录吗？操作不可逆。</div>`, null, async () => {
+        window.showModal("⚠️ 删除时间轴记录", `<div style="font-size: 15px; color: var(--text-main);">确定要永久删除这条时间轴记录吗？操作不可逆。</div>`, null, async () => {
             dayLogs.splice(idx, 1); 
             if (dayLogs.length === 0) delete appData.logs[dateStr];
             

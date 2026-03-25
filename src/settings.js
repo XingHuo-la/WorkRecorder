@@ -1,4 +1,6 @@
 import { appData, saveData, loadData } from './data.js';
+const check = window.__TAURI__.updater?.check;
+const relaunch = window.__TAURI__.process?.relaunch;
 const { invoke } = window.__TAURI__.core || window.__TAURI__;
 const dialog = window.__TAURI__.dialog;
 let showAllInactive = false;
@@ -176,7 +178,65 @@ export function initSettingsModule() {
         renderSettingsTags(); updateAllDropdowns();
     } else alert("⚠️ 标签已存在！");
   });
+  // ==========================================
+  // 🚀 4. 增量更新逻辑
+  // ==========================================
+  const updateBtn = document.getElementById('check-update-btn');
+  if (updateBtn) {
+      updateBtn.onclick = async () => {
+          try {
+              updateBtn.innerText = "🔄 正在检查...";
+              updateBtn.disabled = true;
 
+              const update = await check();
+
+              if (update) {
+                  window.showModal("🎉 发现新版本！", `
+                      <div style="font-size: 14px; color: var(--text-main);">
+                          最新版本：<b style="color: var(--color-primary);">${update.version}</b><br><br>
+                          <b>更新内容：</b><br>
+                          <div style="background: var(--overlay-light); padding: 10px; border-radius: 6px; margin-top: 5px; font-size: 13px;">
+                              ${update.body || '优化了一些体验细节，修复了已知 Bug。'}
+                          </div>
+                      </div>
+                  `, null, async () => {
+                      const confirmBtn = document.getElementById('global-modal-confirm');
+                      confirmBtn.innerText = "⬇️ 正在下载 (请稍候)...";
+                      confirmBtn.disabled = true;
+                      
+                      let downloaded = 0;
+                      let contentLength = 0;
+                      
+                      // 开始下载并安装增量包
+                      await update.downloadAndInstall((event) => {
+                          if (event.event === 'Started') {
+                              contentLength = event.data.contentLength;
+                          } else if (event.event === 'Progress') {
+                              downloaded += event.data.chunkLength;
+                              if (contentLength > 0) {
+                                  const percent = Math.round((downloaded / contentLength) * 100);
+                                  confirmBtn.innerText = `⬇️ 正在下载 (${percent}%)`;
+                              }
+                          } else if (event.event === 'Finished') {
+                              confirmBtn.innerText = "✅ 安装完成，正在重启...";
+                          }
+                      });
+                      
+                      // 安装完成后自动重启
+                      await relaunch();
+                  }, { btnText: "🚀 立即升级并重启" });
+              } else {
+                  alert("✨ 当前已经是最新版本啦！");
+              }
+          } catch (error) {
+              console.error("更新失败:", error);
+              alert("❌ 检查更新失败，请检查网络或配置是否正确。");
+          } finally {
+              updateBtn.innerText = "🔍 检查更新";
+              updateBtn.disabled = false;
+          }
+      };
+  }
   // 初始渲染标签库
   renderSettingsTags();
 } // ⬅️ 修复点：正确闭合了整个 initSettingsModule 方法
@@ -300,7 +360,7 @@ function renderSettingsTags() {
       closeMenus();
       if (appData.tags.length <= 1) return alert("⚠️ 至少保留一个主分类！");
       
-      window.showModal("⚠️ 确认删除主分类", `<div style="font-size:15px;color:#e2e8f0;">确定要删除主分类 <b>"${mainTag}"</b> 吗？<br><br><span style="color:#94A3B8;font-size:13px;">⚠️ 注意：此操作将同时解绑其下方所有的子项目，但已经产生的历史流水记录不受影响。</span></div>`, null, async () => {
+      window.showModal("⚠️ 确认删除主分类", `<div style="font-size:15px;color:var(--text-main);">确定要删除主分类 <b>"${mainTag}"</b> 吗？<br><br><span style="color:#94A3B8;font-size:13px;">⚠️ 注意：此操作将同时解绑其下方所有的子项目，但已经产生的历史流水记录不受影响。</span></div>`, null, async () => {
           appData.tags.splice(globalIndex, 1);
           appData.settings.active_tags = appData.settings.active_tags.filter(t => t !== mainTag);
           delete appData.sub_tags[mainTag];
@@ -332,7 +392,7 @@ function renderSettingsTags() {
         const subIdx = btn.getAttribute('data-subidx');
         const subName = appData.sub_tags[mainTag][subIdx];
         
-        window.showModal("⚠️ 删除子项目", `<div style="font-size:15px;color:#e2e8f0;">确定要删除子项目 <b>"${subName}"</b> 吗？</div>`, null, async () => {
+        window.showModal("⚠️ 删除子项目", `<div style="font-size:15px;color:var(--text-main);">确定要删除子项目 <b>"${subName}"</b> 吗？</div>`, null, async () => {
             appData.sub_tags[mainTag].splice(subIdx, 1); await saveData(); renderSettingsTags(); updateAllDropdowns(); 
         }, { danger: true });
       };

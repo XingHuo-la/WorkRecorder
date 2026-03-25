@@ -1,13 +1,15 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use chrono::Local;
+use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
-use serde_json::{json, Value};
-use chrono::Local;
 
 // 获取记忆的路径配置文件
 fn get_config_path() -> PathBuf {
-    std::env::current_dir().unwrap_or_default().join("path_config.txt")
+    std::env::current_dir()
+        .unwrap_or_default()
+        .join("path_config.txt")
 }
 
 // 获取当前真正的数据存放路径
@@ -19,7 +21,11 @@ fn get_data_file_path() -> String {
             return trimmed;
         }
     }
-    std::env::current_dir().unwrap_or_default().join("my_data.json").to_string_lossy().to_string()
+    std::env::current_dir()
+        .unwrap_or_default()
+        .join("my_data.json")
+        .to_string_lossy()
+        .to_string()
 }
 
 #[tauri::command]
@@ -56,7 +62,8 @@ fn check_path(target: String) -> String {
         "final_path": final_path.to_string_lossy().into_owned(),
         "exists": exists,
         "is_empty": is_empty
-    }).to_string()
+    })
+    .to_string()
 }
 
 // 🛡️ 重构：安全的路径应用引擎，严格区分「覆盖」与「加载」
@@ -94,14 +101,13 @@ fn apply_new_path(new_path: String, mode: String) -> Result<String, String> {
     Ok("路径更新成功".to_string())
 }
 
-
 #[tauri::command]
 fn load_data() -> String {
     let data_file = get_data_file_path();
-    
+
     let default_data = json!({
-        "todos": [], 
-        "logs": {}, 
+        "todos": [],
+        "logs": {},
         "tags": ["💻 工作", "☕ 生活", "🎮 娱乐", "✅ 待办", "📚 学习"],
         "settings": { "auto_cleanup_days": 7, "theme": "dark" }
     });
@@ -117,14 +123,24 @@ fn load_data() -> String {
 
     let mut data: Value = serde_json::from_str(&file_content).unwrap_or(default_data.clone());
 
-    if data.get("tags").is_none() { data["tags"] = default_data["tags"].clone(); }
-    if data.get("sub_tags").is_none() { data["sub_tags"] = json!({}); }
-    if data.get("settings").is_none() { data["settings"] = default_data["settings"].clone(); }
-    
+    if data.get("tags").is_none() {
+        data["tags"] = default_data["tags"].clone();
+    }
+    if data.get("sub_tags").is_none() {
+        data["sub_tags"] = json!({});
+    }
+    if data.get("settings").is_none() {
+        data["settings"] = default_data["settings"].clone();
+    }
+
     if let Some(todos) = data.get_mut("todos").and_then(|t| t.as_array_mut()) {
         for t in todos.iter_mut() {
-            if t.get("tag").is_none() { t["tag"] = json!("✅ 待办"); }
-            if t.get("remark").is_none() { t["remark"] = json!(""); }
+            if t.get("tag").is_none() {
+                t["tag"] = json!("✅ 待办");
+            }
+            if t.get("remark").is_none() {
+                t["remark"] = json!("");
+            }
         }
     }
 
@@ -135,7 +151,7 @@ fn load_data() -> String {
 #[tauri::command]
 fn save_data(data: String) -> Result<(), String> {
     let data_file = get_data_file_path();
-    
+
     // 如果传入的数据极其异常（比如空字符串或者太短），拒绝保存并抛出错误
     if data.trim().is_empty() || data.len() < 10 {
         return Err("检测到异常空数据，拒绝覆盖源文件！".to_string());
@@ -158,12 +174,14 @@ fn save_data(data: String) -> Result<(), String> {
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
-            load_data, 
-            save_data, 
-            get_current_path, 
-            check_path, 
+            load_data,
+            save_data,
+            get_current_path,
+            check_path,
             apply_new_path
         ])
         .run(tauri::generate_context!())

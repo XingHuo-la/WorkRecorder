@@ -200,6 +200,15 @@ button.primary-btn:hover {
   background-color: #2563eb;
   border-color: #2563eb; 
 }
+button.danger-btn { 
+  background-color: rgba(var(--color-danger-rgb), 0.2) !important;
+  border-color: rgba(var(--color-danger-rgb), 0.5) !important; 
+  color: var(--color-danger) !important;
+}
+button.danger-btn:hover { 
+  background-color: var(--color-danger) !important;
+  color: #fff !important; 
+}
 
 input[type="text"], input[type="date"], input[type="number"], select, textarea {
   background-color: var(--bg-input);

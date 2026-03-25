@@ -226,13 +226,11 @@ export function renderHistoryList() {
     let displayText = log.text;
     if (displayText.startsWith("完成待办: ")) displayText = displayText.replace("完成待办: ", "").trim();
 
-    let todoBadgeHtml = isCompletedTodo ? `<span style="background: rgba(74, 222, 128, 0.15); color: #4ade80; padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-right: 8px; border: 1px solid rgba(74, 222, 128, 0.3);">待</span>` : "";
-    let deadlineHtml = log.deadline ? `<span class="todo-deadline" style="margin-left: 10px; font-weight: normal; font-size: 12px;">📅 截至 ${log.deadline}</span>` : "";
-    let subTagHtml = log.sub_tag ? `<span style="background: rgba(255,255,255,0.1); padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-left: 8px;">📁 ${log.sub_tag}</span>` : "";
-    
-    // 👉 新增：流水的徽标
-    let detailBadge = log.detail ? `<span style="background: rgba(148, 163, 184, 0.15); color: #94A3B8; border: 1px solid rgba(148, 163, 184, 0.3); padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-left: 8px; white-space: nowrap;">详</span>` : "";
-    let remarkBadge = log.remark ? `<span style="background: rgba(250, 204, 21, 0.15); color: #facc15; border: 1px solid rgba(250, 204, 21, 0.3); padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-left: 8px; white-space: nowrap;">补</span>` : "";
+    let todoBadgeHtml = isCompletedTodo ? `<span style="background: rgba(var(--color-success-rgb), 0.15); color: var(--color-success); padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-right: 8px; border: 1px solid rgba(var(--color-success-rgb), 0.3);">待</span>` : "";
+    let deadlineHtml = log.deadline ? `<span class="todo-deadline" style="margin-left: 10px; font-weight: normal; font-size: 12px; color: var(--color-danger); background: rgba(var(--color-danger-rgb), 0.15); border: 1px solid rgba(var(--color-danger-rgb), 0.3); padding: 2px 6px; border-radius: 4px;">📅 截至 ${log.deadline}</span>` : "";
+    let subTagHtml = log.sub_tag ? `<span style="background: var(--overlay-light); padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-left: 8px;">📁 ${log.sub_tag}</span>` : "";
+    let detailBadge = log.detail ? `<span style="background: var(--overlay-light); color: var(--text-muted); border: 1px solid var(--border-medium); padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-left: 8px; white-space: nowrap;">详</span>` : "";
+    let remarkBadge = log.remark ? `<span style="background: rgba(var(--color-warning-rgb), 0.15); color: var(--color-warning); border: 1px solid rgba(var(--color-warning-rgb), 0.3); padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-left: 8px; white-space: nowrap;">补</span>` : "";
 
     const htmlString = `
       <details class="glass-accordion ${themeClass}">
@@ -362,7 +360,7 @@ export function renderHistoryList() {
       closeMenus();
       const idx = e.target.getAttribute('data-index');
       
-      window.showModal("⚠️ 删除流水记录", `<div style="font-size: 15px; color: #e2e8f0;">确定要永久删除这条流水记录吗？操作不可逆。</div>`, null, async () => {
+      window.showModal("⚠️ 删除流水记录", `<div style="font-size: 15px; color: var(--text-main);">确定要永久删除这条流水记录吗？操作不可逆。</div>`, null, async () => {
           todayLogs.splice(idx, 1); 
           if (todayLogs.length === 0) delete appData.logs[todayStr];
           await saveData(); renderHistoryList();
