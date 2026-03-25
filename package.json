@@ -1,0 +1,15 @@
+{
+  "name": "work_recorder",
+  "private": true,
+  "version": "1.0.2",
+  "type": "module",
+  "scripts": {
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  },
+  "dependencies": {
+    "flatpickr": "^4.6.13"
+  }
+}

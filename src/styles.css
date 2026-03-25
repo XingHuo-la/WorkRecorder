@@ -1,0 +1,691 @@
+/* =========================================
+   🌟 全局变量与换肤核心 (Theme Core) 🌟
+   ========================================= */
+:root {
+  color-scheme: dark; /* 开启系统级暗黑模式适配（滚动条、下拉框原生变黑） */
+
+  /* 1. 背景色体系 */
+  --bg-body: #0a0f19;
+  --bg-sidebar: rgba(10, 15, 30, 0.6);
+  --bg-panel: rgba(10, 15, 25, 0.4);
+  --bg-card: rgba(30, 40, 55, 0.45);
+  --bg-input: rgba(20, 30, 50, 0.6);
+  --bg-elevated: #1e293b; /* 弹窗、下拉菜单等悬浮层的高级背景 */
+  
+  /* 2. 文字色体系 */
+  --text-main: #f8f9fa;
+  --text-muted: #94A3B8;
+  --text-secondary: #CBD5E1;
+  
+  /* 3. 主题色体系 (新增 RGB 变量：用于实现完美的半透明组件联动) */
+  --color-primary: #60a5fa;
+  --color-primary-rgb: 96, 165, 250;     /* 对应 #60a5fa */
+  --color-primary-dark: #2b5c8f;
+  
+  --color-success: #4ade80;
+  --color-success-rgb: 74, 222, 128;     /* 对应 #4ade80 */
+  
+  --color-danger: #ff6b6b;
+  --color-danger-rgb: 255, 107, 107;     /* 对应 #ff6b6b */
+
+  --color-warning: #facc15;
+  --color-warning-rgb: 250, 204, 21;     /* 对应 #facc15 (补述的黄色) */
+  
+  /* 4. 边框与玻璃态遮罩体系 */
+  --border-light: rgba(255, 255, 255, 0.1);
+  --border-medium: rgba(255, 255, 255, 0.2);
+  --overlay-light: rgba(255, 255, 255, 0.05); /* 悬浮高亮时的泛白遮罩 */
+  --overlay-hover: rgba(255, 255, 255, 0.1);
+}
+
+/* =========================================
+   📦 全局基础与盒模型
+   ========================================= */
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  display: flex;             /* 🌟 新增 */
+  flex-direction: column;    /* 🌟 新增：让视图从上往下排 */
+  background-color: var(--bg-body); /* 防止拖动时露出底色 */
+}
+
+/* =========================================
+   🏗️ 核心视图与布局
+   ========================================= */
+/* 1. 工作台视图：左右分栏布局 */
+#workspace-view {
+  display: flex;
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* 2. 首页欢迎视图：垂直居中布局 */
+#landing-view {
+  display: flex;
+  flex-direction: column;      /* 让内部元素垂直自上而下排列 */
+  justify-content: center;     /* 垂直方向整体居中 */
+  align-items: center;         /* 水平方向整体居中 */
+  width: 100%;
+  height: 100%;
+  flex: 1;
+  text-align: center;
+  overflow: hidden; 
+  min-height: 0;
+}
+
+/* =========================================
+   👑 自定义沉浸式标题栏
+   ========================================= */
+.custom-titlebar {
+  height: 38px;
+  background: var(--bg-body); /* 与软件背景无缝融合 */
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  user-select: none;          /* 防止双击时选中文本 */
+  border-bottom: 1px solid rgba(255,255,255,0.05); /* 微微的一条分割线 */
+  flex-shrink: 0;             /* 保证标题栏高度绝不被压缩 */
+}
+
+.titlebar-left {
+  padding-left: 15px;
+  color: var(--text-muted);
+  font-weight: bold;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  flex: 1; /* 占满左边，方便拖拽 */
+}
+
+.titlebar-right {
+  display: flex;
+  height: 100%;
+}
+
+.titlebar-btn {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  width: 46px;
+  height: 100%;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.titlebar-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-main);
+}
+
+.titlebar-btn.close-btn:hover {
+  background: #e81123; /* 经典的 Windows 关闭红 */
+  color: white;
+}
+
+/* 顺便美化一下首页的文字排版 */
+#landing-view h1 {
+  font-size: 42px;
+  margin-bottom: 15px;
+  color: var(--text-main);
+  letter-spacing: 2px;
+}
+
+#landing-view p {
+  font-size: 16px;
+  color: var(--text-muted);
+  margin-bottom: 40px;
+}
+.sidebar {
+  width: 250px;
+  background-color: var(--bg-sidebar);
+  padding: 20px;
+  border-right: 1px solid var(--border-light);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.main-content {
+  flex: 1;
+  padding: 40px;
+  background-color: var(--bg-panel);
+  overflow-y: auto;
+  padding-bottom: 100px; 
+}
+
+.dashboard-split { display: flex; gap: 30px; margin-top: 20px; }
+.list-column { flex: 1; }
+.divider { border: 0; height: 1px; background: var(--border-light); margin: 30px 0; }
+.input-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-light);
+  padding: 20px;
+  border-radius: 12px;
+  margin-top: 20px;
+}
+
+/* =========================================
+   🔲 按钮、输入框与表单通用组件
+   ========================================= */
+button {
+  padding: 10px 20px;
+  margin-top: 15px;
+  border-radius: 8px;
+  border: 1px solid var(--border-medium);
+  background-color: var(--bg-input);
+  color: white;
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: bold;
+  transition: all 0.2s ease;
+}
+
+button.primary-btn { 
+  background-color: var(--color-primary);
+  border: 1px solid rgba(255, 255, 255, 0.1); 
+  width: 200px; 
+}
+button.primary-btn:hover { 
+  background-color: #2563eb;
+  border-color: #2563eb; 
+}
+
+input[type="text"], input[type="date"], input[type="number"], select, textarea {
+  background-color: var(--bg-input);
+  color: var(--text-main);
+  border: 1px solid var(--border-medium);
+  padding: 12px;
+  border-radius: 8px;
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.2s;
+  font-family: inherit;
+}
+textarea { resize: vertical; }
+input[type="text"]:focus, select:focus, textarea:focus { border-color: var(--color-primary); }
+
+/* --- Select 下拉框美化 --- */
+select option {
+  background-color: var(--bg-body); 
+  color: var(--text-main);
+  padding: 10px;
+}
+.select-hero {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2394A3B8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
+  background-repeat: no-repeat;
+  background-position: right 15px center;
+  background-size: 16px;
+  cursor: pointer;
+}
+.input-card .select-hero { padding-right: 40px !important; }
+
+/* --- Checkbox 完美玻璃态复选框 --- */
+input[type="checkbox"] {
+  appearance: none;          
+  -webkit-appearance: none;
+  width: 18px; height: 18px;
+  border: 2px solid var(--border-medium);
+  border-radius: 4px;
+  background-color: var(--overlay-light); 
+  cursor: pointer;
+  position: relative;
+  transition: all 0.2s ease;
+  display: inline-block;
+  vertical-align: middle;
+}
+input[type="checkbox"]:hover {
+  border-color: var(--color-primary);
+  background-color: rgba(var(--color-primary-rgb), 0.1);
+}
+input[type="checkbox"]:checked {
+  background-color: var(--color-primary);
+  border-color: var(--color-primary);
+}
+input[type="checkbox"]:checked::after {
+  content: ''; position: absolute; left: 5px; top: 1px; width: 4px; height: 9px;
+  border: solid white; border-width: 0 2px 2px 0; transform: rotate(45deg);
+}
+/* 已完成待办/复选的成功色态 */
+.todo-item input[type="checkbox"]:checked, .todo-cb:checked {
+  background-color: var(--color-success) !important;
+  border-color: var(--color-success) !important;
+}
+
+/* --- Number 滚轮调整器美化 --- */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  opacity: 0.3; 
+  cursor: pointer;
+  transition: opacity 0.3s ease, transform 0.2s ease;
+}
+input[type="number"]::-webkit-inner-spin-button:hover,
+input[type="number"]::-webkit-outer-spin-button:hover { opacity: 1; }
+
+/* --- 滚动条极致美化 (全局与模态框通用) --- */
+::-webkit-scrollbar, .custom-modal::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track, .custom-modal::-webkit-scrollbar-track { background: var(--overlay-light); border-radius: 3px; }
+::-webkit-scrollbar-thumb, .custom-modal::-webkit-scrollbar-thumb { background: var(--border-medium); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover, .custom-modal::-webkit-scrollbar-thumb:hover { background: rgba(var(--color-primary-rgb), 0.4); }
+.custom-modal { scrollbar-width: thin; scrollbar-color: var(--border-medium) var(--overlay-light); }
+
+/* =========================================
+   📄 表单排版辅助
+   ========================================= */
+.form-row { display: flex; gap: 15px; margin-bottom: 15px; }
+.form-group { margin-bottom: 15px; }
+.field-col { flex: 1; display: flex; flex-direction: column; gap: 6px; }
+.field-label { font-size: 13px; color: var(--text-muted); font-weight: bold; }
+.input-card .hero-input, .custom-modal .hero-input { font-size: 16px; padding: 15px; font-weight: bold; width: 100%; }
+.hero-textarea { min-height: 100px; width: 100%; font-size: 14px; line-height: 1.6; }
+.form-actions { display: flex; justify-content: space-between; align-items: flex-end; margin-top: 20px; border-top: 1px dashed var(--border-light); padding-top: 15px; }
+.action-controls { display: flex; flex-direction: column; gap: 12px; }
+.time-control, .status-control { display: flex; align-items: center; gap: 15px; }
+.checkbox-label, .radio-label { font-size: 14px; color: var(--text-secondary); cursor: pointer; display: flex; align-items: center; gap: 5px; }
+.success-text { color: var(--color-success); }
+.danger-text { color: var(--color-danger); }
+.form-actions .hero-btn { margin-top: 0; padding: 12px 30px; font-size: 16px; box-shadow: 0 4px 15px rgba(var(--color-primary-rgb), 0.4); }
+
+/* =========================================
+   📝 待办事项 (Todo) 列表样式
+   ========================================= */
+.todo-item {
+  display: flex; align-items: center;
+  background: var(--bg-card);
+  border: 1px solid var(--border-light);
+  padding: 12px 15px; border-radius: 8px; margin-bottom: 10px;
+}
+.todo-tag { color: var(--color-primary); font-weight: bold; margin-right: 10px; }
+.todo-text { flex: 1; }
+.todo-deadline {
+  font-size: 0.8em; color: var(--color-danger);
+  background: rgba(var(--color-danger-rgb), 0.1);
+  padding: 2px 6px; border-radius: 4px;
+}
+
+/* Tabs 标签页样式 */
+.tab-buttons { display: flex; gap: 15px; margin-bottom: 20px; border-bottom: 1px solid var(--border-light); padding-bottom: 10px; }
+.tab-btn { background: transparent; border: none; color: var(--text-muted); font-size: 16px; padding: 5px 10px; margin: 0; cursor: pointer; }
+.tab-btn.active { color: var(--text-main); border-bottom: 2px solid var(--color-primary); border-radius: 0; }
+.tab-btn:hover { background: transparent; color: var(--text-main); }
+
+/* =========================================
+   📚 历史流水 (Logs) 手风琴样式
+   ========================================= */
+.glass-accordion {
+  background: var(--bg-card); 
+  backdrop-filter: blur(10px);
+  border-radius: 12px; 
+  margin-bottom: 10px;
+  border: 1px solid var(--overlay-light);
+  border-left: 4px solid transparent; /* 预留边框位置，防止突然加边框时卡片跳动 */
+  transition: all 0.3s ease; 
+  overflow: hidden;
+}
+
+/* 基类的展开状态 */
+.glass-accordion[open] {
+  background: var(--bg-input);
+  margin-bottom: 16px;
+  overflow: visible !important; /* 防止下拉菜单被裁切 */
+}
+
+/* 2. 修饰类：负责各种颜色的皮肤 */
+/* 🌟 主色调皮肤 (普通流水、待办) */
+.border-primary { border-left-color: rgba(var(--color-primary-rgb), 0.6); }
+.glass-accordion.border-primary[open] { border-color: rgba(var(--color-primary-rgb), 0.25); border-left-color: rgba(var(--color-primary-rgb), 0.8); }
+
+/* ✅ 成功/完成色皮肤 (已完成待办) */
+.border-success { border-left-color: rgba(var(--color-success-rgb), 0.6); }
+.glass-accordion.border-success[open] { border-color: rgba(var(--color-success-rgb), 0.25); border-left-color: rgba(var(--color-success-rgb), 0.8); }
+
+/* 📦 沉寂色皮肤 (设置页的非活跃标签) */
+.border-muted { border-left-color: var(--text-muted); }
+.log-summary { display: flex; align-items: center; cursor: pointer; padding: 12px 15px; list-style: none; }
+.log-summary::-webkit-details-marker { display: none; }
+.log-summary:hover { background: var(--overlay-light); }
+.log-summary::before { 
+  content: '▶'; 
+  color: var(--text-muted); /* 动态适配深浅色 */
+  opacity: 0.7;             /* 用透明度控制强弱 */
+  font-size: 12px; 
+  margin-right: 12px; 
+  transition: transform 0.2s ease; 
+}
+.log-details[open] .log-summary::before { transform: rotate(90deg); color: var(--color-primary); }
+
+.log-time { font-family: monospace; color: var(--text-muted); margin-right: 12px; font-weight: bold; }
+.log-text { color: var(--text-main); font-size: 14px; flex: 1; }
+.expanded-content { padding: 10px 15px 15px 42px; border-top: 1px dashed var(--border-light); color: var(--text-secondary); font-size: 13px; line-height: 1.6; }
+
+/* 悬浮操作小按钮 */
+.item-actions { display: flex; gap: 8px; margin-left: auto; }
+.icon-btn {
+  background: var(--overlay-light); border: 1px solid var(--border-light);
+  color: var(--text-muted); padding: 4px 8px; border-radius: 6px;
+  cursor: pointer; font-size: 13px; transition: all 0.2s ease; margin-top: 5px;
+}
+.icon-btn:hover { 
+  background: rgba(var(--color-primary-rgb), 0.2); 
+  color: var(--text-main); 
+  border-color: rgba(var(--color-primary-rgb), 0.5); 
+}
+.icon-btn.del-btn:hover { 
+  background: rgba(var(--color-danger-rgb), 0.2); 
+  border-color: rgba(var(--color-danger-rgb), 0.5); 
+}
+
+/* =========================================
+   💡 补述与复盘模块样式 (Remarks)
+   ========================================= */
+.item-remark {
+  margin-top: 12px; padding: 10px 15px;
+  background: rgba(var(--color-primary-rgb), 0.08);
+  border-left: 3px solid var(--color-primary);
+  border-radius: 6px; font-size: 13px; color: var(--text-secondary); line-height: 1.6;
+}
+.item-remark::before {
+  content: '💡 补述与复盘：'; display: block; font-weight: bold;
+  color: var(--color-primary); margin-bottom: 6px; font-size: 12px;
+}
+.item-remark-completed {
+  font-size: 12px; color: var(--text-muted); margin-top: 8px; padding: 6px 10px;
+  background: var(--overlay-light); border-left: 2px solid var(--border-medium);
+  border-radius: 4px; line-height: 1.5;
+}
+
+/* =========================================
+   🧭 侧边栏导航、设置页模块与时间轴
+   ========================================= */
+.nav-menu { display: flex; flex-direction: column; gap: 10px; margin-top: 30px; }
+.nav-item { background: transparent; border: none; color: var(--text-muted); text-align: left; padding: 12px 15px; border-radius: 8px; font-size: 15px; margin-top: 0; }
+.nav-item:hover { background: var(--overlay-light); color: var(--text-main); }
+.nav-item.active { background: rgba(var(--color-primary-rgb), 0.15); color: var(--color-primary); border-left: 4px solid var(--color-primary); border-radius: 0 8px 8px 0; }
+
+.timeline-container { border-left: 2px solid rgba(var(--color-primary-rgb), 0.3); padding-left: 24px; margin-left: 12px; margin-top: 10px; }
+.timeline-item { position: relative; margin-bottom: 35px; }
+.timeline-dot {
+  position: absolute; left: -32px; top: 6px; width: 14px; height: 14px;
+  border-radius: 50%; background-color: var(--color-primary);
+  border: 3px solid var(--bg-body); box-shadow: 0 0 8px rgba(var(--color-primary-rgb), 0.6);
+}
+.timeline-date { font-weight: bold; font-size: 18px; margin-bottom: 12px; color: var(--text-main); text-shadow: 0 1px 3px rgba(0,0,0,0.5); }
+
+.tag-manage-row { display: flex; justify-content: space-between; align-items: center; background: var(--bg-card); border: 1px solid var(--overlay-light); padding: 10px 15px; border-radius: 8px; transition: background 0.2s ease; }
+.tag-manage-row:hover { background: var(--overlay-light); }
+.tag-manage-name { color: var(--text-main); font-weight: bold; font-family: monospace; background: var(--border-light); padding: 4px 10px; border-radius: 4px; }
+.tag-suggestions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.tag-pill {
+  background: var(--overlay-light); border: 1px solid var(--border-light); padding: 6px 14px;
+  border-radius: 20px; font-size: 13px; cursor: pointer; color: var(--text-secondary);
+  transition: all 0.2s ease; user-select: none; 
+}
+.tag-pill:hover { background: rgba(var(--color-primary-rgb), 0.2); border-color: var(--color-primary); color: #fff; transform: translateY(-1px); }
+
+/* =========================================
+   👇 三点下拉菜单与全局弹窗 (Modals)
+   ========================================= */
+.dropdown-wrapper { position: relative; display: inline-flex; align-items: center; }
+.dots-btn { background: transparent; border: none; color: var(--text-muted); font-size: 16px; font-weight: bold; cursor: pointer; padding: 2px 8px; border-radius: 4px; transition: all 0.2s; }
+.dots-btn:hover { 
+  background: var(--overlay-hover); /* 用专用的 hover 遮罩层变量更合适 */
+  color: var(--text-main);          /* 动态跟随当前主题的主文本色 */
+}
+.dropdown-menu {
+  display: none; position: absolute; right: 0; top: 100%; margin-top: 5px;
+  background: var(--bg-elevated); border: 1px solid var(--border-light);
+  border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.6); z-index: 100; min-width: 140px; overflow: hidden;
+}
+.dropdown-menu.show { display: block; }
+.dropdown-item { padding: 10px 15px; font-size: 13px; color: var(--text-main); cursor: pointer; display: flex; align-items: center; gap: 8px; transition: background 0.2s; }
+.dropdown-item:hover { background: var(--overlay-light); }
+.dropdown-item.danger { color: var(--color-danger); }
+.dropdown-item.danger:hover { background: rgba(var(--color-danger-rgb), 0.15); }
+
+/* 全局高级弹窗层 */
+.custom-modal-overlay {
+  position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0, 0, 0, 0.6); backdrop-filter: blur(5px);
+  display: flex; justify-content: center; align-items: center; z-index: 9999;
+}
+.custom-modal {
+  background: var(--bg-elevated); border: 1px solid var(--border-medium);
+  border-radius: 12px; padding: 25px; width: 500px; max-width: 90%;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.7);
+  transform: translateY(-20px); opacity: 0; animation: modalFadeIn 0.3s forwards;
+  max-height: 85vh; overflow-y: auto; position: relative;
+}
+@keyframes modalFadeIn { to { transform: translateY(0); opacity: 1; } }
+
+/* 防止三点下拉菜单被遮挡的动态层级提升 */
+.elevated-zindex { 
+  z-index: 50 !important; 
+  position: relative !important; 
+  overflow: visible !important; 
+}
+
+/* =========================================
+   📅 Flatpickr 日历控件极致重构 (Themeable)
+   ========================================= */
+.flatpickr-calendar {
+  background: rgba(20, 30, 45, 0.65) !important; 
+  backdrop-filter: blur(15px) !important;        
+  -webkit-backdrop-filter: blur(15px) !important;
+  border: 1px solid var(--border-medium) !important;
+  border-radius: 12px !important;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6) !important;
+  padding: 12px 10px 15px 10px !important;
+  font-family: inherit !important;
+  width: 330px !important; 
+  z-index: 10000 !important; /* 保证日历始终在最顶层 */
+}
+
+.flatpickr-months .flatpickr-month { color: var(--text-main) !important; fill: var(--text-main) !important; background: transparent !important; }
+.flatpickr-weekdays { background: transparent !important; }
+span.flatpickr-weekday { background: transparent !important; color: var(--text-muted) !important; font-weight: bold !important; }
+
+.flatpickr-day { color: var(--text-secondary) !important; border-radius: 8px !important; transition: all 0.2s ease; }
+.flatpickr-day:hover { background: var(--overlay-hover) !important; border-color: var(--overlay-hover) !important; color: #fff !important; }
+.flatpickr-day.selected { background: var(--color-primary) !important; border-color: var(--color-primary) !important; color: #fff !important; box-shadow: 0 2px 10px rgba(var(--color-primary-rgb), 0.5) !important; font-weight: bold !important; }
+
+.flatpickr-time { display: flex !important; align-items: center !important; justify-content: center !important; border-top: 1px dashed var(--border-medium) !important; margin-top: 15px !important; padding: 10px 0 0 0 !important; height: 55px !important; max-height: 55px !important; overflow: hidden !important; }
+.flatpickr-time input { display: flex !important; align-items: center !important; height: 38px !important; line-height: 38px !important; color: var(--text-main) !important; font-weight: bold !important; font-size: 16px !important; border-radius: 6px !important; transition: background 0.2s ease !important; cursor: ns-resize !important; text-align: center !important; padding: 0 !important; margin: 0 !important; }
+.flatpickr-time input:hover { background: var(--overlay-light) !important; }
+.flatpickr-time .flatpickr-time-separator { display: flex !important; align-items: center !important; justify-content: center !important; height: 38px !important; line-height: 38px !important; color: var(--text-muted) !important; padding: 0 6px !important; margin: 0 !important; }
+.numInputWrapper span.arrowUp, .numInputWrapper span.arrowDown { display: none !important; }
+
+.flatpickr-custom-confirm {
+  display: block; width: calc(100% - 20px); margin: 15px auto 5px auto;
+  background: rgba(var(--color-primary-rgb), 0.15); 
+  color: var(--color-primary); border: 1px solid rgba(var(--color-primary-rgb), 0.4);
+  padding: 10px 0; border-radius: 8px; font-size: 14px; font-weight: bold; cursor: pointer; transition: all 0.2s ease;
+}
+.flatpickr-custom-confirm:hover { background: var(--color-primary); color: #fff; border-color: var(--color-primary); box-shadow: 0 4px 15px rgba(var(--color-primary-rgb), 0.3); }
+
+.datetime-input {
+  width: 190px !important; padding: 8px 12px !important; font-size: 14px !important; font-weight: bold !important;
+  letter-spacing: 0.5px; color: var(--color-primary); background: var(--overlay-light);
+  border: 1px solid var(--border-medium); border-radius: 6px; transition: all 0.2s; cursor: pointer;
+}
+.datetime-input:focus, .datetime-input:hover { border-color: var(--color-primary); background: rgba(var(--color-primary-rgb), 0.05); }
+
+.flatpickr-current-month { display: flex !important; align-items: center !important; justify-content: center !important; padding: 0 !important; height: 35px !important; }
+.flatpickr-monthDropdown-months {
+  background: var(--bg-elevated) !important; color: var(--color-primary) !important;
+  border: 1px solid var(--border-medium) !important; border-radius: 6px; padding: 4px 8px; width: auto !important; height: 30px !important; margin-right: 15px !important; display: inline-flex !important; align-items: center !important;
+}
+.flatpickr-monthDropdown-months option { background: var(--bg-body) !important; color: var(--text-main) !important; }
+.flatpickr-current-month .numInputWrapper { display: inline-flex !important; align-items: center !important; justify-content: center !important; width: 120px !important; height: 30px !important; }
+.flatpickr-current-month input.cur-year { width: 55px !important; padding: 0 !important; margin: 0 !important; text-align: center !important; font-size: 16px !important; font-weight: bold !important; height: 30px !important; line-height: 30px !important; }
+
+.year-btn-prev, .year-btn-next {
+  position: static !important; display: inline-flex !important; align-items: center !important; justify-content: center !important;
+  cursor: pointer !important; color: var(--text-muted) !important; font-weight: bold !important; font-size: 15px !important;
+  padding: 0 8px !important; transition: all 0.2s ease !important; user-select: none !important; height: 30px !important;
+}
+.year-btn-prev:hover, .year-btn-next:hover { color: var(--color-primary) !important; transform: scale(1.2) !important; }
+
+/* =========================================
+   ☀️ 浅色主题覆盖 (Light Theme)
+   ========================================= */
+:root.theme-light {
+  color-scheme: light;
+  
+  --bg-body: #f1f5f9;
+  --bg-sidebar: rgba(226, 232, 240, 0.8);
+  --bg-panel: rgba(255, 255, 255, 0.9);
+  --bg-card: rgba(255, 255, 255, 0.65);
+  --bg-input: rgba(248, 250, 252, 0.7);
+  --bg-elevated: #ffffff;
+  
+  --text-main: #0f172a;
+  --text-muted: #64748b;
+  --text-secondary: #334155;
+  
+  --border-light: rgba(0, 0, 0, 0.08);
+  --border-medium: rgba(0, 0, 0, 0.15);
+  --overlay-light: rgba(0, 0, 0, 0.04);
+  --overlay-hover: rgba(0, 0, 0, 0.08);
+}
+
+/* 适配浅色模式的按钮和文字 */
+:root.theme-light button:not(.primary-btn):not(.tab-btn) { color: var(--text-main); }
+:root.theme-light .tab-btn { color: var(--text-muted); }
+:root.theme-light .dropdown-item { color: var(--text-main); }
+:root.theme-light .dropdown-item:hover { background: var(--overlay-light); }
+:root.theme-light .dropdown-item.danger { color: var(--color-danger); }
+
+/* 适配浅色模式的日历弹窗 */
+:root.theme-light .flatpickr-calendar {
+  background: rgba(255, 255, 255, 0.95) !important;
+  border: 1px solid var(--border-medium) !important;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1) !important;
+}
+:root.theme-light .flatpickr-day { color: var(--text-main) !important; }
+:root.theme-light .flatpickr-day:hover { background: var(--overlay-hover) !important; color: var(--text-main) !important; }
+:root.theme-light .flatpickr-day.selected { color: #fff !important; }
+:root.theme-light .flatpickr-time input { color: var(--text-main) !important; }
+:root.theme-light .flatpickr-monthDropdown-months option { background: var(--bg-elevated) !important; color: var(--text-main) !important; }
+:root.theme-light .flatpickr-months .flatpickr-month { color: var(--text-main) !important; fill: var(--text-main) !important; }
+:root.theme-light span.flatpickr-weekday { color: var(--text-muted) !important; }
+:root.theme-light .flatpickr-custom-confirm { color: var(--color-primary); background: rgba(var(--color-primary-rgb), 0.1); }
+
+/* =========================================
+   🌸 樱花落雪主题 (Sakura - 浅色系)
+   ========================================= */
+:root.theme-sakura {
+  color-scheme: light;
+  
+  --color-primary: #f472b6; /* 樱花粉 */
+  --color-primary-rgb: 244, 114, 182;
+  --color-primary-dark: #be185d;
+  
+  --bg-body: #fff1f2; /* 极其微弱的粉白底色 */
+  --bg-sidebar: rgba(255, 228, 230, 0.7);
+  --bg-panel: rgba(255, 255, 255, 0.85);
+  --bg-card: rgba(255, 255, 255, 0.7);
+  --bg-input: rgba(255, 241, 242, 0.8);
+  --bg-elevated: #ffffff;
+  
+  --text-main: #4c0519; /* 深红棕色，比纯黑更柔和 */
+  --text-muted: #9f1239;
+  --text-secondary: #881337;
+  
+  --border-light: rgba(225, 29, 72, 0.08);
+  --border-medium: rgba(225, 29, 72, 0.15);
+  --overlay-light: rgba(225, 29, 72, 0.04);
+  --overlay-hover: rgba(225, 29, 72, 0.08);
+}
+
+/* 适配樱花模式的日历弹窗 */
+:root.theme-sakura .flatpickr-calendar {
+  background: rgba(255, 255, 255, 0.95) !important;
+  border: 1px solid var(--border-medium) !important;
+  box-shadow: 0 10px 40px rgba(244, 114, 182, 0.15) !important;
+}
+:root.theme-sakura .flatpickr-day { color: var(--text-main) !important; }
+:root.theme-sakura .flatpickr-day:hover { background: var(--overlay-hover) !important; color: var(--text-main) !important; }
+:root.theme-sakura .flatpickr-day.selected { color: #fff !important; }
+:root.theme-sakura .flatpickr-time input { color: var(--text-main) !important; }
+:root.theme-sakura .flatpickr-monthDropdown-months option { background: var(--bg-elevated) !important; color: var(--text-main) !important; }
+:root.theme-sakura .flatpickr-months .flatpickr-month { color: var(--text-main) !important; fill: var(--text-main) !important; }
+/* 适配樱花模式的按钮和文字（解决白字看不清的问题） */
+:root.theme-sakura button:not(.primary-btn):not(.tab-btn) { color: var(--text-main); }
+:root.theme-sakura .tab-btn { color: var(--text-muted); }
+:root.theme-sakura .dropdown-item { color: var(--text-main); }
+:root.theme-sakura .dropdown-item:hover { background: var(--overlay-light); }
+:root.theme-sakura .dropdown-item.danger { color: var(--color-danger); }
+
+/* =========================================
+   🌌 极光深海主题 (Aurora - 深色系)
+   ========================================= */
+:root.theme-aurora {
+  color-scheme: dark;
+  
+  --color-primary: #2dd4bf; /* 极光青/薄荷绿 */
+  --color-primary-rgb: 45, 212, 191;
+  --color-primary-dark: #0f766e;
+  
+  --bg-body: #082f49; /* 深邃的海蓝色 */
+  --bg-sidebar: rgba(8, 47, 73, 0.6);
+  --bg-panel: rgba(12, 74, 110, 0.4);
+  --bg-card: rgba(8, 47, 73, 0.45);
+  --bg-input: rgba(22, 78, 99, 0.5);
+  --bg-elevated: #082f49;
+  
+  --text-main: #ecfeff;
+  --text-muted: #67e8f9;
+  --text-secondary: #a5f3fc;
+  
+  --border-light: rgba(45, 212, 191, 0.15);
+  --border-medium: rgba(45, 212, 191, 0.25);
+  --overlay-light: rgba(45, 212, 191, 0.08);
+  --overlay-hover: rgba(45, 212, 191, 0.15);
+}
+
+
+/* =========================================
+   🖥️ 响应式适配：针对笔记本或小屏幕 (宽度小于 1024px)
+   ========================================= */
+@media screen and (max-width: 1024px) {
+  /* 缩小侧边栏，节约横向空间 */
+  .sidebar { width: 200px; padding: 15px; }
+  
+  /* 减小主内容区的内边距 */
+  .main-content { padding: 20px; }
+  
+  /* 左右分栏变成上下堆叠 */
+  .dashboard-split { flex-direction: column; gap: 20px; }
+  
+  /* 表单控件尺寸稍微缩紧 */
+  .input-card .hero-input { padding: 10px; font-size: 14px; }
+  .form-actions { flex-direction: column; align-items: stretch; }
+  .form-actions .hero-btn { width: 100%; margin-top: 15px; }
+  
+  /* 模态框弹窗不要超出屏幕边框 */
+  .custom-modal { width: 90vw; padding: 15px; }
+}
+
+/* =========================================
+   🖥️ 响应式适配：针对高度极低的带鱼屏或老旧笔记本 (高度小于 750px)
+   ========================================= */
+@media screen and (max-height: 750px) {
+  /* 降低头部的视觉占用 */
+  .main-content h1 { margin-top: 0; font-size: 24px; }
+  .input-card { padding: 15px; }
+  
+  /* 确保日历弹框不会因为屏幕太矮而卡死 */
+  .custom-modal { max-height: 95vh; }
+}
