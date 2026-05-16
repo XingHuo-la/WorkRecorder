@@ -1,0 +1,86 @@
+[
+  {
+    "id": "dark",
+    "name": "🌙 标准深色",
+    "isDark": true,
+    "colors": {
+      "color-primary": "#60a5fa", "color-primary-rgb": "96, 165, 250", "color-primary-dark": "#2b5c8f",
+      "color-success": "#4ade80", "color-success-rgb": "74, 222, 128",
+      "color-danger": "#ff6b6b", "color-danger-rgb": "255, 107, 107",
+      "color-warning": "#facc15", "color-warning-rgb": "250, 204, 21",
+      "bg-body": "#0a0f19", "bg-sidebar": "rgba(10, 15, 30, 0.6)", "bg-panel": "rgba(10, 15, 25, 0.4)",
+      "bg-card": "rgba(30, 40, 55, 0.45)", "bg-input": "rgba(20, 30, 50, 0.6)", "bg-elevated": "#1e293b",
+      "text-main": "#f8f9fa", "text-muted": "#94A3B8", "text-secondary": "#CBD5E1",
+      "border-light": "rgba(255, 255, 255, 0.1)", "border-medium": "rgba(255, 255, 255, 0.2)",
+      "overlay-light": "rgba(255, 255, 255, 0.05)", "overlay-hover": "rgba(255, 255, 255, 0.1)"
+    },
+    "background": {
+      "image-url": "none",
+      "overlay-color": "transparent",
+      "global-blur": "0px"
+    }
+  },
+  {
+    "id": "light",
+    "name": "☀️ 纯净浅色",
+    "isDark": false,
+    "colors": {
+      "color-primary": "#3b82f6", "color-primary-rgb": "59, 130, 246", "color-primary-dark": "#1d4ed8",
+      "color-success": "#10b981", "color-success-rgb": "16, 185, 129",
+      "color-danger": "#ef4444", "color-danger-rgb": "239, 68, 68",
+      "color-warning": "#f59e0b", "color-warning-rgb": "245, 158, 11",
+      "bg-body": "#f1f5f9", "bg-sidebar": "rgba(226, 232, 240, 0.8)", "bg-panel": "rgba(255, 255, 255, 0.9)",
+      "bg-card": "rgba(255, 255, 255, 0.65)", "bg-input": "rgba(248, 250, 252, 0.7)", "bg-elevated": "#ffffff",
+      "text-main": "#0f172a", "text-muted": "#64748b", "text-secondary": "#334155",
+      "border-light": "rgba(0, 0, 0, 0.08)", "border-medium": "rgba(0, 0, 0, 0.15)",
+      "overlay-light": "rgba(0, 0, 0, 0.04)", "overlay-hover": "rgba(0, 0, 0, 0.08)"
+    },
+    "background": {
+      "image-url": "none",
+      "overlay-color": "transparent",
+      "global-blur": "0px"
+    }
+  },
+  {
+    "id": "sakura",
+    "name": "🌸 樱花落雪",
+    "isDark": false,
+    "colors": {
+      "color-primary": "#f472b6", "color-primary-rgb": "244, 114, 182", "color-primary-dark": "#be185d",
+      "color-success": "#10b981", "color-success-rgb": "16, 185, 129",
+      "color-danger": "#e11d48", "color-danger-rgb": "225, 29, 72",
+      "color-warning": "#f59e0b", "color-warning-rgb": "245, 158, 11",
+      "bg-body": "#fff1f2", "bg-sidebar": "rgba(255, 228, 230, 0.7)", "bg-panel": "rgba(255, 255, 255, 0.85)",
+      "bg-card": "rgba(255, 255, 255, 0.7)", "bg-input": "rgba(255, 241, 242, 0.8)", "bg-elevated": "#ffffff",
+      "text-main": "#4c0519", "text-muted": "#9f1239", "text-secondary": "#881337",
+      "border-light": "rgba(225, 29, 72, 0.08)", "border-medium": "rgba(225, 29, 72, 0.15)",
+      "overlay-light": "rgba(225, 29, 72, 0.04)", "overlay-hover": "rgba(225, 29, 72, 0.08)"
+    },
+    "background": {
+      "image-url": "./assets/themes/sakura-bg.jpg",
+      "overlay-color": "transparent",
+      "global-blur": "0px"
+    }
+  },
+  {
+    "id": "aurora",
+    "name": "🌌 极光深海",
+    "isDark": true,
+    "colors": {
+      "color-primary": "#5eead4", "color-primary-rgb": "94, 234, 212", "color-primary-dark": "#14b8a6",
+      "color-success": "#3f6266", "color-success-rgb": "63, 98, 102",
+      "color-danger": "#0f766e", "color-danger-rgb": "15, 118, 110",
+      "color-warning": "#2dd4bf", "color-warning-rgb": "45, 212, 191",
+      "bg-body": "#082f49", "bg-sidebar": "rgba(8, 47, 73, 0.6)", "bg-panel": "rgba(12, 74, 110, 0.4)",
+      "bg-card": "rgba(8, 47, 73, 0.45)", "bg-input": "rgba(22, 78, 99, 0.5)", "bg-elevated": "#082f49",
+      "text-main": "#ecfeff", "text-muted": "#67e8f9", "text-secondary": "#a5f3fc",
+      "border-light": "rgba(45, 212, 191, 0.15)", "border-medium": "rgba(45, 212, 191, 0.25)",
+      "overlay-light": "rgba(45, 212, 191, 0.08)", "overlay-hover": "rgba(45, 212, 191, 0.15)"
+    },
+    "background": {
+      "image-url": "/assets/themes/aurora-bg.jpg",
+      "overlay-color": "rgba(8, 47, 73, 0.65)",
+      "global-blur": "2px"
+    }
+  }
+]

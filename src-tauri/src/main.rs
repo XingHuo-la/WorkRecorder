@@ -1,5 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-
+use tauri::Manager;
 use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -163,13 +163,19 @@ fn main() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
+        // 👇 核心修复 6：拦截双开，自动把已打开的窗口弹到最前面
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .setup(|_app| {
-            if let Err(e) = init_and_migrate_db() { eprintln!("⚠️ 数据库初始化或迁移出错: {}", e); }
+            if let Err(e) = init_and_migrate_db() { eprintln!("⚠️ 数据库初始化出错: {}", e); }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            load_data, save_data, get_current_path, check_path, apply_new_path,
-            db_query, db_execute // 👈 注册了两个新桥梁
+            load_data, save_data, get_current_path, check_path, apply_new_path, db_query, db_execute
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

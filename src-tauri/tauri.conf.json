@@ -24,6 +24,10 @@
     ],
     "security": {
       "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["**/*", "C:/**", "D:/**", "E:/**"]
+      },
       "capabilities": [
         {
           "identifier": "window-controls",

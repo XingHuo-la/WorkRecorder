@@ -13,11 +13,20 @@ export function initTodoModule() {
   hasDeadlineCb.onchange = () => deadlineInput.style.display = hasDeadlineCb.checked ? 'block' : 'none';
 
   window.renderTodoTags = () => {
-    tagSelect.innerHTML = '';
-    const activeTags = (appData.settings && appData.settings.active_tags) ? appData.settings.active_tags : appData.tags;
-    activeTags.forEach(t => tagSelect.innerHTML += `<option value="${t}">${t}</option>`);
-    tagSelect.innerHTML += `<option value="NEW">➕ 新建主分类...</option>`; window.renderTodoSubTags();
-  };
+      tagSelect.innerHTML = '';
+      const activeTags = (appData.settings && appData.settings.active_tags) ? appData.settings.active_tags : appData.tags;
+      activeTags.forEach(t => tagSelect.innerHTML += `<option value="${t}">${t}</option>`);
+      tagSelect.innerHTML += `<option value="NEW">➕ 新建主分类...</option>`; 
+      
+      // 👇 核心修复 1：当没有任何活跃分类时，强制显示输入框
+      if (activeTags.length === 0 || tagSelect.value === 'NEW') {
+          tagSelect.value = 'NEW';
+          tagNewInput.style.display = 'block';
+      } else {
+          tagNewInput.style.display = 'none';
+      }
+      window.renderTodoSubTags();
+    };
 
   window.renderTodoSubTags = () => {
     const mainTag = tagSelect.value === 'NEW' ? tagNewInput.value.trim() : tagSelect.value;
@@ -58,8 +67,14 @@ export function initTodoModule() {
     // 刷新数据与UI
     await loadData(); 
     
+    // 👇 核心修复 2：提交后必须先重新渲染下拉菜单，再重新设置选中项！
+    window.renderTodoTags(); 
+    tagSelect.value = finalTag; 
+    tagNewInput.style.display = 'none'; 
+    window.renderTodoSubTags(); 
+    subSelect.value = finalSub; 
+
     document.getElementById('todo-task-input').value = ""; document.getElementById('todo-detail-input').value = "";
-    tagSelect.value = finalTag; tagNewInput.style.display = 'none'; window.renderTodoSubTags(); subSelect.value = finalSub; 
     if(hasDeadlineCb.checked) { hasDeadlineCb.checked = false; deadlineInput.style.display = 'none'; fpDeadline.clear(); }
     renderTodoList(); 
     if(window.renderLogTags) window.renderLogTags();
@@ -86,12 +101,29 @@ export async function renderTodoList() {
       let subTagHtml = todo.sub_tag ? `<span style="background: rgba(255,255,255,0.1); padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-left: 8px;">📁 ${todo.sub_tag}</span>` : "";
       
       let deadlineHtml = "";
+      let accordionThemeClass = "border-primary"; // 默认抽屉左侧边框颜色为蓝色
+
       if (todo.deadline) {
-          const isOverdue = new Date(todo.deadline) < new Date();
-          const bg = isOverdue ? 'rgba(var(--color-danger-rgb), 0.15)' : 'rgba(var(--color-primary-rgb), 0.15)';
-          const color = isOverdue ? 'var(--color-danger)' : 'var(--color-primary)';
-          const borderColor = isOverdue ? 'rgba(var(--color-danger-rgb), 0.5)' : 'rgba(var(--color-primary-rgb), 0.5)';
-          deadlineHtml = `<span style="background: ${bg}; color: ${color}; border: 1px solid ${borderColor}; padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-left: 10px; white-space: nowrap;">📅 截至 ${todo.deadline}</span>`;
+          const today = new Date(); today.setHours(0,0,0,0);
+          const dl = new Date(todo.deadline); dl.setHours(0,0,0,0);
+          const diff = dl - today;
+          
+          let bg, color, border, text;
+          if (diff < 0) {
+              bg = 'rgba(var(--color-danger-rgb), 0.15)'; color = 'var(--color-danger)'; border = 'rgba(var(--color-danger-rgb), 0.5)'; 
+              text = `🚨 已延期 (${todo.deadline})`; // 保留日期
+              accordionThemeClass = "border-danger";   // 抽屉整体边框变红
+          } else if (diff === 0) {
+              bg = 'rgba(var(--color-warning-rgb), 0.15)'; color = 'var(--color-warning)'; border = 'rgba(var(--color-warning-rgb), 0.5)'; 
+              text = `🔥 今日到期 (${todo.deadline})`; // 保留日期
+              accordionThemeClass = "border-warning";  // 抽屉整体边框变黄
+          } else {
+              bg = 'rgba(var(--color-primary-rgb), 0.15)'; color = 'var(--color-primary)'; border = 'rgba(var(--color-primary-rgb), 0.5)'; 
+              text = `📅 截至 ${todo.deadline}`;
+              accordionThemeClass = "border-primary";  // 抽屉整体边框保持蓝色
+          }
+          
+          deadlineHtml = `<span style="background: ${bg}; color: ${color}; border: 1px solid ${border}; padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-left: 10px; white-space: nowrap;">${text}</span>`;
       }
       
       let remarkHtml = todo.remark ? `<div class="item-remark">${todo.remark.replace(/\n/g, '<br>')}</div>` : "";
@@ -99,7 +131,7 @@ export async function renderTodoList() {
       let remarkBadge = todo.remark ? `<span style="background: rgba(var(--color-warning-rgb), 0.15); color: var(--color-warning); border: 1px solid rgba(var(--color-warning-rgb), 0.3); padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-left: 8px; white-space: nowrap;">补</span>` : "";
 
       const htmlString = `
-        <details class="glass-accordion border-primary" style="margin-bottom: 8px;">
+        <details class="glass-accordion ${accordionThemeClass}" style="margin-bottom: 8px;">
           <summary class="log-summary" style="display:flex; align-items:center;">
             <input type="checkbox" class="todo-cb" data-id="${todo.id}" style="margin-right:12px; width:18px; height:18px; cursor:pointer;" onclick="event.stopPropagation();">
             <span class="log-text"><b>[${todo.tag}]</b> ${todo.task} ${subTagHtml} ${deadlineHtml} ${detailBadge} ${remarkBadge}</span>

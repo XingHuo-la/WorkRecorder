@@ -35,16 +35,17 @@ if (window.flatpickr) {
 
 async function initApp() {
   await loadData();
-  document.documentElement.className = '';
-  if (appData.settings && appData.settings.theme && appData.settings.theme !== 'dark') {
-      document.documentElement.classList.add(`theme-${appData.settings.theme}`);
-  }
+  await import('./settings.js').then(async (m) => {
+      await m.applySavedThemeFromDB();
+  });
+
   setupRouting(); setupTabs();
   initTodoModule(); initLogModule(); renderHistoryList(); initTimelineModule(); initSettingsModule();
 
   // 全局事件 1：点击空白处收起所有三点菜单
   document.addEventListener('click', (e) => {
-    if (!e.target.matches('.dots-btn')) {
+    // 👇 魔法在这里：只要你点击的地方，不在 .dropdown-wrapper 这个包裹盒子里，就统统关掉！
+    if (!e.target.closest('.dropdown-wrapper')) {
       document.querySelectorAll('.dropdown-menu.show').forEach(m => m.classList.remove('show'));
       document.querySelectorAll('.elevated-zindex').forEach(el => el.classList.remove('elevated-zindex'));
     }

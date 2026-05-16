@@ -177,15 +177,14 @@
             
             <div style="display: flex; align-items: center; justify-content: space-between; background: var(--overlay-light); padding: 15px; border-radius: 8px; border: 1px solid var(--border-light); margin-bottom: 15px;">
               <div>
-                <div style="font-size: 15px; font-weight: bold; color: var(--text-main);">深色 / 浅色模式</div>
-                <div style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">一键切换工作台的视觉风格</div>
+                <div style="font-size: 15px; font-weight: bold; color: var(--text-main);">当前主题</div>
+                <div style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">管理和定制你的专属工作台视觉风格</div>
               </div>
-              <select id="theme-select" class="hero-input select-hero" style="width: 150px; margin: 0;">
-                <option value="dark">🌙 深色模式</option>
-                <option value="light">☀️ 浅色模式</option>
-                <option value="sakura">🌸 樱花落雪</option>
-                <option value="aurora">🌌 极光深海</option>
-              </select>
+              
+              <div style="display: flex; align-items: center; gap: 12px;">
+                <span id="current-theme-name" style="font-size: 14px; font-weight: bold; color: var(--color-primary); background: rgba(var(--color-primary-rgb), 0.1); padding: 6px 15px; border-radius: 20px; border: 1px solid rgba(var(--color-primary-rgb), 0.2);">加载中...</span>
+                <button id="theme-manage-btn" class="icon-btn" style="margin: 0; padding: 6px 12px; font-size: 13px;">更改</button>
+              </div>
             </div>
 
             <div style="background: var(--overlay-light); padding: 15px; border-radius: 8px; border: 1px solid var(--border-light);">
