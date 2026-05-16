@@ -1,144 +1,78 @@
-import { appData, saveData, getTodayString } from './data.js';
+import { appData, dbExecute, loadData, getTodayString } from './data.js';
 import { openUniversalEditModal } from './formUtils.js';
 
-// 全局挂载增强版 Flatpickr：支持中文、完美滚轮跟随、强制时分秒滚动、年份切换
+// ==========================================
+// 📅 全局挂载增强版 Flatpickr (保持你原有的完美配置)
+// ==========================================
 window.addFpConfirmBtn = function(selectedDates, dateStr, instance) {
-  // 1. 添加确认按钮
   if (!instance.calendarContainer.querySelector('.flatpickr-custom-confirm')) {
     const btn = document.createElement("button");
-    btn.className = "flatpickr-custom-confirm";
-    btn.innerHTML = "✅ 确认选择";
-    btn.type = "button"; 
+    btn.className = "flatpickr-custom-confirm"; btn.innerHTML = "✅ 确认选择"; btn.type = "button"; 
     btn.onclick = () => instance.close();
     instance.calendarContainer.appendChild(btn);
   }
-
-  // 2. 月份的鼠标滚轮切换
   const monthNav = instance.calendarContainer.querySelector('.flatpickr-months');
   if (monthNav && !monthNav.dataset.wheelBound) {
     monthNav.dataset.wheelBound = "true";
-    monthNav.addEventListener('wheel', (e) => {
-      e.preventDefault(); e.stopPropagation();
-      instance.changeMonth(e.deltaY > 0 ? 1 : -1); 
-    }, { passive: false });
+    monthNav.addEventListener('wheel', (e) => { e.preventDefault(); e.stopPropagation(); instance.changeMonth(e.deltaY > 0 ? 1 : -1); }, { passive: false });
   }
-
-// 3. 🚀 穿透级接管：时、分、秒的鼠标滚轮滑动
   const timeContainer = instance.calendarContainer.querySelector('.flatpickr-time');
   if (timeContainer && !timeContainer.dataset.wheelBound) {
     timeContainer.dataset.wheelBound = "true";
     timeContainer.addEventListener('wheel', (e) => {
-      // 不管悬浮在数字上还是边框上，精准定位到对应的 input
       let input = e.target.tagName === 'INPUT' ? e.target : e.target.closest('.numInputWrapper')?.querySelector('input');
       if (input && input.tagName === 'INPUT') {
         e.preventDefault(); e.stopPropagation();
-        
-        const step = parseFloat(input.step) || 1;
-        const dir = e.deltaY < 0 ? 1 : -1; // 向上滚增加，向下滚减少
-        let val = parseFloat(input.value) || 0;
-        let max = parseFloat(input.max) || (input.classList.contains('flatpickr-hour') ? 23 : 59);
-        let min = parseFloat(input.min) || 0;
-        
-        val += (dir * step);
-        if (val > max) val = min; // 达到最大值循环回 0
-        if (val < min) val = max; // 达到最小值循环回最大
-        
+        const step = parseFloat(input.step) || 1; const dir = e.deltaY < 0 ? 1 : -1; 
+        let val = parseFloat(input.value) || 0; let max = parseFloat(input.max) || (input.classList.contains('flatpickr-hour') ? 23 : 59); let min = parseFloat(input.min) || 0;
+        val += (dir * step); if (val > max) val = min; if (val < min) val = max; 
         input.value = val.toString().padStart(2, '0');
-        // 强制触发原生事件，让日历引擎知道时间改变了
         input.dispatchEvent(new Event('input', { bubbles: true }));
-
-        // 🌟 终极修复：直接从 UI 上抓取最新的数字拼装，彻底绕开引擎的延迟！
         if (instance.selectedDates && instance.selectedDates.length > 0) {
             const d = instance.selectedDates[0];
-            const yyyy = d.getFullYear();
-            const mm = String(d.getMonth() + 1).padStart(2, '0');
-            const dd = String(d.getDate()).padStart(2, '0');
-            
-            // 暴力破解：直接抓取 DOM 里你刚刚滚出来的最新的时、分、秒
+            const yyyy = d.getFullYear(); const mm = String(d.getMonth() + 1).padStart(2, '0'); const dd = String(d.getDate()).padStart(2, '0');
             const hh = instance.hourElement ? instance.hourElement.value.padStart(2, '0') : "00";
             const minStr = instance.minuteElement ? instance.minuteElement.value.padStart(2, '0') : "00";
             const secStr = instance.secondElement ? instance.secondElement.value.padStart(2, '0') : "00";
-            
-            // 强行写回外部输入框
             instance.input.value = `${yyyy}-${mm}-${dd} ${hh}:${minStr}:${secStr}`;
         }
       }
     }, { passive: false });
   }
-
-  // 4. 🚀 动态注入年份的左右切换按钮 《 》
   const yearWrapper = instance.calendarContainer.querySelector('.flatpickr-current-month .numInputWrapper');
   if (yearWrapper && !yearWrapper.querySelector('.year-btn-prev')) {
-    const prevBtn = document.createElement('span');
-    prevBtn.className = 'year-btn-prev';
-    prevBtn.innerHTML = '《';
+    const prevBtn = document.createElement('span'); prevBtn.className = 'year-btn-prev'; prevBtn.innerHTML = '《';
     prevBtn.onclick = (e) => { e.preventDefault(); e.stopPropagation(); instance.changeYear(instance.currentYear - 1); };
-    
-    const nextBtn = document.createElement('span');
-    nextBtn.className = 'year-btn-next';
-    nextBtn.innerHTML = '》';
+    const nextBtn = document.createElement('span'); nextBtn.className = 'year-btn-next'; nextBtn.innerHTML = '》';
     nextBtn.onclick = (e) => { e.preventDefault(); e.stopPropagation(); instance.changeYear(instance.currentYear + 1); };
-
-    yearWrapper.prepend(prevBtn);
-    yearWrapper.appendChild(nextBtn);
+    yearWrapper.prepend(prevBtn); yearWrapper.appendChild(nextBtn);
   }
 };
 
-/// 全局统一的完美配置模板
 window.fpGlobalConfig = {
-  enableTime: true, 
-  enableSeconds: true, 
-  time_24hr: true, 
-  dateFormat: "Y-m-d H:i:S", 
-  locale: "zh",               
-  position: "below",          
+  enableTime: true, enableSeconds: true, time_24hr: true, dateFormat: "Y-m-d H:i:S", locale: "zh", position: "below",          
   onReady: window.addFpConfirmBtn,
-
-  // 只要面板里的值发生任何变化（包括滚轮），立刻同步到外面的输入框！
-  onValueUpdate: function(selectedDates, dateStr, instance) {
-      if (instance.input && dateStr) {
-          instance.input.value = dateStr;
-      }
-  },
-  
+  onValueUpdate: function(selectedDates, dateStr, instance) { if (instance.input && dateStr) { instance.input.value = dateStr; } },
   onOpen: function(selectedDates, dateStr, instance) {
-    // 🌟 解决“获取不到最新时间”的核心逻辑：
-    // 当日历打开时，如果输入框本来是空的，立刻抓取【此刻真实时间】填进去
-    if (!instance.input.value) {
-        const now = new Date();
-        // 如果你喜欢分秒都是 0，可以加上这句：now.setMinutes(0, 0, 0);
-        instance.setDate(now, true); // true 代表立刻将此刻时间写回输入框
-    }
-
+    if (!instance.input.value) { const now = new Date(); instance.setDate(now, true); }
     const mainContent = document.querySelector('.main-content');
     if (mainContent && !instance.element.closest('.custom-modal')) {
-        // 1. 先撑开底部物理空间，保证有地方可以滚
         mainContent.style.paddingBottom = '400px'; 
-        
         setTimeout(() => {
-            // 2. 获取当前输入框在屏幕上的位置
-            const rect = instance.element.getBoundingClientRect();
-            // 3. 计算输入框底部距离浏览器底部的可视空间
-            const spaceBelow = window.innerHeight - rect.bottom;
-            
-            // 4. 日历面板高度大概是 350px。如果下方空间不足 350px，才需要滚动
-            if (spaceBelow < 350) {
-                // 缺多少像素，就精确地往下滚多少像素
-                const scrollAmount = 350 - spaceBelow;
-                mainContent.scrollBy({ top: scrollAmount, behavior: 'smooth' });
-            }
+            const rect = instance.element.getBoundingClientRect(); const spaceBelow = window.innerHeight - rect.bottom;
+            if (spaceBelow < 350) { const scrollAmount = 350 - spaceBelow; mainContent.scrollBy({ top: scrollAmount, behavior: 'smooth' }); }
         }, 50);
     }
   },
-  
   onClose: function(selectedDates, dateStr, instance) {
     const mainContent = document.querySelector('.main-content');
-    if (mainContent && !instance.element.closest('.custom-modal')) {
-        mainContent.style.paddingBottom = '100px'; 
-    }
+    if (mainContent && !instance.element.closest('.custom-modal')) { mainContent.style.paddingBottom = '100px'; }
   }
 };
 
+// ==========================================
+// 🚀 初始化流水记录模块
+// ==========================================
 export function initLogModule() {
   const useCurrentTimeCb = document.getElementById('log-use-current-time'); const manualDatetimeInput = document.getElementById('log-manual-datetime');
   const hasDeadlineCb = document.getElementById('log-has-deadline'); const deadlineInput = document.getElementById('log-deadline-input');
@@ -146,7 +80,6 @@ export function initLogModule() {
   const subSelect = document.getElementById('log-sub-tag-select'); const subNewInput = document.getElementById('log-sub-tag-new');
 
   const fpConfig = { ...window.fpGlobalConfig };
-  
   flatpickr(manualDatetimeInput, fpConfig); 
   const fpDeadline = flatpickr(deadlineInput, fpConfig);
 
@@ -176,16 +109,9 @@ export function initLogModule() {
     const finalSub = subSelect.value === 'NEW' ? subNewInput.value.trim() : subSelect.value;
     if (!finalTag) { alert("⚠️ 请输入或选择主分类！"); return; }
 
-    if (tagSelect.value === 'NEW' && !appData.tags.includes(finalTag)) {
-      appData.tags.push(finalTag);
-      if (!appData.settings) appData.settings = {}; if (!appData.settings.active_tags) appData.settings.active_tags = [...appData.tags];
-      if (!appData.settings.active_tags.includes(finalTag)) appData.settings.active_tags.push(finalTag);
-    }
-    if (finalSub && subSelect.value === 'NEW') {
-      if (!appData.sub_tags) appData.sub_tags = {}; if (!appData.sub_tags[finalTag]) appData.sub_tags[finalTag] = [];
-      if (!appData.sub_tags[finalTag].includes(finalSub)) appData.sub_tags[finalTag].push(finalSub);
-    }
-    window.renderLogTags(); if(window.renderTodoTags) window.renderTodoTags();
+    // 🌟 外科手术 1：同步新标签到数据库
+    if (tagSelect.value === 'NEW') await dbExecute("INSERT OR IGNORE INTO tags (name, is_active) VALUES (?, ?)", [finalTag, true]);
+    if (finalSub && subSelect.value === 'NEW') await dbExecute("INSERT INTO sub_tags (main_tag, name) VALUES (?, ?)", [finalTag, finalSub]);
 
     let finalDateStr, finalTimeStr;
     if (useCurrentTimeCb.checked) {
@@ -196,29 +122,36 @@ export function initLogModule() {
       [finalDateStr, finalTimeStr] = dtValue.split(' ');
     }
 
-    const newLog = { time: finalTimeStr, text: taskInput, tag: finalTag, sub_tag: finalSub, detail: document.getElementById('log-detail-input').value.trim(), is_overdue: document.querySelector('input[name="log-status"]:checked').value === "overdue", deadline: hasDeadlineCb.checked ? deadlineInput.value : "" };
-    if (!appData.logs[finalDateStr]) appData.logs[finalDateStr] = [];
-    appData.logs[finalDateStr].unshift(newLog); appData.logs[finalDateStr].sort((a, b) => b.time.localeCompare(a.time));
-    await saveData();
+    const detailInput = document.getElementById('log-detail-input').value.trim();
+    const isOverdue = document.querySelector('input[name="log-status"]:checked').value === "overdue";
+    const deadlineVal = hasDeadlineCb.checked ? deadlineInput.value : "";
+
+    // 🌟 外科手术 2：向 SQLite 插入一条新流水
+    await dbExecute(
+        "INSERT INTO logs (date, time, text, tag, sub_tag, detail, remark, linked_todo, deadline, is_overdue) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [finalDateStr, finalTimeStr, taskInput, finalTag, finalSub, detailInput, "", "", deadlineVal, isOverdue]
+    );
+
+    await loadData(); // 从底层刷新
     
     document.getElementById('log-task-input').value = ""; document.getElementById('log-detail-input').value = "";
-    tagSelect.value = finalTag; 
-    tagNewInput.style.display = 'none'; 
-    window.renderLogSubTags();
-    subSelect.value = finalSub; 
-
+    tagSelect.value = finalTag; tagNewInput.style.display = 'none'; window.renderLogSubTags(); subSelect.value = finalSub; 
     if(hasDeadlineCb.checked) { hasDeadlineCb.checked = false; deadlineInput.style.display = 'none'; fpDeadline.clear(); }
     renderHistoryList(); 
+    if(window.renderTodoTags) window.renderTodoTags();
   });
 }
 
+// ==========================================
+// 📖 渲染今日流水列表与操作事件
+// ==========================================
 export function renderHistoryList() {
   const container = document.getElementById('history-list-container'); if(!container) return; container.innerHTML = ""; 
   const todayStr = getTodayString(); const todayLogs = appData.logs[todayStr] || [];
 
   if (todayLogs.length === 0) { container.innerHTML = "<p style='color: gray; font-size: 0.9em;'>今天还没有记录任何事情哦~ 赶紧在顶部记一笔吧！</p>"; return; }
 
-  todayLogs.forEach((log, index) => {
+  todayLogs.forEach((log) => {
     const isCompletedTodo = !!log.linked_todo || log.text.includes("完成待办"); 
     const themeClass = isCompletedTodo ? "border-success" : "border-primary";
     const detailText = log.detail ? log.detail : "(未填写详细说明)";
@@ -250,9 +183,9 @@ export function renderHistoryList() {
                     if (!isShow) { menu.classList.add('show'); const card = this.closest('.glass-accordion'); if(card) card.classList.add('elevated-zindex'); }
                 ">⋮ 操作</button>
                 <div class="dropdown-menu">
-                    <div class="dropdown-item add-remark-log-btn" data-index="${index}">💬 添加/修改补述</div>
-                    <div class="dropdown-item edit-log-btn" data-index="${index}">✏️ 编辑</div>
-                    <div class="dropdown-item danger del-log-btn" data-index="${index}">🗑️ 删除记录</div>
+                    <div class="dropdown-item add-remark-log-btn" data-id="${log.id}">💬 添加/修改补述</div>
+                    <div class="dropdown-item edit-log-btn" data-id="${log.id}">✏️ 编辑</div>
+                    <div class="dropdown-item danger del-log-btn" data-id="${log.id}">🗑️ 删除记录</div>
                 </div>
             </div>
           </div>
@@ -267,80 +200,59 @@ export function renderHistoryList() {
     document.querySelectorAll('.elevated-zindex').forEach(el => el.classList.remove('elevated-zindex'));
   };
 
+  // ✏️ 编辑流水与强大的无感跨天移动
   document.querySelectorAll('.edit-log-btn').forEach(btn => {
       btn.onclick = (e) => {
           closeMenus();
-          const idx = e.target.getAttribute('data-index'); 
-          const log = todayLogs[idx];
-          
-          // 获取当前主题
+          const id = parseInt(e.target.getAttribute('data-id')); 
+          const log = todayLogs.find(l => l.id === id);
           const currentTheme = (appData.settings && appData.settings.theme === 'light') ? 'theme-light-modal' : 'theme-dark-modal';
 
           openUniversalEditModal("✏️ 编辑流水与标签", log, {
-              type: 'log',           // 告诉工厂这是流水，需要时间字段
-              dateStr: todayStr,     // 传入今天的日期
+              type: 'log',           
+              dateStr: todayStr,     
               themeClass: currentTheme,
               
-              // ⏪ 撤销待办逻辑 (完全不用管 HTML，只写业务)
+              // ⏪ 撤销已完成待办
               onRestore: async (cleanText) => {
                   const taskName = log.linked_todo || cleanText;
                   let existingTodo = appData.todos.find(t => t.task === taskName && t.done);
+                  
                   if (existingTodo) {
-                      existingTodo.done = false; existingTodo.completed_at = "";
+                      await dbExecute("UPDATE todos SET done=?, completed_at=? WHERE id=?", [false, "", existingTodo.id]);
                   } else {
-                      appData.todos.push({
-                          task: taskName, done: false, tag: log.tag, sub_tag: log.sub_tag,
-                          detail: log.detail, remark: log.remark, deadline: log.deadline
-                      });
+                      await dbExecute("INSERT INTO todos (task, done, tag, sub_tag, detail, remark, deadline, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", [taskName, false, log.tag, log.sub_tag, log.detail, log.remark, log.deadline, ""]);
                   }
-                  // 从今日流水中抹除
-                  todayLogs.splice(idx, 1);
-                  if (todayLogs.length === 0) delete appData.logs[todayStr];
+                  // 从流水中彻底抹除
+                  await dbExecute("DELETE FROM logs WHERE id=?", [log.id]);
 
-                  await saveData();
+                  await loadData();
                   document.getElementById('global-modal-overlay').style.display = 'none';
                   renderHistoryList();
                   import('./todo.js').then(m => m.renderTodoList()); // 同步右侧待办
               },
               
-              // 💾 保存逻辑 (包含跨天移动数组)
+              // 💾 保存流水修改 (极其优雅的 1 句 SQL 解决跨天移动难题)
               onSave: async (updatedData) => {
-                  log.text = updatedData.text;
-                  log.detail = updatedData.detail;
-                  log.deadline = updatedData.deadline;
-                  log.tag = updatedData.tag;
-                  log.sub_tag = updatedData.sub_tag;
-
-                  // 🌟 核心区别：处理跨天逻辑
-                  if (updatedData.newDateStr !== todayStr) {
-                      log.time = updatedData.newTimeStr;
-                      // 1. 从今天删掉
-                      todayLogs.splice(idx, 1);
-                      if (todayLogs.length === 0) delete appData.logs[todayStr];
-                      
-                      // 2. 塞入新的一天
-                      if (!appData.logs[updatedData.newDateStr]) appData.logs[updatedData.newDateStr] = [];
-                      appData.logs[updatedData.newDateStr].push(log);
-                      appData.logs[updatedData.newDateStr].sort((a,b) => b.time.localeCompare(a.time));
-                  } else {
-                      log.time = updatedData.newTimeStr;
-                      todayLogs.sort((a,b) => b.time.localeCompare(a.time));
-                  }
-
-                  await saveData(); 
+                  await dbExecute(
+                      "UPDATE logs SET date=?, time=?, text=?, detail=?, deadline=?, tag=?, sub_tag=? WHERE id=?",
+                      [updatedData.newDateStr, updatedData.newTimeStr, updatedData.text, updatedData.detail, updatedData.deadline, updatedData.tag, updatedData.sub_tag, log.id]
+                  );
+                  await loadData(); 
                   renderHistoryList();
                   if(window.renderLogTags) window.renderLogTags();
-                  return true; // 告诉弹窗操作成功，可以关闭
+                  return true; 
               }
           });
       };
   });
 
+  // 💬 修改补述
   document.querySelectorAll('.add-remark-log-btn').forEach(btn => {
     btn.onclick = (e) => {
         closeMenus();
-        const idx = e.target.getAttribute('data-index'); 
-        const log = todayLogs[idx];
+        const id = parseInt(e.target.getAttribute('data-id')); 
+        const log = todayLogs.find(l => l.id === id);
         
         window.showModal("💬 流水记录补述与复盘", `
             <div class="form-group">
@@ -348,22 +260,22 @@ export function renderHistoryList() {
                 <textarea id="m-log-remark" class="hero-textarea" style="margin-top:10px; min-height: 120px;">${log.remark || ''}</textarea>
             </div>
         `, body => body.querySelector('#m-log-remark').focus(), async (body) => {
-            log.remark = body.querySelector('#m-log-remark').value.trim();
-            await saveData(); 
-            renderHistoryList();
+            const remark = body.querySelector('#m-log-remark').value.trim();
+            await dbExecute("UPDATE logs SET remark=? WHERE id=?", [remark, log.id]);
+            await loadData(); renderHistoryList();
         });
     };
   });
 
+  // 🗑️ 删除流水
   document.querySelectorAll('.del-log-btn').forEach(btn => {
     btn.onclick = async (e) => {
       closeMenus();
-      const idx = e.target.getAttribute('data-index');
+      const id = parseInt(e.target.getAttribute('data-id'));
       
       window.showModal("⚠️ 删除流水记录", `<div style="font-size: 15px; color: var(--text-main);">确定要永久删除这条流水记录吗？操作不可逆。</div>`, null, async () => {
-          todayLogs.splice(idx, 1); 
-          if (todayLogs.length === 0) delete appData.logs[todayStr];
-          await saveData(); renderHistoryList();
+          await dbExecute("DELETE FROM logs WHERE id=?", [id]);
+          await loadData(); renderHistoryList();
       }, { danger: true });
     };
   });

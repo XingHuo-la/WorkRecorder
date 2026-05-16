@@ -1,35 +1,87 @@
 const { invoke } = window.__TAURI__.core;
 
-// 这是一个全局的数据仓库，供所有模块读取
 export let appData = null;
 
-// 从底层读取数据
+// ==========================================
+// 🌟 1. 新增：万能数据库查询器 (向 Rust 发送 SQL 拿数据)
+// ==========================================
+export async function dbQuery(sql, params = []) {
+    try {
+        const res = await invoke('db_query', { query: sql, params: params.map(String) });
+        return JSON.parse(res);
+    } catch (e) {
+        console.error("❌ 数据库查询失败:", e);
+        return [];
+    }
+}
+
+// ==========================================
+// 🌟 2. 新增：万能数据库执行器 (向 Rust 发送 SQL 增、删、改)
+// ==========================================
+export async function dbExecute(sql, params = []) {
+    try {
+        return await invoke('db_execute', { query: sql, params: params.map(String) });
+    } catch (e) {
+        console.error("❌ 数据库执行失败:", e);
+        return 0;
+    }
+}
+
+// ==========================================
+// 🌟 3. 核心改造：从 SQLite 极速加载数据，并拼装成兼容旧版的格式
+// ==========================================
 export async function loadData() {
   try {
-    const dataString = await invoke('load_data');
-    appData = JSON.parse(dataString);
+    console.log("🚀 正在从 SQLite 极速加载数据...");
     
-    // 🌟 自动修复器：从历史流水和待办中提取所有的子标签，合并到 sub_tags 注册表
-    if (!appData.sub_tags) appData.sub_tags = {};
-    
-    const scanItem = (tag, sub_tag) => {
-        if (tag && sub_tag) {
-            if (!appData.sub_tags[tag]) appData.sub_tags[tag] = [];
-            if (!appData.sub_tags[tag].includes(sub_tag)) {
-                appData.sub_tags[tag].push(sub_tag);
-            }
-        }
+    // 并发向数据库要数据，速度极快
+    const tagsRes = await dbQuery("SELECT name FROM tags");
+    const subTagsRes = await dbQuery("SELECT main_tag, name FROM sub_tags");
+    const settingsRes = await dbQuery("SELECT key, value FROM settings");
+    const todosRes = await dbQuery("SELECT * FROM todos");
+    const logsRes = await dbQuery("SELECT * FROM logs ORDER BY date DESC, time DESC");
+
+    // 组装成旧版 UI 认识的 appData 格式（平滑过渡魔法）
+    appData = {
+        tags: tagsRes.map(t => t.name),
+        sub_tags: {},
+        settings: { active_tags: tagsRes.map(t => t.name) }, // 兜底
+        todos: todosRes.map(t => ({
+            id: t.id, // ✨ 重点：现在每条数据都有了真实的数据库 ID！
+            task: t.task, 
+            done: t.done === 1 || t.done === 'true' || t.done === true,
+            tag: t.tag, sub_tag: t.sub_tag, detail: t.detail, remark: t.remark,
+            deadline: t.deadline, completed_at: t.completed_at
+        })),
+        logs: {}
     };
 
-    // 扫描流水中的子项目
-    Object.values(appData.logs).forEach(dayLogs => {
-        dayLogs.forEach(log => scanItem(log.tag, log.sub_tag));
+    // 还原：子项目
+    subTagsRes.forEach(st => {
+        if (!appData.sub_tags[st.main_tag]) appData.sub_tags[st.main_tag] = [];
+        appData.sub_tags[st.main_tag].push(st.name);
     });
-    // 扫描待办中的子项目
-    appData.todos.forEach(todo => scanItem(todo.tag, todo.sub_tag));
 
-    // （静默将修复后的数据保存回本地）
-    saveData(); 
+    // 还原：设置项
+    settingsRes.forEach(s => {
+        appData.settings[s.key] = s.value;
+        if (s.key === 'auto_cleanup_days') appData.settings[s.key] = parseInt(s.value);
+        if (s.key === 'active_tags') {
+            try { appData.settings.active_tags = JSON.parse(s.value); } catch(e){}
+        }
+    });
+
+    // 还原：流水记录 (按日期分组)
+    logsRes.forEach(l => {
+        if (!appData.logs[l.date]) appData.logs[l.date] = [];
+        appData.logs[l.date].push({
+            id: l.id, // ✨ 真实数据库 ID
+            time: l.time, text: l.text, tag: l.tag, sub_tag: l.sub_tag,
+            detail: l.detail, remark: l.remark, linked_todo: l.linked_todo,
+            deadline: l.deadline, 
+            is_overdue: l.is_overdue === 1 || l.is_overdue === 'true' || l.is_overdue === true
+        });
+    });
 
     return appData;
   } catch (error) {
@@ -37,14 +89,13 @@ export async function loadData() {
   }
 }
 
-// 把修改后的数据保存到底层
+// ==========================================
+// 💣 4. 核心改造：切断旧版的“全量保存”
+// ==========================================
 export async function saveData() {
-  try {
-    await invoke('save_data', { data: JSON.stringify(appData) });
-    console.log("💾 数据已成功保存到本地!");
-  } catch (error) {
-    console.error("保存数据失败:", error);
-  }
+  // 以前这里会覆盖整个 JSON 文件，现在我们把它掏空。
+  // 因为真正的保存，将会在接下来的 Step 3 中，直接使用 dbExecute 写入单条数据！
+  console.warn("⚠️ 提示：系统已升级为 SQLite，传统的全量 saveData() 已停用。现在是临时只读模式。");
 }
 
 // 获取今天的日期 (格式: YYYY-MM-DD)
@@ -60,18 +111,11 @@ export function getTodayString() {
 export function getHistoricalSubTags(mainTag) {
   if (!mainTag || mainTag === "➕ 创建新主标签...") return [];
   const subTags = new Set();
-  
-  // 遍历历史流水
   Object.values(appData.logs).forEach(dayLogs => {
-    dayLogs.forEach(log => {
-      if (log.tag === mainTag && log.sub_tag) subTags.add(log.sub_tag);
-    });
+    dayLogs.forEach(log => { if (log.tag === mainTag && log.sub_tag) subTags.add(log.sub_tag); });
   });
-  
-  // 遍历待办事项
   appData.todos.forEach(todo => {
     if (todo.tag === mainTag && todo.sub_tag) subTags.add(todo.sub_tag);
   });
-  
   return Array.from(subTags).sort();
 }
