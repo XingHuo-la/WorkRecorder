@@ -1,5 +1,6 @@
 import { appData, dbExecute, loadData } from './data.js';
 import { openUniversalEditModal } from './formUtils.js';
+import { escapeHtml, textWithLineBreaks } from './htmlUtils.js';
 
 const mainFilter = document.getElementById('timeline-main-filter');
 const subFilter = document.getElementById('timeline-sub-filter');
@@ -7,7 +8,10 @@ const timelineContainer = document.getElementById('timeline-container');
 
 export function initTimelineModule() {
   mainFilter.innerHTML = '<option value="all">🌐 (全部主分类)</option>';
-  appData.tags.forEach(tag => { mainFilter.innerHTML += `<option value="${tag}">${tag}</option>`; });
+  appData.tags.forEach(tag => {
+    const safeTag = escapeHtml(tag);
+    mainFilter.innerHTML += `<option value="${safeTag}">${safeTag}</option>`;
+  });
 
   mainFilter.addEventListener('change', () => { updateSubFilters(); renderTimeline(); });
   subFilter.addEventListener('change', renderTimeline);
@@ -24,7 +28,10 @@ function updateSubFilters() {
     dayLogs.forEach(log => { if (log.tag === selectedMain && log.sub_tag) subTags.add(log.sub_tag); });
   });
 
-  Array.from(subTags).sort().forEach(sub => { subFilter.innerHTML += `<option value="${sub}">${sub}</option>`; });
+  Array.from(subTags).sort().forEach(sub => {
+    const safeSub = escapeHtml(sub);
+    subFilter.innerHTML += `<option value="${safeSub}">${safeSub}</option>`;
+  });
 }
 
 export function renderTimeline() {
@@ -49,24 +56,30 @@ export function renderTimeline() {
     filteredLogs.forEach(log => {
       const isCompletedTodo = !!log.linked_todo || log.text.includes("完成待办");
       const themeClass = isCompletedTodo ? "border-success" : "border-primary";
-      const detailText = log.detail ? log.detail : "(未填写详细说明)";
+      const detailText = log.detail ? textWithLineBreaks(log.detail) : "(未填写详细说明)";
+      const safeDate = escapeHtml(dateStr);
+      const safeTime = escapeHtml(log.time || "");
+      const safeTag = escapeHtml(log.tag);
+      const safeSubTag = escapeHtml(log.sub_tag);
+      const safeDeadline = escapeHtml(log.deadline);
       
-      let subTagHtml = log.sub_tag ? `<span style="background: var(--overlay-light); padding: 2px 8px; border-radius: 12px; font-size: 12px; margin-left: 10px;">📁 ${log.sub_tag}</span>` : "";
-      let deadlineHtml = log.deadline ? `<span style="margin-left: 10px; font-weight: normal; font-size: 12px; color: var(--color-primary); background: rgba(var(--color-primary-rgb), 0.15); border: 1px solid rgba(var(--color-primary-rgb), 0.5); padding: 2px 6px; border-radius: 4px;">📅 截至 ${log.deadline}</span>` : "";
+      let subTagHtml = log.sub_tag ? `<span style="background: var(--overlay-light); padding: 2px 8px; border-radius: 12px; font-size: 12px; margin-left: 10px;">📁 ${safeSubTag}</span>` : "";
+      let deadlineHtml = log.deadline ? `<span style="margin-left: 10px; font-weight: normal; font-size: 12px; color: var(--color-primary); background: rgba(var(--color-primary-rgb), 0.15); border: 1px solid rgba(var(--color-primary-rgb), 0.5); padding: 2px 6px; border-radius: 4px;">📅 截至 ${safeDeadline}</span>` : "";
       const detailBadge = log.detail ? `<span style="background: var(--overlay-light); color: var(--text-muted); border: 1px solid var(--border-medium); padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-left: 8px; white-space: nowrap;">📝 详情</span>` : "";
       const remarkBadge = log.remark ? `<span style="background: rgba(var(--color-warning-rgb), 0.15); color: var(--color-warning); border: 1px solid rgba(var(--color-warning-rgb), 0.3); padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-left: 8px; white-space: nowrap;">💡 有补述</span>` : "";
       let displayText = log.text; if (displayText.startsWith("完成待办: ")) displayText = displayText.replace("完成待办: ", "").trim();
+      const safeDisplayText = escapeHtml(displayText);
 
       logsHtml += `
         <details class="glass-accordion ${themeClass}">
           <summary class="log-summary">
-            <span class="log-time">${log.time.substring(0, 5)}</span>
-            <span class="log-text"><b>[${log.tag}]</b> ${displayText} ${subTagHtml} ${deadlineHtml} ${detailBadge} ${remarkBadge}</span>
+            <span class="log-time">${safeTime.substring(0, 5)}</span>
+            <span class="log-text"><b>[${safeTag}]</b> ${safeDisplayText} ${subTagHtml} ${deadlineHtml} ${detailBadge} ${remarkBadge}</span>
           </summary>
           <div class="expanded-content">
-            <div style="margin-bottom: 8px; font-size: 12px; color: gray;">⏱️ 记录于: ${dateStr} ${log.time}</div>
+            <div style="margin-bottom: 8px; font-size: 12px; color: gray;">⏱️ 记录于: ${safeDate} ${safeTime}</div>
             <div style="margin-bottom: 15px;">${detailText}</div>
-            ${log.remark ? `<div class="item-remark">${log.remark.replace(/\n/g, '<br>')}</div>` : ""}
+            ${log.remark ? `<div class="item-remark">${textWithLineBreaks(log.remark)}</div>` : ""}
             
             <div style="display: flex; gap: 10px; border-top: 1px dashed rgba(255,255,255,0.1); padding-top: 10px; justify-content: flex-end;">
               <div class="dropdown-wrapper" onclick="event.preventDefault(); event.stopPropagation();">
@@ -77,9 +90,9 @@ export function renderTimeline() {
                       if (!isShow) { menu.classList.add('show'); const card = this.closest('.glass-accordion'); if(card) card.classList.add('elevated-zindex'); }
                   ">⋮ 操作</button>
                   <div class="dropdown-menu">
-                      <div class="dropdown-item add-remark-tl-log-btn" data-date="${dateStr}" data-id="${log.id}">💬 添加/修改补述</div>
-                      <div class="dropdown-item edit-tl-log-btn" data-date="${dateStr}" data-id="${log.id}">✏️ 编辑记录</div>
-                      <div class="dropdown-item danger del-tl-log-btn" data-date="${dateStr}" data-id="${log.id}">🗑️ 删除记录</div>
+                      <div class="dropdown-item add-remark-tl-log-btn" data-date="${safeDate}" data-id="${log.id}">💬 添加/修改补述</div>
+                      <div class="dropdown-item edit-tl-log-btn" data-date="${safeDate}" data-id="${log.id}">✏️ 编辑记录</div>
+                      <div class="dropdown-item danger del-tl-log-btn" data-date="${safeDate}" data-id="${log.id}">🗑️ 删除记录</div>
                   </div>
               </div>
             </div>
@@ -94,7 +107,7 @@ export function renderTimeline() {
         <details open style="margin-left: 10px;">
           <summary class="timeline-date" style="cursor: pointer; list-style: none; outline: none; display: flex; align-items: center; gap: 10px;">
             <span class="date-arrow" style="font-size: 12px; color: var(--text-muted); opacity: 0.7; display: inline-block;">▼</span>
-            🗓️ ${dateStr} <span style="font-size: 13px; font-weight: normal; color: #94A3B8;">(共 ${filteredLogs.length} 项)</span>
+            🗓️ ${escapeHtml(dateStr)} <span style="font-size: 13px; font-weight: normal; color: #94A3B8;">(共 ${filteredLogs.length} 项)</span>
           </summary>
           <div style="margin-top: 15px;">${logsHtml}</div>
         </details>
@@ -105,7 +118,7 @@ export function renderTimeline() {
   totalHtml += '</div>';
 
   if (!hasData) {
-    timelineContainer.innerHTML = "<p style='color: gray;'>📭 当前筛选条件下暂无记录。</p>";
+    timelineContainer.innerHTML = "<div class='empty-state'><strong>没有匹配的记录</strong><span>调整筛选条件，或先在工作台添加流水记录。</span></div>";
   } else {
     timelineContainer.innerHTML = totalHtml;
     
@@ -132,7 +145,7 @@ export function renderTimeline() {
         
         window.showModal(`💬 时间轴记录补述 (${dateStr})`, `
             <div class="form-group"><label class="field-label" style="color:var(--color-primary);">💡 补充细节、灵感或跨期复盘：</label>
-            <textarea id="m-tl-log-remark" class="hero-textarea" style="margin-top:10px; min-height: 120px;">${log.remark || ''}</textarea></div>
+            <textarea id="m-tl-log-remark" class="hero-textarea" style="margin-top:10px; min-height: 120px;">${escapeHtml(log.remark)}</textarea></div>
         `, body => body.querySelector('#m-tl-log-remark').focus(), async (body) => {
             const remark = body.querySelector('#m-tl-log-remark').value.trim();
             await dbExecute("UPDATE logs SET remark=? WHERE id=?", [remark, id]);

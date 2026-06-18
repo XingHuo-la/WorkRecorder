@@ -51,7 +51,15 @@ export async function loadData() {
             task: t.task, 
             done: t.done === 1 || t.done === 'true' || t.done === true,
             tag: t.tag, sub_tag: t.sub_tag, detail: t.detail, remark: t.remark,
-            deadline: t.deadline, completed_at: t.completed_at
+            deadline: t.deadline,
+            start_at: t.start_at || "",
+            end_at: t.end_at || t.deadline || "",
+            parent_id: (() => {
+                const parentId = Number(t.parent_id);
+                return Number.isFinite(parentId) && parentId > 0 ? parentId : null;
+            })(),
+            sort_order: Number(t.sort_order || 0),
+            completed_at: t.completed_at
         })),
         logs: {}
     };

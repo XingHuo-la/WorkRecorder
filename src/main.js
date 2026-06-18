@@ -68,6 +68,7 @@ async function initApp() {
     }
   }, true); // 注意这里的 true，开启捕获阶段监听内部所有 div 的滚动
   setupTitlebar();
+  updateWorkspaceSummary();
 }
 
 function setupTitlebar() {
@@ -146,6 +147,8 @@ window.showModal = function(title, htmlContent, onReady, onConfirm, options = {}
 
 function setupRouting() {
   const landingView = document.getElementById('landing-view'); const workspaceView = document.getElementById('workspace-view');
+  landingView.style.display = 'none';
+  workspaceView.style.display = 'flex';
   document.getElementById('enter-btn').addEventListener('click', () => { landingView.style.display = 'none'; workspaceView.style.display = 'flex'; });
   document.getElementById('back-btn').addEventListener('click', () => { workspaceView.style.display = 'none'; landingView.style.display = 'flex'; });
   const navBtns = [
@@ -157,15 +160,52 @@ function setupRouting() {
     item.btn.addEventListener('click', () => {
       navBtns.forEach(nav => { nav.view.style.display = 'none'; nav.btn.classList.remove('active'); });
       item.view.style.display = 'block'; item.btn.classList.add('active');
+      localStorage.setItem('workRecorder:lastSubview', item.btn.id);
       if (item.btn.id === 'nav-timeline') renderTimeline();
     });
   });
+
+  const lastSubview = localStorage.getItem('workRecorder:lastSubview');
+  const targetNav = navBtns.find(item => item.btn.id === lastSubview);
+  if (targetNav) targetNav.btn.click();
 }
 
 function setupTabs() {
   const btnLog = document.getElementById('tab-log-btn'); const btnTodo = document.getElementById('tab-todo-btn');
   const panelLog = document.getElementById('panel-log'); const panelTodo = document.getElementById('panel-todo');
-  btnLog.addEventListener('click', () => { btnLog.classList.add('active'); btnTodo.classList.remove('active'); panelLog.style.display = 'block'; panelTodo.style.display = 'none'; });
-  btnTodo.addEventListener('click', () => { btnTodo.classList.add('active'); btnLog.classList.remove('active'); panelTodo.style.display = 'block'; panelLog.style.display = 'none'; });
+  const setActiveTab = (tab) => {
+    const isTodo = tab === 'todo';
+    btnLog.classList.toggle('active', !isTodo);
+    btnTodo.classList.toggle('active', isTodo);
+    panelLog.style.display = isTodo ? 'none' : 'block';
+    panelTodo.style.display = isTodo ? 'block' : 'none';
+    localStorage.setItem('workRecorder:lastInputTab', tab);
+  };
+
+  btnLog.addEventListener('click', () => setActiveTab('log'));
+  btnTodo.addEventListener('click', () => setActiveTab('todo'));
+  setActiveTab(localStorage.getItem('workRecorder:lastInputTab') === 'todo' ? 'todo' : 'log');
 }
+
+export function updateWorkspaceSummary() {
+  if (!appData) return;
+
+  const today = new Date();
+  const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+  const setText = (id, value) => {
+    const el = document.getElementById(id);
+    if (el) el.innerText = value;
+  };
+
+  const pendingCount = appData.todos.filter(todo => !todo.done).length;
+  const completedCount = appData.todos.filter(todo => todo.done).length;
+  const todayCount = (appData.logs[todayStr] || []).length;
+  const tagCount = (appData.settings?.active_tags || appData.tags || []).length;
+
+  setText('summary-pending-count', pendingCount);
+  setText('summary-completed-count', completedCount);
+  setText('summary-today-count', todayCount);
+  setText('summary-tag-count', tagCount);
+}
+window.updateWorkspaceSummary = updateWorkspaceSummary;
 window.addEventListener("DOMContentLoaded", initApp);

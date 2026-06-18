@@ -1,4 +1,5 @@
 import { appData, loadData, dbExecute, dbQuery } from './data.js'; 
+import { escapeHtml, escapeInlineJsString } from './htmlUtils.js';
 const check = window.__TAURI__.updater?.check;
 const relaunch = window.__TAURI__.process?.relaunch;
 const { invoke } = window.__TAURI__.core || window.__TAURI__;
@@ -97,16 +98,18 @@ export function initSettingsModule() {
           allThemes.forEach(t => {
               const isBuiltin = t.is_builtin === 1 || t.is_builtin === 'true' || t.is_builtin === true;
               const isActive = t.id === currentId;
+              const safeId = escapeInlineJsString(t.id);
+              const safeName = escapeHtml(t.name);
               
               const activeBadge = isActive ? `<span style="font-size:12px; background:var(--color-success); color:#fff; padding:2px 6px; border-radius:4px; margin-left:8px;">当前使用</span>` : '';
-              const delBtn = !isBuiltin ? `<button class="icon-btn danger" style="margin:0; padding:4px 8px; font-size:12px;" onclick="event.stopPropagation(); window.deleteCustomTheme('${t.id}')">🗑️ 删除</button>` : '';
+              const delBtn = !isBuiltin ? `<button class="icon-btn danger" style="margin:0; padding:4px 8px; font-size:12px;" onclick="event.stopPropagation(); window.deleteCustomTheme('${safeId}')">🗑️ 删除</button>` : '';
               
               const cardStyle = isActive ? `border: 1px solid var(--color-primary); background: rgba(var(--color-primary-rgb), 0.05);` : `border: 1px solid var(--border-light); background: var(--overlay-light); cursor:pointer;`;
 
               listContainer.innerHTML += `
-                  <div class="theme-list-item" style="display:flex; justify-content:space-between; align-items:center; padding:12px 15px; border-radius:8px; margin-bottom:10px; transition:all 0.2s; ${cardStyle}" onclick="window.applySelectedTheme('${t.id}')">
+                  <div class="theme-list-item" style="display:flex; justify-content:space-between; align-items:center; padding:12px 15px; border-radius:8px; margin-bottom:10px; transition:all 0.2s; ${cardStyle}" onclick="window.applySelectedTheme('${safeId}')">
                       <div style="display:flex; align-items:center;">
-                          <span style="font-size:14px; color:var(--text-main); font-weight:bold;">${isBuiltin ? '📦' : '🎨'} ${t.name}</span>
+                          <span style="font-size:14px; color:var(--text-main); font-weight:bold;">${isBuiltin ? '📦' : '🎨'} ${safeName}</span>
                           ${activeBadge}
                       </div>
                       <div>
@@ -330,15 +333,16 @@ async function renderSettingsTags() {
   });
 
   const createTagCard = (mainTag, isActive) => {
+    const safeMainTag = escapeHtml(mainTag);
     const details = document.createElement('details'); details.className = 'glass-accordion'; details.style.marginBottom = '8px';
     if (searchTerm) details.open = true;
     
     const summary = document.createElement('summary'); summary.className = 'log-summary'; summary.style.display = 'flex'; summary.style.justifyContent = 'space-between';
     summary.innerHTML = `
-      <div style="display:flex; align-items:center;"><span class="log-text" style="font-size: 15px; font-weight: bold;">🏷️ ${mainTag}</span></div>
+      <div style="display:flex; align-items:center;"><span class="log-text" style="font-size: 15px; font-weight: bold;">🏷️ ${safeMainTag}</span></div>
       <div style="display:flex; align-items:center; gap: 15px;" onclick="event.stopPropagation();">
          <label style="display:flex; align-items:center; gap:5px; cursor:pointer; color: ${isActive ? 'var(--color-success)' : 'var(--text-muted)'};">
-            <input type="checkbox" class="active-tag-checkbox" data-tag="${mainTag}" ${isActive ? 'checked' : ''}>
+            <input type="checkbox" class="active-tag-checkbox" data-tag="${safeMainTag}" ${isActive ? 'checked' : ''}>
             ${isActive ? '已活跃' : '设为活跃'}
          </label>
          <div class="dropdown-wrapper" onclick="event.preventDefault(); event.stopPropagation();">
@@ -365,7 +369,8 @@ async function renderSettingsTags() {
     if (subs.length === 0) subPool.innerHTML = "<span style='color:gray; font-size:12px;'>(目前暂无专属子项目)</span>";
     
     subs.forEach((sub, subIdx) => {
-      let displaySub = sub; if (searchTerm && sub.toLowerCase().includes(searchTerm)) displaySub = `<span style="color:var(--color-primary); font-weight:bold;">${sub}</span>`; 
+      const safeSub = escapeHtml(sub);
+      let displaySub = safeSub; if (searchTerm && sub.toLowerCase().includes(searchTerm)) displaySub = `<span style="color:var(--color-primary); font-weight:bold;">${safeSub}</span>`; 
       const subBadge = document.createElement('div');
       subBadge.style.cssText = "background: rgba(255,255,255,0.1); padding: 4px 10px; border-radius: 12px; font-size: 13px; display: flex; align-items: center; gap: 2px;";
       subBadge.innerHTML = `📁 ${displaySub} 
@@ -398,7 +403,7 @@ async function renderSettingsTags() {
 
     summary.querySelector('[data-action="add-sub"]').onclick = () => {
         closeMenus();
-        window.showModal(`➕ 为 "${mainTag}" 添加子项目`, `
+        window.showModal(`➕ 为 "${safeMainTag}" 添加子项目`, `
             <div class="form-group"><label class="field-label">新子项目名称</label><input type="text" id="m-sub-name" class="hero-input" placeholder="输入名称..."></div>
         `, body => body.querySelector('#m-sub-name').focus(), async (body) => {
             const val = body.querySelector('#m-sub-name').value.trim();
@@ -414,7 +419,7 @@ async function renderSettingsTags() {
     summary.querySelector('[data-action="edit-main"]').onclick = () => {
       closeMenus();
       window.showModal("✏️ 修改主分类", `
-          <div class="form-group"><label class="field-label">主分类名称</label><input type="text" id="m-main-name" class="hero-input" value="${mainTag}"></div>
+          <div class="form-group"><label class="field-label">主分类名称</label><input type="text" id="m-main-name" class="hero-input" value="${safeMainTag}"></div>
       `, body => body.querySelector('#m-main-name').focus(), async (body) => {
           const newName = body.querySelector('#m-main-name').value.trim();
           if (!newName || newName === mainTag) return true;
@@ -432,7 +437,7 @@ async function renderSettingsTags() {
     summary.querySelector('[data-action="del-main"]').onclick = async () => {
       closeMenus();
       if (appData.tags.length <= 1) return alert("⚠️ 至少保留一个主分类！");
-      window.showModal("⚠️ 确认删除主分类", `<div style="font-size:15px;color:var(--text-main);">确定要删除主分类 <b>"${mainTag}"</b> 吗？<br><br><span style="color:var(--text-muted);font-size:13px;">⚠️ 注意：此操作将同时解绑其下方所有的子项目。但已经产生的历史流水记录不受影响。</span></div>`, null, async () => {
+      window.showModal("⚠️ 确认删除主分类", `<div style="font-size:15px;color:var(--text-main);">确定要删除主分类 <b>"${safeMainTag}"</b> 吗？<br><br><span style="color:var(--text-muted);font-size:13px;">⚠️ 注意：此操作将同时解绑其下方所有的子项目。但已经产生的历史流水记录不受影响。</span></div>`, null, async () => {
           await dbExecute("DELETE FROM tags WHERE name=?", [mainTag]);
           await dbExecute("DELETE FROM sub_tags WHERE main_tag=?", [mainTag]);
           await loadData(); renderSettingsTags(); updateAllDropdowns();
@@ -443,8 +448,9 @@ async function renderSettingsTags() {
       btn.onclick = () => {
         closeMenus();
         const subIdx = btn.getAttribute('data-subidx'); const oldSub = appData.sub_tags[mainTag][subIdx];
+        const safeOldSub = escapeHtml(oldSub);
         window.showModal("✏️ 修改子项目", `
-            <div class="form-group"><label class="field-label">子项目名称</label><input type="text" id="m-sub-edit" class="hero-input" value="${oldSub}"></div>
+            <div class="form-group"><label class="field-label">子项目名称</label><input type="text" id="m-sub-edit" class="hero-input" value="${safeOldSub}"></div>
         `, body => body.querySelector('#m-sub-edit').focus(), async (body) => {
             const newName = body.querySelector('#m-sub-edit').value.trim();
             if (!newName || newName === oldSub) return true;
@@ -463,7 +469,7 @@ async function renderSettingsTags() {
       btn.onclick = async () => { 
         closeMenus(); 
         const subIdx = btn.getAttribute('data-subidx'); const subName = appData.sub_tags[mainTag][subIdx];
-        window.showModal("⚠️ 删除子项目", `<div style="font-size:15px;color:var(--text-main);">确定要删除子项目 <b>"${subName}"</b> 吗？</div>`, null, async () => {
+        window.showModal("⚠️ 删除子项目", `<div style="font-size:15px;color:var(--text-main);">确定要删除子项目 <b>"${escapeHtml(subName)}"</b> 吗？</div>`, null, async () => {
             await dbExecute("DELETE FROM sub_tags WHERE main_tag=? AND name=?", [mainTag, subName]);
             await loadData(); renderSettingsTags(); updateAllDropdowns(); 
         }, { danger: true });
@@ -502,4 +508,5 @@ async function renderSettingsTags() {
 function updateAllDropdowns() { 
   if (typeof window.renderLogTags === 'function') window.renderLogTags(); 
   if (typeof window.renderTodoTags === 'function') window.renderTodoTags(); 
+  if (typeof window.updateWorkspaceSummary === 'function') window.updateWorkspaceSummary();
 }

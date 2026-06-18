@@ -1,15 +1,5 @@
-import { appData } from './data.js';
-
-// 安全转义函数，防止用户输入的双引号或尖括号破坏弹窗结构
-const escapeHtml = (str) => {
-    if (!str) return '';
-    return String(str)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
-};
+import { appData, dbExecute } from './data.js';
+import { escapeHtml } from './htmlUtils.js';
 
 /**
  * 🌟 通用高阶表单弹窗构造器 (支持多主题与全模块适配)
@@ -35,13 +25,19 @@ export function openUniversalEditModal(title, item, options) {
     // 🌟 新增：对清洗后的文本进行安全转义
     const safeText = escapeHtml(cleanText);
     const safeDetail = escapeHtml(item.detail);
+    const safeStartAt = escapeHtml(item.start_at || '');
+    const safeEndAt = escapeHtml(item.end_at || item.deadline || '');
 
     // 2. 动态生成特定模块的 HTML 组件
     const restoreBtnHtml = (isCompletedTodo && onRestore) ?
         `<button type="button" id="u-restore-btn" style="width:100%; margin-bottom: 20px; padding: 10px; border-radius: 8px; font-size: 14px; font-weight: bold; cursor: pointer; background: rgba(250, 204, 21, 0.15); color: #facc15; border: 1px dashed rgba(250, 204, 21, 0.4); transition: all 0.2s;">⏪ 撤销完成：从流水中移除，并恢复为未完成待办</button>` : "";
 
     const timeFieldHtml = isLog ? 
-        `<div class="field-col"><label class="field-label">🕒 发生时间</label><input type="text" id="u-item-time" class="datetime-input" style="width:100% !important;" value="${dateStr} ${item.time}"></div>` : "";
+        `<div class="field-col"><label class="field-label">🕒 发生时间</label><input type="text" id="u-item-time" class="datetime-input" style="width:100% !important;" value="${escapeHtml(dateStr)} ${escapeHtml(item.time)}"></div>` : "";
+    const dateFieldsHtml = isLog
+        ? `<div class="field-col"><label class="field-label">📅 截至日期</label><input type="text" id="u-item-deadline" class="datetime-input" style="width:100% !important;" value="${safeEndAt}" placeholder="(点击选择...)"></div>`
+        : `<div class="field-col"><label class="field-label">📅 计划开始</label><input type="text" id="u-item-start" class="datetime-input" style="width:100% !important;" value="${safeStartAt}" placeholder="(可选...)"></div>
+           <div class="field-col"><label class="field-label">📅 计划结束</label><input type="text" id="u-item-deadline" class="datetime-input" style="width:100% !important;" value="${safeEndAt}" placeholder="(可选...)"></div>`;
 
     // 3. 构建核心 HTML 模板 (🌟 注意这里的 value="\${safeText}" 和 textarea 里的 \${safeDetail})
     const formHtml = `
@@ -60,7 +56,7 @@ export function openUniversalEditModal(title, item, options) {
         <div class="form-group"><label class="field-label">📝 详细说明</label><textarea id="u-item-detail" class="hero-textarea">${safeDetail}</textarea></div>
         <div class="form-row">
             ${timeFieldHtml}
-            <div class="field-col"><label class="field-label">📅 截至日期</label><input type="text" id="u-item-deadline" class="datetime-input" style="width:100% !important;" value="${item.deadline || ''}" placeholder="(点击选择...)"></div>
+            ${dateFieldsHtml}
         </div>
     `;
 
@@ -70,13 +66,19 @@ export function openUniversalEditModal(title, item, options) {
         const subSel = body.querySelector('#u-item-sub'); const subNew = body.querySelector('#u-item-sub-new');
         
         // --- 标签联动逻辑提取 ---
-        appData.tags.forEach(t => tagSel.innerHTML += `<option value="${t}" ${t===item.tag?'selected':''}>${t}</option>`);
+        appData.tags.forEach(t => {
+            const safeTag = escapeHtml(t);
+            tagSel.innerHTML += `<option value="${safeTag}" ${t===item.tag?'selected':''}>${safeTag}</option>`;
+        });
         tagSel.innerHTML += `<option value="NEW">➕ 新建主分类...</option>`;
         
         const updateSubs = () => {
             subSel.innerHTML = '<option value="">(无子项目)</option>';
             const mTag = tagSel.value === 'NEW' ? tagNew.value.trim() : tagSel.value;
-            if (mTag && appData.sub_tags[mTag]) appData.sub_tags[mTag].forEach(t => subSel.innerHTML += `<option value="${t}" ${t===item.sub_tag?'selected':''}>${t}</option>`);
+            if (mTag && appData.sub_tags[mTag]) appData.sub_tags[mTag].forEach(t => {
+                const safeSub = escapeHtml(t);
+                subSel.innerHTML += `<option value="${safeSub}" ${t===item.sub_tag?'selected':''}>${safeSub}</option>`;
+            });
             subSel.innerHTML += `<option value="NEW">➕ 新建子项目...</option>`;
         }; 
         updateSubs();
@@ -104,6 +106,7 @@ export function openUniversalEditModal(title, item, options) {
             }
         };
         if (isLog) flatpickr(body.querySelector('#u-item-time'), fpOptions);
+        if (!isLog) flatpickr(body.querySelector('#u-item-start'), fpOptions);
         flatpickr(body.querySelector('#u-item-deadline'), fpOptions);
 
     }, async (body) => {
@@ -112,15 +115,23 @@ export function openUniversalEditModal(title, item, options) {
             text: body.querySelector('#u-item-text').value.trim(),
             detail: body.querySelector('#u-item-detail').value.trim(),
             deadline: body.querySelector('#u-item-deadline').value,
+            start_at: isLog ? "" : body.querySelector('#u-item-start').value,
         };
 
         if (!result.text) { alert("⚠️ 核心内容不能为空"); return false; }
+        if (!isLog && result.start_at && result.deadline && new Date(result.start_at) > new Date(result.deadline)) {
+            alert("⚠️ 计划开始时间不能晚于结束时间");
+            return false;
+        }
 
         let finalTag = body.querySelector('#u-item-tag').value;
         if (finalTag === 'NEW') {
             finalTag = body.querySelector('#u-item-tag-new').value.trim();
             if (!finalTag) { alert("⚠️ 主分类不能为空"); return false; }
-            if (!appData.tags.includes(finalTag)) appData.tags.push(finalTag);
+            if (!appData.tags.includes(finalTag)) {
+                await dbExecute("INSERT OR IGNORE INTO tags (name, is_active) VALUES (?, ?)", [finalTag, true]);
+                appData.tags.push(finalTag);
+            }
         }
         result.tag = finalTag;
 
@@ -129,7 +140,10 @@ export function openUniversalEditModal(title, item, options) {
             finalSub = body.querySelector('#u-item-sub-new').value.trim();
             if (finalSub) {
                 if (!appData.sub_tags[finalTag]) appData.sub_tags[finalTag] = [];
-                if (!appData.sub_tags[finalTag].includes(finalSub)) appData.sub_tags[finalTag].push(finalSub);
+                if (!appData.sub_tags[finalTag].includes(finalSub)) {
+                    await dbExecute("INSERT INTO sub_tags (main_tag, name) VALUES (?, ?)", [finalTag, finalSub]);
+                    appData.sub_tags[finalTag].push(finalSub);
+                }
             }
         }
         result.sub_tag = finalSub;

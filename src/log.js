@@ -1,5 +1,6 @@
 import { appData, dbExecute, loadData, getTodayString } from './data.js';
 import { openUniversalEditModal } from './formUtils.js';
+import { escapeHtml, textWithLineBreaks } from './htmlUtils.js';
 
 // ==========================================
 // 📅 全局挂载增强版 Flatpickr (保持你原有的完美配置)
@@ -88,13 +89,19 @@ export function initLogModule() {
 
   window.renderLogTags = () => {
     tagSelect.innerHTML = ''; const activeTags = (appData.settings && appData.settings.active_tags) ? appData.settings.active_tags : appData.tags;
-    activeTags.forEach(t => tagSelect.innerHTML += `<option value="${t}">${t}</option>`);
+    activeTags.forEach(t => {
+      const safeTag = escapeHtml(t);
+      tagSelect.innerHTML += `<option value="${safeTag}">${safeTag}</option>`;
+    });
     tagSelect.innerHTML += `<option value="NEW">➕ 新建主分类...</option>`; window.renderLogSubTags();
   };
   window.renderLogSubTags = () => {
     const mainTag = tagSelect.value === 'NEW' ? tagNewInput.value.trim() : tagSelect.value;
     subSelect.innerHTML = '<option value="">(无子项目)</option>';
-    if (mainTag && appData.sub_tags && appData.sub_tags[mainTag]) appData.sub_tags[mainTag].forEach(t => subSelect.innerHTML += `<option value="${t}">${t}</option>`);
+    if (mainTag && appData.sub_tags && appData.sub_tags[mainTag]) appData.sub_tags[mainTag].forEach(t => {
+      const safeSub = escapeHtml(t);
+      subSelect.innerHTML += `<option value="${safeSub}">${safeSub}</option>`;
+    });
     subSelect.innerHTML += `<option value="NEW">➕ 新建子项目...</option>`;
   };
 
@@ -147,33 +154,39 @@ export function initLogModule() {
 // ==========================================
 export function renderHistoryList() {
   const container = document.getElementById('history-list-container'); if(!container) return; container.innerHTML = ""; 
+  if (typeof window.updateWorkspaceSummary === 'function') window.updateWorkspaceSummary();
   const todayStr = getTodayString(); const todayLogs = appData.logs[todayStr] || [];
 
-  if (todayLogs.length === 0) { container.innerHTML = "<p style='color: gray; font-size: 0.9em;'>今天还没有记录任何事情哦~ 赶紧在顶部记一笔吧！</p>"; return; }
+  if (todayLogs.length === 0) { container.innerHTML = "<div class='empty-state'><strong>今天还没有流水</strong><span>记录一个关键进展，稍后复盘时会更容易找回上下文。</span></div>"; return; }
 
   todayLogs.forEach((log) => {
     const isCompletedTodo = !!log.linked_todo || log.text.includes("完成待办"); 
     const themeClass = isCompletedTodo ? "border-success" : "border-primary";
-    const detailText = log.detail ? log.detail : "(未填写详细说明)";
+    const detailText = log.detail ? textWithLineBreaks(log.detail) : "(未填写详细说明)";
+    const safeTag = escapeHtml(log.tag);
+    const safeSubTag = escapeHtml(log.sub_tag);
+    const safeDeadline = escapeHtml(log.deadline);
+    const safeTime = escapeHtml(log.time || "");
     
     let displayText = log.text;
     if (displayText.startsWith("完成待办: ")) displayText = displayText.replace("完成待办: ", "").trim();
+    const safeDisplayText = escapeHtml(displayText);
 
     let todoBadgeHtml = isCompletedTodo ? `<span style="background: rgba(var(--color-success-rgb), 0.15); color: var(--color-success); padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-right: 8px; border: 1px solid rgba(var(--color-success-rgb), 0.3);">待</span>` : "";
-    let deadlineHtml = log.deadline ? `<span class="todo-deadline" style="margin-left: 10px; font-weight: normal; font-size: 12px; color: var(--color-danger); background: rgba(var(--color-danger-rgb), 0.15); border: 1px solid rgba(var(--color-danger-rgb), 0.3); padding: 2px 6px; border-radius: 4px;">📅 截至 ${log.deadline}</span>` : "";
-    let subTagHtml = log.sub_tag ? `<span style="background: var(--overlay-light); padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-left: 8px;">📁 ${log.sub_tag}</span>` : "";
+    let deadlineHtml = log.deadline ? `<span class="todo-deadline" style="margin-left: 10px; font-weight: normal; font-size: 12px; color: var(--color-danger); background: rgba(var(--color-danger-rgb), 0.15); border: 1px solid rgba(var(--color-danger-rgb), 0.3); padding: 2px 6px; border-radius: 4px;">📅 截至 ${safeDeadline}</span>` : "";
+    let subTagHtml = log.sub_tag ? `<span style="background: var(--overlay-light); padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-left: 8px;">📁 ${safeSubTag}</span>` : "";
     let detailBadge = log.detail ? `<span style="background: var(--overlay-light); color: var(--text-muted); border: 1px solid var(--border-medium); padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-left: 8px; white-space: nowrap;">详</span>` : "";
     let remarkBadge = log.remark ? `<span style="background: rgba(var(--color-warning-rgb), 0.15); color: var(--color-warning); border: 1px solid rgba(var(--color-warning-rgb), 0.3); padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-left: 8px; white-space: nowrap;">补</span>` : "";
 
     const htmlString = `
       <details class="glass-accordion ${themeClass}">
         <summary class="log-summary">
-          <span class="log-time">${log.time.substring(0, 5)}</span>
-          <span class="log-text"><b>[${log.tag}]</b> ${todoBadgeHtml}${displayText} ${subTagHtml} ${deadlineHtml} ${detailBadge} ${remarkBadge}</span>
+          <span class="log-time">${safeTime.substring(0, 5)}</span>
+          <span class="log-text"><b>[${safeTag}]</b> ${todoBadgeHtml}${safeDisplayText} ${subTagHtml} ${deadlineHtml} ${detailBadge} ${remarkBadge}</span>
         </summary>
         <div class="expanded-content">
           <div style="margin-bottom: 15px;">${detailText}</div>
-          ${log.remark ? `<div class="item-remark">${log.remark.replace(/\n/g, '<br>')}</div>` : ""}
+          ${log.remark ? `<div class="item-remark">${textWithLineBreaks(log.remark)}</div>` : ""}
           <div style="display: flex; gap: 10px; border-top: 1px dashed rgba(255,255,255,0.1); padding-top: 10px; justify-content: flex-end;">
             <div class="dropdown-wrapper" onclick="event.preventDefault(); event.stopPropagation();">
                 <button class="dots-btn icon-btn" style="padding: 4px 10px; margin: 0; font-size: 13px;" onclick="
@@ -257,7 +270,7 @@ export function renderHistoryList() {
         window.showModal("💬 流水记录补述与复盘", `
             <div class="form-group">
                 <label class="field-label" style="color:var(--color-primary);">💡 补充细节、灵感、不完美的地方或复盘：</label>
-                <textarea id="m-log-remark" class="hero-textarea" style="margin-top:10px; min-height: 120px;">${log.remark || ''}</textarea>
+                <textarea id="m-log-remark" class="hero-textarea" style="margin-top:10px; min-height: 120px;">${escapeHtml(log.remark)}</textarea>
             </div>
         `, body => body.querySelector('#m-log-remark').focus(), async (body) => {
             const remark = body.querySelector('#m-log-remark').value.trim();

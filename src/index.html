@@ -47,6 +47,24 @@
         
         <div id="subview-dashboard" class="subview">
           <h1>我的工作台</h1>
+          <div class="workspace-summary" id="workspace-summary" aria-live="polite">
+            <div class="summary-card">
+              <span class="summary-label">待办</span>
+              <strong id="summary-pending-count" class="summary-value">0</strong>
+            </div>
+            <div class="summary-card">
+              <span class="summary-label">已完成</span>
+              <strong id="summary-completed-count" class="summary-value">0</strong>
+            </div>
+            <div class="summary-card">
+              <span class="summary-label">今日流水</span>
+              <strong id="summary-today-count" class="summary-value">0</strong>
+            </div>
+            <div class="summary-card">
+              <span class="summary-label">活跃标签</span>
+              <strong id="summary-tag-count" class="summary-value">0</strong>
+            </div>
+          </div>
           
           <div class="input-card">
             <div class="tab-buttons">
@@ -126,10 +144,20 @@
 
               <div class="form-actions">
                 <div class="action-controls">
+                  <div class="parent-task-control" style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+                    <label class="checkbox-label">
+                      <input type="checkbox" id="todo-has-parent"> 拆成子任务
+                    </label>
+                    <select id="todo-parent-select" class="datetime-input" style="display: none; width: 260px !important;"></select>
+                  </div>
                   <label class="checkbox-label" style="margin-bottom: 8px;">
-                    <input type="checkbox" id="todo-has-deadline"> 📅 截至日期
+                    <input type="checkbox" id="todo-has-date-range"> 📅 计划时间
                   </label>
-                  <input type="text" id="todo-deadline-input" style="display: none;" class="datetime-input" placeholder="选择截止时间..." />
+                  <div id="todo-date-range-fields" style="display: none; align-items: center; gap: 10px; flex-wrap: wrap;">
+                    <input type="text" id="todo-start-input" class="datetime-input" placeholder="开始时间..." />
+                    <span style="color: var(--text-muted); font-size: 13px;">至</span>
+                    <input type="text" id="todo-end-input" class="datetime-input" placeholder="结束/截止时间..." />
+                  </div>
                 </div>
                 <button id="add-todo-btn" class="primary-btn hero-btn">➕ 添加待办</button>
               </div>

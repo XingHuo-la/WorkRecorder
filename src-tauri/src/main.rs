@@ -21,6 +21,30 @@ fn get_db_file_path() -> String {
     path.to_string_lossy().to_string()
 }
 
+fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, String> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({})", table)).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|e| e.to_string())?;
+
+    for row in rows {
+        if row.map_err(|e| e.to_string())? == column {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
+fn add_column_if_missing(conn: &Connection, table: &str, column: &str, definition: &str) -> Result<(), String> {
+    if !table_has_column(conn, table, column)? {
+        conn.execute(&format!("ALTER TABLE {} ADD COLUMN {}", table, definition), [])
+            .map_err(|e| format!("添加字段 {}.{} 失败: {}", table, column, e))?;
+    }
+
+    Ok(())
+}
+
 // 🛡️ 应用启动时的数据迁移逻辑
 fn init_and_migrate_db() -> Result<(), String> {
     let db_path = get_db_file_path();
@@ -36,6 +60,19 @@ fn init_and_migrate_db() -> Result<(), String> {
         CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
         COMMIT;"
     ).map_err(|e| format!("建表失败: {}", e))?;
+
+    let schema_version: i64 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap_or(0);
+
+    if schema_version < 2 {
+        add_column_if_missing(&conn, "todos", "parent_id", "parent_id INTEGER")?;
+        add_column_if_missing(&conn, "todos", "start_at", "start_at TEXT")?;
+        add_column_if_missing(&conn, "todos", "end_at", "end_at TEXT")?;
+        add_column_if_missing(&conn, "todos", "sort_order", "sort_order INTEGER DEFAULT 0")?;
+        conn.execute_batch("PRAGMA user_version = 2;")
+            .map_err(|e| format!("数据库升级到 v2 失败: {}", e))?;
+    }
 
     let json_exists = Path::new(&json_path).exists();
     // ✅ 修复了之前的借用检查器报错，一步到位！
