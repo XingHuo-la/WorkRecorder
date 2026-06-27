@@ -1,6 +1,6 @@
 import { appData, dbExecute, loadData } from './data.js';
 import { openUniversalEditModal } from './formUtils.js';
-import { escapeHtml, textWithLineBreaks } from './htmlUtils.js';
+import { appendRemarkEntry, escapeHtml, textWithLineBreaks } from './htmlUtils.js';
 
 const mainFilter = document.getElementById('timeline-main-filter');
 const subFilter = document.getElementById('timeline-sub-filter');
@@ -34,12 +34,118 @@ function updateSubFilters() {
   });
 }
 
+function getDateString(offset = 0) {
+  const date = new Date();
+  date.setDate(date.getDate() + offset);
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const dd = String(date.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function getTodoEnd(todo) {
+  return todo.end_at || todo.deadline || "";
+}
+
+function matchesFilters(item, selectedMain, selectedSub) {
+  const matchMain = selectedMain === "all" || item.tag === selectedMain;
+  const matchSub = selectedSub === "all" || item.sub_tag === selectedSub;
+  return matchMain && matchSub;
+}
+
+function buildTodoMini(todo) {
+  const safeTag = escapeHtml(todo.tag);
+  const safeTask = escapeHtml(todo.task);
+  const safeSub = escapeHtml(todo.sub_tag);
+  const safeStart = escapeHtml(todo.start_at || "");
+  const safeEnd = escapeHtml(getTodoEnd(todo));
+  const subHtml = todo.sub_tag ? `<span class="plan-chip">📁 ${safeSub}</span>` : "";
+  const timeHtml = safeStart || safeEnd ? `<span class="plan-time">${safeStart && safeEnd ? `${safeStart} 至 ${safeEnd}` : safeEnd}</span>` : "";
+
+  return `
+    <div class="plan-row">
+      <span class="plan-dot"></span>
+      <div class="plan-main">
+        <div><b>[${safeTag}]</b> ${safeTask} ${subHtml}</div>
+        ${timeHtml}
+      </div>
+    </div>
+  `;
+}
+
+function buildLogMini(log) {
+  const safeTag = escapeHtml(log.tag);
+  const safeText = escapeHtml((log.text || "").replace("完成待办: ", ""));
+  const safeTime = escapeHtml(log.time || "").substring(0, 5);
+  const safeSub = escapeHtml(log.sub_tag);
+  const subHtml = log.sub_tag ? `<span class="plan-chip">📁 ${safeSub}</span>` : "";
+
+  return `
+    <div class="plan-row">
+      <span class="plan-time-badge">${safeTime || "--:--"}</span>
+      <div class="plan-main"><b>[${safeTag}]</b> ${safeText} ${subHtml}</div>
+    </div>
+  `;
+}
+
+function renderPlanSection(title, subtitle, items, emptyText, type) {
+  const content = items.length > 0
+    ? items.map(item => type === 'log' ? buildLogMini(item) : buildTodoMini(item)).join('')
+    : `<div class="plan-empty">${emptyText}</div>`;
+
+  return `
+    <section class="plan-card">
+      <div class="plan-card-head">
+        <strong>${title}</strong>
+        <span>${subtitle}</span>
+      </div>
+      <div class="plan-list">${content}</div>
+    </section>
+  `;
+}
+
+function renderTimelineFocus(selectedMain, selectedSub) {
+  const yesterday = getDateString(-1);
+  const today = getDateString(0);
+  const tomorrow = getDateString(1);
+  const pendingTodos = appData.todos.filter(todo => !todo.done && matchesFilters(todo, selectedMain, selectedSub));
+
+  const isDueOn = (todo, dateStr) => {
+    const start = (todo.start_at || "").substring(0, 10);
+    const end = getTodoEnd(todo).substring(0, 10);
+    return start === dateStr || end === dateStr;
+  };
+
+  const todayTodos = pendingTodos.filter(todo => isDueOn(todo, today));
+  const tomorrowTodos = pendingTodos.filter(todo => isDueOn(todo, tomorrow));
+  const yesterdayLogs = (appData.logs[yesterday] || []).filter(log => matchesFilters(log, selectedMain, selectedSub));
+
+  return `
+    <div class="timeline-focus-grid">
+      ${renderPlanSection("今天应该做什么", today, todayTodos, "今天没有明确计划的待办。", "todo")}
+      ${renderPlanSection("明天提前看一眼", tomorrow, tomorrowTodos, "明天暂时没有安排。", "todo")}
+      ${renderPlanSection("昨天做了什么", yesterday, yesterdayLogs, "昨天还没有流水记录。", "log")}
+    </div>
+  `;
+}
+
+async function appendLogRemark(id, dateStr, note, entryType = '') {
+  const log = appData.logs[dateStr]?.find(item => item.id === id);
+  if (!log || !note.trim()) return;
+
+  await dbExecute("UPDATE logs SET remark=? WHERE id=?", [appendRemarkEntry(log.remark || "", note.trim(), new Date(), entryType), id]);
+  await loadData();
+  renderTimeline();
+  import('./log.js').then(m => m.renderHistoryList());
+}
+
 export function renderTimeline() {
   timelineContainer.innerHTML = ""; 
   const selectedMain = mainFilter.value; const selectedSub = subFilter.value;
   const sortedDates = Object.keys(appData.logs).sort((a, b) => b.localeCompare(a));
   
-  let totalHtml = '<div class="timeline-container">'; let hasData = false;
+  let totalHtml = `${renderTimelineFocus(selectedMain, selectedSub)}<div class="timeline-container timeline-history">`;
+  let hasData = false;
 
   sortedDates.forEach(dateStr => {
     const dayLogs = appData.logs[dateStr];
@@ -80,6 +186,18 @@ export function renderTimeline() {
             <div style="margin-bottom: 8px; font-size: 12px; color: gray;">⏱️ 记录于: ${safeDate} ${safeTime}</div>
             <div style="margin-bottom: 15px;">${detailText}</div>
             ${log.remark ? `<div class="item-remark">${textWithLineBreaks(log.remark)}</div>` : ""}
+            <div class="quick-note" data-kind="timeline-log" data-date="${safeDate}" data-id="${log.id}">
+              <select class="quick-note-type">
+                <option value="过程">过程</option>
+                <option value="问题">问题</option>
+                <option value="想法">想法</option>
+                <option value="结论">结论</option>
+                <option value="复盘">复盘</option>
+                <option value="资料">资料</option>
+              </select>
+              <input type="text" class="quick-note-input" placeholder="追加一条记录，回车保存..." />
+              <button class="quick-note-btn" type="button">追加</button>
+            </div>
             
             <div style="display: flex; gap: 10px; border-top: 1px dashed rgba(255,255,255,0.1); padding-top: 10px; justify-content: flex-end;">
               <div class="dropdown-wrapper" onclick="event.preventDefault(); event.stopPropagation();">
@@ -104,9 +222,9 @@ export function renderTimeline() {
     totalHtml += `
       <div class="timeline-item">
         <div class="timeline-dot"></div>
-        <details open style="margin-left: 10px;">
+        <details style="margin-left: 10px;">
           <summary class="timeline-date" style="cursor: pointer; list-style: none; outline: none; display: flex; align-items: center; gap: 10px;">
-            <span class="date-arrow" style="font-size: 12px; color: var(--text-muted); opacity: 0.7; display: inline-block;">▼</span>
+            <span class="date-arrow" style="font-size: 12px; color: var(--text-muted); opacity: 0.7; display: inline-block;">▶</span>
             🗓️ ${escapeHtml(dateStr)} <span style="font-size: 13px; font-weight: normal; color: #94A3B8;">(共 ${filteredLogs.length} 项)</span>
           </summary>
           <div style="margin-top: 15px;">${logsHtml}</div>
@@ -118,7 +236,7 @@ export function renderTimeline() {
   totalHtml += '</div>';
 
   if (!hasData) {
-    timelineContainer.innerHTML = "<div class='empty-state'><strong>没有匹配的记录</strong><span>调整筛选条件，或先在工作台添加流水记录。</span></div>";
+    timelineContainer.innerHTML = `${renderTimelineFocus(selectedMain, selectedSub)}<div class='empty-state'><strong>没有匹配的历史记录</strong><span>调整筛选条件，或先在工作台添加流水记录。</span></div>`;
   } else {
     timelineContainer.innerHTML = totalHtml;
     
@@ -127,6 +245,25 @@ export function renderTimeline() {
         const arrow = this.querySelector('.date-arrow');
         arrow.style.transform = this.parentElement.hasAttribute('open') ? 'rotate(-90deg)' : 'rotate(0deg)';
         arrow.style.transition = 'transform 0.2s ease';
+      });
+    });
+
+    document.querySelectorAll('.quick-note').forEach(box => {
+      const input = box.querySelector('.quick-note-input');
+      const typeSelect = box.querySelector('.quick-note-type');
+      const btn = box.querySelector('.quick-note-btn');
+      const save = async () => {
+        const note = input.value.trim();
+        if (!note) return;
+        btn.disabled = true;
+        await appendLogRemark(parseInt(box.dataset.id), box.dataset.date, note, typeSelect.value);
+      };
+      btn.addEventListener('click', save);
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          save();
+        }
       });
     });
 

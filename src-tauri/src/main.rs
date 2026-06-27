@@ -55,6 +55,7 @@ fn init_and_migrate_db() -> Result<(), String> {
         "BEGIN;
         CREATE TABLE IF NOT EXISTS todos (id INTEGER PRIMARY KEY AUTOINCREMENT, task TEXT NOT NULL, done BOOLEAN NOT NULL, tag TEXT, sub_tag TEXT, detail TEXT, remark TEXT, deadline TEXT, completed_at TEXT);
         CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, time TEXT NOT NULL, text TEXT NOT NULL, tag TEXT, sub_tag TEXT, detail TEXT, remark TEXT, linked_todo TEXT, deadline TEXT, is_overdue BOOLEAN);
+        CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT NOT NULL, note_type TEXT, status TEXT, tag TEXT, sub_tag TEXT, source_type TEXT, source_id INTEGER, created_at TEXT, updated_at TEXT);
         CREATE TABLE IF NOT EXISTS tags (name TEXT PRIMARY KEY, is_active BOOLEAN);
         CREATE TABLE IF NOT EXISTS sub_tags (id INTEGER PRIMARY KEY AUTOINCREMENT, main_tag TEXT NOT NULL, name TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
@@ -72,6 +73,32 @@ fn init_and_migrate_db() -> Result<(), String> {
         add_column_if_missing(&conn, "todos", "sort_order", "sort_order INTEGER DEFAULT 0")?;
         conn.execute_batch("PRAGMA user_version = 2;")
             .map_err(|e| format!("数据库升级到 v2 失败: {}", e))?;
+    }
+
+    if schema_version < 3 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT,
+                content TEXT NOT NULL,
+                note_type TEXT,
+                status TEXT,
+                tag TEXT,
+                sub_tag TEXT,
+                source_type TEXT,
+                source_id INTEGER,
+                created_at TEXT,
+                updated_at TEXT
+            );
+            PRAGMA user_version = 3;"
+        ).map_err(|e| format!("数据库升级到 v3 失败: {}", e))?;
+    }
+
+    if schema_version < 4 {
+        add_column_if_missing(&conn, "logs", "status", "status TEXT DEFAULT 'processed'")?;
+        add_column_if_missing(&conn, "logs", "record_type", "record_type TEXT DEFAULT 'log'")?;
+        conn.execute_batch("PRAGMA user_version = 4;")
+            .map_err(|e| format!("数据库升级到 v4 失败: {}", e))?;
     }
 
     let json_exists = Path::new(&json_path).exists();

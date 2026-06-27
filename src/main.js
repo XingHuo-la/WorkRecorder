@@ -3,6 +3,9 @@ import { initTodoModule } from './todo.js';
 import { initLogModule, renderHistoryList } from './log.js';
 import { initTimelineModule, renderTimeline } from './timeline.js';
 import { initSettingsModule } from './settings.js';
+import { initNotesModule, renderNotesList } from './notes.js';
+import { initQuickCapture } from './quickCapture.js';
+import { renderTodayTimeline } from './todayTimeline.js';
 
 const { getCurrentWindow } = window.__TAURI__.window;
 
@@ -39,8 +42,28 @@ async function initApp() {
       await m.applySavedThemeFromDB();
   });
 
-  setupRouting(); setupTabs();
-  initTodoModule(); initLogModule(); renderHistoryList(); initTimelineModule(); initSettingsModule();
+  const safeRun = (label, fn) => {
+    try {
+      return fn();
+    } catch (error) {
+      console.error(`[${label}] 初始化失败`, error);
+      return null;
+    }
+  };
+
+  safeRun('routing', setupRouting);
+  safeRun('legacy-tabs', setupTabs);
+  safeRun('quick-advanced-options', setupQuickAdvancedOptions);
+  safeRun('todo', initTodoModule);
+  safeRun('log', initLogModule);
+  safeRun('notes', initNotesModule);
+  safeRun('history-render', renderHistoryList);
+  safeRun('notes-render', renderNotesList);
+  safeRun('today-timeline', renderTodayTimeline);
+  safeRun('timeline', initTimelineModule);
+  safeRun('settings', initSettingsModule);
+  safeRun('quick-capture', initQuickCapture);
+  safeRun('legacy-tools-toggle', setupLegacyToolsToggle);
 
   // 全局事件 1：点击空白处收起所有三点菜单
   document.addEventListener('click', (e) => {
@@ -71,18 +94,99 @@ async function initApp() {
   updateWorkspaceSummary();
 }
 
+function setupQuickAdvancedOptions() {
+  const typeSelect = document.getElementById('quick-type-select');
+  const tagSelect = document.getElementById('quick-tag-select');
+  const subSelect = document.getElementById('quick-sub-tag-select');
+  const tagNewInput = document.getElementById('quick-tag-new');
+  const subNewInput = document.getElementById('quick-sub-tag-new');
+  const parentSelect = document.getElementById('quick-parent-todo-select');
+
+  if (!typeSelect || !tagSelect || !subSelect) return;
+
+  const buildTodoPath = (todo, byId) => {
+    const names = [todo.task];
+    let current = todo;
+    const seen = new Set([todo.id]);
+    while (current.parent_id && byId.has(current.parent_id) && !seen.has(current.parent_id)) {
+      current = byId.get(current.parent_id);
+      seen.add(current.id);
+      names.unshift(current.task);
+    }
+    return names.join(' / ');
+  };
+
+  const renderQuickParentTodos = () => {
+    if (!parentSelect) return;
+    const currentValue = parentSelect.value;
+    const byId = new Map((appData.todos || []).map(todo => [todo.id, todo]));
+    parentSelect.innerHTML = '<option value="">无父任务</option>';
+    (appData.todos || [])
+      .filter(todo => !todo.done)
+      .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0) || a.id - b.id)
+      .forEach(todo => {
+        parentSelect.innerHTML += `<option value="${todo.id}">${buildTodoPath(todo, byId)}</option>`;
+      });
+    if ([...parentSelect.options].some(option => option.value === currentValue)) parentSelect.value = currentValue;
+  };
+
+  const renderQuickSubTags = () => {
+    const mainTag = tagSelect.value === 'NEW' ? tagNewInput.value.trim() : tagSelect.value;
+    subSelect.innerHTML = '<option value="">无项目</option>';
+    if (mainTag && appData.sub_tags?.[mainTag]) {
+      appData.sub_tags[mainTag].forEach(sub => {
+        subSelect.innerHTML += `<option value="${sub}">${sub}</option>`;
+      });
+    }
+    subSelect.innerHTML += '<option value="NEW">新建子项目...</option>';
+  };
+
+  tagSelect.innerHTML = '<option value="未分类">未分类</option>';
+  (appData.settings?.active_tags || appData.tags || []).forEach(tag => {
+    tagSelect.innerHTML += `<option value="${tag}">${tag}</option>`;
+  });
+  tagSelect.innerHTML += '<option value="NEW">新建主分类...</option>';
+  renderQuickSubTags();
+  renderQuickParentTodos();
+  window.renderQuickParentTodos = renderQuickParentTodos;
+
+  tagSelect.addEventListener('change', () => {
+    tagNewInput.style.display = tagSelect.value === 'NEW' ? 'block' : 'none';
+    if (tagSelect.value === 'NEW') tagNewInput.focus();
+    subNewInput.style.display = 'none';
+    renderQuickSubTags();
+  });
+  tagNewInput.addEventListener('input', renderQuickSubTags);
+  subSelect.addEventListener('change', () => {
+    subNewInput.style.display = subSelect.value === 'NEW' ? 'block' : 'none';
+    if (subSelect.value === 'NEW') subNewInput.focus();
+  });
+}
+
+function setupLegacyToolsToggle() {
+  const toggle = document.getElementById('legacy-tools-toggle');
+  const area = document.querySelector('.legacy-capture-area');
+  if (!toggle || !area) return;
+
+  toggle.addEventListener('click', () => {
+    const isOpen = area.classList.toggle('show');
+    area.setAttribute('aria-hidden', String(!isOpen));
+    toggle.innerText = isOpen ? '收起完整整理工具' : '展开完整整理工具';
+  });
+}
+
 function setupTitlebar() {
   const appWindow = getCurrentWindow();
 
-  document.getElementById('titlebar-minimize').addEventListener('click', () => {
+  document.getElementById('titlebar-minimize')?.addEventListener('click', () => {
     appWindow.minimize();
   });
 
-  document.getElementById('titlebar-maximize').addEventListener('click', () => {
+  document.getElementById('titlebar-maximize')?.addEventListener('click', () => {
     appWindow.toggleMaximize();
   });
 
-  document.getElementById('titlebar-close').addEventListener('click', () => {
+  document.getElementById('titlebar-close')?.addEventListener('click', () => {
     appWindow.close();
   });
 }
@@ -147,15 +251,16 @@ window.showModal = function(title, htmlContent, onReady, onConfirm, options = {}
 
 function setupRouting() {
   const landingView = document.getElementById('landing-view'); const workspaceView = document.getElementById('workspace-view');
+  if (!landingView || !workspaceView) return;
   landingView.style.display = 'none';
   workspaceView.style.display = 'flex';
-  document.getElementById('enter-btn').addEventListener('click', () => { landingView.style.display = 'none'; workspaceView.style.display = 'flex'; });
-  document.getElementById('back-btn').addEventListener('click', () => { workspaceView.style.display = 'none'; landingView.style.display = 'flex'; });
+  document.getElementById('enter-btn')?.addEventListener('click', () => { landingView.style.display = 'none'; workspaceView.style.display = 'flex'; });
+  document.getElementById('back-btn')?.addEventListener('click', () => { workspaceView.style.display = 'none'; landingView.style.display = 'flex'; });
   const navBtns = [
     { btn: document.getElementById('nav-dashboard'), view: document.getElementById('subview-dashboard') },
     { btn: document.getElementById('nav-timeline'), view: document.getElementById('subview-timeline') },
     { btn: document.getElementById('nav-settings'), view: document.getElementById('subview-settings') }
-  ];
+  ].filter(item => item.btn && item.view);
   navBtns.forEach(item => {
     item.btn.addEventListener('click', () => {
       navBtns.forEach(nav => { nav.view.style.display = 'none'; nav.btn.classList.remove('active'); });
@@ -172,19 +277,30 @@ function setupRouting() {
 
 function setupTabs() {
   const btnLog = document.getElementById('tab-log-btn'); const btnTodo = document.getElementById('tab-todo-btn');
+  const btnNote = document.getElementById('tab-note-btn'); const panelNote = document.getElementById('panel-note');
   const panelLog = document.getElementById('panel-log'); const panelTodo = document.getElementById('panel-todo');
+  if (!btnLog || !btnTodo || !panelLog || !panelTodo) return;
   const setActiveTab = (tab) => {
     const isTodo = tab === 'todo';
-    btnLog.classList.toggle('active', !isTodo);
+    const isNote = tab === 'note';
+    btnLog.classList.toggle('active', tab === 'log');
     btnTodo.classList.toggle('active', isTodo);
-    panelLog.style.display = isTodo ? 'none' : 'block';
+    btnNote.classList.toggle('active', isNote);
+    panelLog.style.display = tab === 'log' ? 'block' : 'none';
     panelTodo.style.display = isTodo ? 'block' : 'none';
+    if (panelNote) panelNote.style.display = isNote ? 'block' : 'none';
     localStorage.setItem('workRecorder:lastInputTab', tab);
   };
 
+  btnLog.innerText = '流水';
+  btnTodo.innerText = '待办';
+  if (btnNote) btnNote.innerText = '笔记';
+
   btnLog.addEventListener('click', () => setActiveTab('log'));
   btnTodo.addEventListener('click', () => setActiveTab('todo'));
-  setActiveTab(localStorage.getItem('workRecorder:lastInputTab') === 'todo' ? 'todo' : 'log');
+  if (btnNote) btnNote.addEventListener('click', () => setActiveTab('note'));
+  const savedTab = localStorage.getItem('workRecorder:lastInputTab');
+  setActiveTab(savedTab === 'todo' || savedTab === 'note' ? savedTab : 'log');
 }
 
 export function updateWorkspaceSummary() {
@@ -200,12 +316,13 @@ export function updateWorkspaceSummary() {
   const pendingCount = appData.todos.filter(todo => !todo.done).length;
   const completedCount = appData.todos.filter(todo => todo.done).length;
   const todayCount = (appData.logs[todayStr] || []).length;
-  const tagCount = (appData.settings?.active_tags || appData.tags || []).length;
+  const noteCount = (appData.notes || []).length;
 
   setText('summary-pending-count', pendingCount);
   setText('summary-completed-count', completedCount);
   setText('summary-today-count', todayCount);
-  setText('summary-tag-count', tagCount);
+  setText('summary-note-count', noteCount);
 }
 window.updateWorkspaceSummary = updateWorkspaceSummary;
+window.renderTodayTimeline = renderTodayTimeline;
 window.addEventListener("DOMContentLoaded", initApp);

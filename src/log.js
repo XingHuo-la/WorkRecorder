@@ -1,6 +1,7 @@
 import { appData, dbExecute, loadData, getTodayString } from './data.js';
 import { openUniversalEditModal } from './formUtils.js';
-import { escapeHtml, textWithLineBreaks } from './htmlUtils.js';
+import { appendRemarkEntry, escapeHtml, textWithLineBreaks } from './htmlUtils.js';
+import { convertQuickRecord, updateQuickRecordProject } from './quickCapture.js';
 
 // ==========================================
 // 📅 全局挂载增强版 Flatpickr (保持你原有的完美配置)
@@ -79,10 +80,15 @@ export function initLogModule() {
   const hasDeadlineCb = document.getElementById('log-has-deadline'); const deadlineInput = document.getElementById('log-deadline-input');
   const tagSelect = document.getElementById('log-tag-select'); const tagNewInput = document.getElementById('log-tag-new');
   const subSelect = document.getElementById('log-sub-tag-select'); const subNewInput = document.getElementById('log-sub-tag-new');
+  const addLogBtn = document.getElementById('add-log-btn');
+
+  if (!useCurrentTimeCb || !manualDatetimeInput || !hasDeadlineCb || !deadlineInput || !tagSelect || !tagNewInput || !subSelect || !subNewInput || !addLogBtn) {
+    return;
+  }
 
   const fpConfig = { ...window.fpGlobalConfig };
-  flatpickr(manualDatetimeInput, fpConfig); 
-  const fpDeadline = flatpickr(deadlineInput, fpConfig);
+  const fpManual = window.flatpickr ? flatpickr(manualDatetimeInput, fpConfig) : null; 
+  const fpDeadline = window.flatpickr ? flatpickr(deadlineInput, fpConfig) : null;
 
   useCurrentTimeCb.onchange = () => manualDatetimeInput.style.display = useCurrentTimeCb.checked ? 'none' : 'block';
   hasDeadlineCb.onchange = () => deadlineInput.style.display = hasDeadlineCb.checked ? 'block' : 'none';
@@ -110,7 +116,7 @@ export function initLogModule() {
   subSelect.addEventListener('change', () => { subNewInput.style.display = subSelect.value === 'NEW' ? 'block' : 'none'; if(subSelect.value === 'NEW') subNewInput.focus(); });
   window.renderLogTags();
 
-  document.getElementById('add-log-btn').addEventListener('click', async () => {
+  addLogBtn.addEventListener('click', async () => {
     const taskInput = document.getElementById('log-task-input').value.trim(); if (!taskInput) { alert("⚠️ 核心事件不能为空！"); return; }
     const finalTag = tagSelect.value === 'NEW' ? tagNewInput.value.trim() : tagSelect.value;
     const finalSub = subSelect.value === 'NEW' ? subNewInput.value.trim() : subSelect.value;
@@ -143,7 +149,7 @@ export function initLogModule() {
     
     document.getElementById('log-task-input').value = ""; document.getElementById('log-detail-input').value = "";
     tagSelect.value = finalTag; tagNewInput.style.display = 'none'; window.renderLogSubTags(); subSelect.value = finalSub; 
-    if(hasDeadlineCb.checked) { hasDeadlineCb.checked = false; deadlineInput.style.display = 'none'; fpDeadline.clear(); }
+    if(hasDeadlineCb.checked) { hasDeadlineCb.checked = false; deadlineInput.style.display = 'none'; if (fpDeadline) fpDeadline.clear(); }
     renderHistoryList(); 
     if(window.renderTodoTags) window.renderTodoTags();
   });
@@ -160,8 +166,9 @@ export function renderHistoryList() {
   if (todayLogs.length === 0) { container.innerHTML = "<div class='empty-state'><strong>今天还没有流水</strong><span>记录一个关键进展，稍后复盘时会更容易找回上下文。</span></div>"; return; }
 
   todayLogs.forEach((log) => {
-    const isCompletedTodo = !!log.linked_todo || log.text.includes("完成待办"); 
-    const themeClass = isCompletedTodo ? "border-success" : "border-primary";
+    const isCompletedTodo = !!log.linked_todo || log.text.includes("完成待办");
+    const isUnprocessed = log.status === 'unprocessed' || log.record_type === 'quick';
+    const themeClass = isUnprocessed ? "border-warning" : isCompletedTodo ? "border-success" : "border-primary";
     const detailText = log.detail ? textWithLineBreaks(log.detail) : "(未填写详细说明)";
     const safeTag = escapeHtml(log.tag);
     const safeSubTag = escapeHtml(log.sub_tag);
@@ -172,7 +179,9 @@ export function renderHistoryList() {
     if (displayText.startsWith("完成待办: ")) displayText = displayText.replace("完成待办: ", "").trim();
     const safeDisplayText = escapeHtml(displayText);
 
-    let todoBadgeHtml = isCompletedTodo ? `<span style="background: rgba(var(--color-success-rgb), 0.15); color: var(--color-success); padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-right: 8px; border: 1px solid rgba(var(--color-success-rgb), 0.3);">待</span>` : "";
+    let todoBadgeHtml = isUnprocessed
+      ? `<span style="background: rgba(var(--color-warning-rgb), 0.14); color: var(--color-warning); padding: 2px 6px; border-radius: 999px; font-size: 12px; margin-right: 8px; border: 1px solid rgba(var(--color-warning-rgb), 0.25);">未整理</span>`
+      : isCompletedTodo ? `<span style="background: rgba(var(--color-success-rgb), 0.15); color: var(--color-success); padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-right: 8px; border: 1px solid rgba(var(--color-success-rgb), 0.3);">待</span>` : "";
     let deadlineHtml = log.deadline ? `<span class="todo-deadline" style="margin-left: 10px; font-weight: normal; font-size: 12px; color: var(--color-danger); background: rgba(var(--color-danger-rgb), 0.15); border: 1px solid rgba(var(--color-danger-rgb), 0.3); padding: 2px 6px; border-radius: 4px;">📅 截至 ${safeDeadline}</span>` : "";
     let subTagHtml = log.sub_tag ? `<span style="background: var(--overlay-light); padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-left: 8px;">📁 ${safeSubTag}</span>` : "";
     let detailBadge = log.detail ? `<span style="background: var(--overlay-light); color: var(--text-muted); border: 1px solid var(--border-medium); padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-left: 8px; white-space: nowrap;">详</span>` : "";
@@ -187,6 +196,27 @@ export function renderHistoryList() {
         <div class="expanded-content">
           <div style="margin-bottom: 15px;">${detailText}</div>
           ${log.remark ? `<div class="item-remark">${textWithLineBreaks(log.remark)}</div>` : ""}
+          ${isUnprocessed ? `
+          <div class="quick-note quick-note-inline" data-kind="timeline-log" data-date="${todayStr}" data-id="${log.id}">
+            <button class="quick-note-btn outline-btn" type="button" data-action="todo">设为待办</button>
+            <button class="quick-note-btn outline-btn" type="button" data-action="log">设为流水</button>
+            <button class="quick-note-btn outline-btn" type="button" data-action="note">设为笔记</button>
+            <button class="quick-note-btn outline-btn" type="button" data-action="problem">设为问题</button>
+            <button class="quick-note-btn outline-btn" type="button" data-action="conclusion">设为结论</button>
+            <button class="quick-note-btn outline-btn" type="button" data-action="project">关联项目</button>
+          </div>` : ""}
+          <div class="quick-note" data-kind="today-log" data-id="${log.id}">
+            <select class="quick-note-type">
+              <option value="过程">过程</option>
+              <option value="问题">问题</option>
+              <option value="想法">想法</option>
+              <option value="结论">结论</option>
+              <option value="复盘">复盘</option>
+              <option value="资料">资料</option>
+            </select>
+            <input type="text" class="quick-note-input" placeholder="追加一条记录，回车保存..." />
+            <button class="quick-note-btn" type="button">追加</button>
+          </div>
           <div style="display: flex; gap: 10px; border-top: 1px dashed rgba(255,255,255,0.1); padding-top: 10px; justify-content: flex-end;">
             <div class="dropdown-wrapper" onclick="event.preventDefault(); event.stopPropagation();">
                 <button class="dots-btn icon-btn" style="padding: 4px 10px; margin: 0; font-size: 13px;" onclick="
@@ -212,6 +242,51 @@ export function renderHistoryList() {
     document.querySelectorAll('.dropdown-menu.show').forEach(m => m.classList.remove('show'));
     document.querySelectorAll('.elevated-zindex').forEach(el => el.classList.remove('elevated-zindex'));
   };
+
+  document.querySelectorAll('.quick-note[data-kind="today-log"]').forEach(box => {
+    const input = box.querySelector('.quick-note-input');
+    const typeSelect = box.querySelector('.quick-note-type');
+    const btn = box.querySelector('.quick-note-btn');
+    const save = async () => {
+      const note = input.value.trim();
+      if (!note) return;
+      const id = parseInt(box.dataset.id);
+      const log = todayLogs.find(item => item.id === id);
+      if (!log) return;
+      btn.disabled = true;
+      await dbExecute("UPDATE logs SET remark=? WHERE id=?", [appendRemarkEntry(log.remark || "", note, new Date(), typeSelect.value), id]);
+      await loadData();
+      renderHistoryList();
+    };
+    btn.addEventListener('click', save);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        save();
+      }
+    });
+  });
+
+  document.querySelectorAll('.quick-note-inline[data-kind="timeline-log"]').forEach(box => {
+    const id = parseInt(box.dataset.id);
+    const dateStr = box.dataset.date;
+    const log = appData.logs[dateStr]?.find(item => item.id === id);
+    if (!log) return;
+
+    box.querySelectorAll('button[data-action]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const action = btn.getAttribute('data-action');
+        if (action === 'project') {
+          const tag = prompt('输入主分类，留空则保持未分类：', log.tag || '未分类');
+          if (tag === null) return;
+          const subTag = prompt('输入子项目，留空则设为无项目：', log.sub_tag || '');
+          await updateQuickRecordProject(log, tag || '未分类', subTag || '');
+          return;
+        }
+        await convertQuickRecord(log, action);
+      });
+    });
+  });
 
   // ✏️ 编辑流水与强大的无感跨天移动
   document.querySelectorAll('.edit-log-btn').forEach(btn => {

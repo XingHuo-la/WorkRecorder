@@ -31,7 +31,7 @@
     <div id="workspace-view" class="view-container" style="display: none;">
       
       <div class="sidebar">
-        <h2>导航</h2>
+        <h2>工作台</h2>
         <p style="color: gray; font-size: 14px;">专注当下，心向星辰。</p>
         
         <div class="nav-menu">
@@ -46,33 +46,86 @@
       <div class="main-content">
         
         <div id="subview-dashboard" class="subview">
-          <h1>我的工作台</h1>
-          <div class="workspace-summary" id="workspace-summary" aria-live="polite">
-            <div class="summary-card">
-              <span class="summary-label">待办</span>
-              <strong id="summary-pending-count" class="summary-value">0</strong>
-            </div>
-            <div class="summary-card">
-              <span class="summary-label">已完成</span>
-              <strong id="summary-completed-count" class="summary-value">0</strong>
-            </div>
-            <div class="summary-card">
-              <span class="summary-label">今日流水</span>
-              <strong id="summary-today-count" class="summary-value">0</strong>
-            </div>
-            <div class="summary-card">
-              <span class="summary-label">活跃标签</span>
-              <strong id="summary-tag-count" class="summary-value">0</strong>
+          <div class="dashboard-hero">
+            <h1>今天有什么值得记下来？</h1>
+            <p>写下来就行，稍后再整理。</p>
+            <div class="workspace-summary compact-summary" id="workspace-summary" aria-live="polite">
+              今日：待办 <strong id="summary-pending-count">0</strong>
+              · 完成 <strong id="summary-completed-count">0</strong>
+              · 记录 <strong id="summary-today-count">0</strong>
+              · 笔记 <strong id="summary-note-count">0</strong>
             </div>
           </div>
           
-          <div class="input-card">
-            <div class="tab-buttons">
-              <button id="tab-log-btn" class="tab-btn active">快速记流水</button>
-              <button id="tab-todo-btn" class="tab-btn">添加新待办</button>
+          <div class="input-card composer-card">
+            <div class="quick-capture">
+              <textarea id="quick-capture-input" class="quick-capture-input" placeholder="写下想法、进展、问题、待办、资料或复盘……"></textarea>
+              <div class="quick-capture-footer">
+                <span class="quick-save-hint">不用分类，先存到今日记录</span>
+                <button id="quick-advanced-toggle" type="button" class="icon-btn quick-advanced-toggle">+ 添加类型 / 项目 / 时间</button>
+                <button id="quick-capture-save" type="button" class="primary-btn quick-save-btn">保存记录</button>
+              </div>
             </div>
 
-            <div id="panel-log" class="tab-panel">
+            <div id="quick-advanced-panel" class="quick-advanced-panel" style="display: none;">
+              <div class="form-row">
+                <div class="field-col">
+                  <label class="field-label">类型</label>
+                  <select id="quick-type-select" class="hero-input select-hero">
+                    <option value="quick">普通记录</option>
+                    <option value="log">流水</option>
+                    <option value="todo">待办</option>
+                    <option value="note">笔记</option>
+                    <option value="problem">问题</option>
+                    <option value="conclusion">结论</option>
+                  </select>
+                </div>
+                <div class="field-col">
+                  <label class="field-label">主分类</label>
+                  <select id="quick-tag-select" class="hero-input select-hero"></select>
+                  <input type="text" id="quick-tag-new" class="hero-input" style="display: none; margin-top: 8px;" placeholder="输入新主分类..." />
+                </div>
+                <div class="field-col">
+                  <label class="field-label">子项目</label>
+                  <select id="quick-sub-tag-select" class="hero-input select-hero"></select>
+                  <input type="text" id="quick-sub-tag-new" class="hero-input" style="display: none; margin-top: 8px;" placeholder="输入新子项目..." />
+                </div>
+              </div>
+              <div class="form-row quick-time-row">
+                <div class="field-col">
+                  <label class="field-label">时间</label>
+                  <input type="text" id="quick-time-input" class="hero-input datetime-input" placeholder="可选：选择发生时间" />
+                </div>
+                <div class="field-col">
+                  <label class="field-label">截止日期</label>
+                  <input type="text" id="quick-deadline-input" class="hero-input datetime-input" placeholder="可选：选择截止时间" />
+                </div>
+                <div class="field-col compact-field">
+                  <label class="field-label">状态</label>
+                  <label class="checkbox-label quick-check">
+                    <input type="checkbox" id="quick-is-overdue" />
+                    <span>标记为延期</span>
+                  </label>
+                </div>
+              </div>
+              <div class="form-group quick-parent-field">
+                <label class="field-label">父任务（可选，仅待办生效）</label>
+                <select id="quick-parent-todo-select" class="hero-input select-hero"></select>
+              </div>
+              <div class="form-group">
+                <input type="text" id="quick-action-input" class="hero-input" placeholder="可选：顺手生成一个后续待办..." />
+              </div>
+            </div>
+          </div>
+
+          <div class="legacy-capture-area" aria-hidden="true">
+              <div class="tab-buttons composer-segment legacy-mode-switch" aria-label="整理模式">
+                <button id="tab-log-btn" class="tab-btn active">流水</button>
+                <button id="tab-todo-btn" class="tab-btn">待办</button>
+                <button id="tab-note-btn" class="tab-btn">笔记</button>
+              </div>
+
+            <div id="panel-log" class="tab-panel composer-panel">
               <div class="form-group">
                 <input type="text" id="log-task-input" placeholder="核心事件……" class="hero-input" />
               </div>
@@ -120,7 +173,7 @@
               </div>
             </div>
 
-            <div id="panel-todo" class="tab-panel" style="display: none;">
+            <div id="panel-todo" class="tab-panel composer-panel" style="display: none;">
               <div class="form-group">
                 <input type="text" id="todo-task-input" placeholder="待办事项..." class="hero-input" />
               </div>
@@ -162,20 +215,75 @@
                 <button id="add-todo-btn" class="primary-btn hero-btn">➕ 添加待办</button>
               </div>
             </div>
+
+            <div id="panel-note" class="tab-panel composer-panel note-composer" style="display: none;">
+              <div class="form-group note-editor-shell">
+                <textarea id="note-content-input" class="hero-textarea note-main-input" placeholder="现在有什么值得记下来？&#10;&#10;例如：导师建议第三章不要按年份写。&#10;例如：实验结果波动，怀疑随机种子没固定。"></textarea>
+              </div>
+
+              <div class="note-type-chips" aria-label="笔记类型">
+                <button type="button" class="note-chip-btn active" data-note-type="idea">想法</button>
+                <button type="button" class="note-chip-btn" data-note-type="problem">问题</button>
+                <button type="button" class="note-chip-btn" data-note-type="source">资料</button>
+                <button type="button" class="note-chip-btn" data-note-type="decision">决策</button>
+                <button type="button" class="note-chip-btn" data-note-type="method">方法</button>
+                <button type="button" class="note-chip-btn" data-note-type="review">复盘</button>
+              </div>
+
+              <div class="form-row note-meta-row">
+                <div class="field-col note-type-select-field">
+                  <label class="field-label">记录类型</label>
+                  <select id="note-type-select" class="hero-input select-hero">
+                    <option value="idea">想法</option>
+                    <option value="problem">问题</option>
+                    <option value="source">资料</option>
+                    <option value="decision">决策</option>
+                    <option value="method">方法</option>
+                    <option value="review">复盘</option>
+                  </select>
+                </div>
+                <div class="field-col">
+                  <label class="field-label">🏷️ 主分类</label>
+                  <select id="note-tag-select" class="hero-input select-hero"></select>
+                  <input type="text" id="note-tag-new" class="hero-input" style="display: none; margin-top: 8px;" placeholder="输入新主分类..." />
+                </div>
+                <div class="field-col">
+                  <label class="field-label">📁 子项目</label>
+                  <select id="note-sub-tag-select" class="hero-input select-hero"></select>
+                  <input type="text" id="note-sub-tag-new" class="hero-input" style="display: none; margin-top: 8px;" placeholder="输入新子项目..." />
+                </div>
+              </div>
+
+              <div class="form-group note-action-field" style="display:none;">
+                <input type="text" id="note-action-input" class="hero-input" placeholder="可选：顺手生成一个后续待办..." />
+              </div>
+
+              <div class="form-actions note-actions">
+                <div class="action-controls">
+                  <button type="button" id="toggle-note-action-btn" class="icon-btn">+ 后续待办</button>
+                </div>
+                <button id="add-note-btn" class="primary-btn hero-btn">保存记录</button>
+              </div>
+            </div>
           </div>
 
           <hr class="divider" />
 
-          <div class="dashboard-split">
-            <div class="list-column">
-              <h2>📌 待办事项</h2>
-              <div id="todo-list-container"></div>
-            </div>
-            <div class="list-column">
-              <h2>📖 今日流水</h2>
-              <div id="history-list-container"></div>
-            </div>
+          <div class="today-section">
+            <h2>今日时间线</h2>
+            <div id="today-timeline-container"></div>
           </div>
+
+          <div class="task-tree-section">
+            <div class="section-heading-row">
+              <h2>待办任务树</h2>
+              <button id="legacy-tools-toggle" type="button" class="text-link-btn">展开完整整理工具</button>
+            </div>
+            <p class="section-hint">支持多级子任务，展开任务可继续拆分。</p>
+            <div id="todo-list-container" class="task-tree-container"></div>
+          </div>
+          <div id="history-list-container" class="legacy-hidden-list"></div>
+          <div id="notes-list-container" class="legacy-hidden-list"></div>
         </div>
 
         <div id="subview-timeline" class="subview" style="display: none;">

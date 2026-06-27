@@ -40,12 +40,26 @@ export async function loadData() {
     const settingsRes = await dbQuery("SELECT key, value FROM settings");
     const todosRes = await dbQuery("SELECT * FROM todos");
     const logsRes = await dbQuery("SELECT * FROM logs ORDER BY date DESC, time DESC");
+    const notesRes = await dbQuery("SELECT * FROM notes ORDER BY updated_at DESC, created_at DESC, id DESC");
 
     // 组装成旧版 UI 认识的 appData 格式（平滑过渡魔法）
     appData = {
         tags: tagsRes.map(t => t.name),
         sub_tags: {},
         settings: { active_tags: tagsRes.map(t => t.name) }, // 兜底
+        notes: notesRes.map(n => ({
+            id: n.id,
+            title: n.title || "",
+            content: n.content || "",
+            note_type: n.note_type || "idea",
+            status: n.status || "usable",
+            tag: n.tag || "",
+            sub_tag: n.sub_tag || "",
+            source_type: n.source_type || "",
+            source_id: n.source_id || "",
+            created_at: n.created_at || "",
+            updated_at: n.updated_at || ""
+        })),
         todos: todosRes.map(t => ({
             id: t.id, // ✨ 重点：现在每条数据都有了真实的数据库 ID！
             task: t.task, 
@@ -86,7 +100,9 @@ export async function loadData() {
             id: l.id, // ✨ 真实数据库 ID
             time: l.time, text: l.text, tag: l.tag, sub_tag: l.sub_tag,
             detail: l.detail, remark: l.remark, linked_todo: l.linked_todo,
-            deadline: l.deadline, 
+            deadline: l.deadline,
+            status: l.status || 'processed',
+            record_type: l.record_type || 'log',
             is_overdue: l.is_overdue === 1 || l.is_overdue === 'true' || l.is_overdue === true
         });
     });
