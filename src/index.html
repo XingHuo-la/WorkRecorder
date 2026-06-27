@@ -118,7 +118,15 @@
             </div>
           </div>
 
-          <div class="legacy-capture-area" aria-hidden="true">
+          <div id="legacy-capture-area" class="legacy-capture-area" aria-hidden="true">
+            <div class="legacy-tools-header">
+              <div>
+                <h2>完整整理工具</h2>
+                <p>流水、待办、笔记的完整录入入口。</p>
+              </div>
+              <button id="legacy-tools-collapse" type="button" class="text-link-btn" aria-controls="legacy-capture-area" aria-expanded="true">收起完整整理工具</button>
+            </div>
+
               <div class="tab-buttons composer-segment legacy-mode-switch" aria-label="整理模式">
                 <button id="tab-log-btn" class="tab-btn active">流水</button>
                 <button id="tab-todo-btn" class="tab-btn">待办</button>
@@ -277,7 +285,7 @@
           <div class="task-tree-section">
             <div class="section-heading-row">
               <h2>待办任务树</h2>
-              <button id="legacy-tools-toggle" type="button" class="text-link-btn">展开完整整理工具</button>
+              <button id="legacy-tools-toggle" type="button" class="text-link-btn" aria-controls="legacy-capture-area" aria-expanded="false">展开完整整理工具</button>
             </div>
             <p class="section-hint">支持多级子任务，展开任务可继续拆分。</p>
             <div id="todo-list-container" class="task-tree-container"></div>

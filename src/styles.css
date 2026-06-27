@@ -1526,6 +1526,34 @@ body::before {
   box-shadow: 0 10px 24px rgba(15, 23, 42, 0.04);
 }
 
+.legacy-tools-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.legacy-tools-header h2 {
+  margin: 0 0 4px;
+  color: var(--text-main);
+  font-size: 15px;
+}
+
+.legacy-tools-header p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.legacy-tools-header .text-link-btn {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
 .legacy-hidden-list {
   display: none !important;
 }

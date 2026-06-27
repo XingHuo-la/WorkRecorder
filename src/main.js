@@ -165,14 +165,32 @@ function setupQuickAdvancedOptions() {
 
 function setupLegacyToolsToggle() {
   const toggle = document.getElementById('legacy-tools-toggle');
-  const area = document.querySelector('.legacy-capture-area');
+  const collapse = document.getElementById('legacy-tools-collapse');
+  const area = document.getElementById('legacy-capture-area');
   if (!toggle || !area) return;
 
-  toggle.addEventListener('click', () => {
-    const isOpen = area.classList.toggle('show');
+  const setOpen = (isOpen, shouldScroll = false) => {
+    area.classList.toggle('show', isOpen);
     area.setAttribute('aria-hidden', String(!isOpen));
+    toggle.setAttribute('aria-expanded', String(isOpen));
     toggle.innerText = isOpen ? '收起完整整理工具' : '展开完整整理工具';
+    if (collapse) collapse.setAttribute('aria-expanded', String(isOpen));
+
+    if (shouldScroll) {
+      const target = isOpen ? area : toggle.closest('.task-tree-section');
+      target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  };
+
+  toggle.addEventListener('click', () => {
+    setOpen(!area.classList.contains('show'), true);
   });
+
+  collapse?.addEventListener('click', () => {
+    setOpen(false, true);
+  });
+
+  setOpen(area.classList.contains('show'));
 }
 
 function setupTitlebar() {
