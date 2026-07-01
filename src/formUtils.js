@@ -1,4 +1,4 @@
-import { appData, dbExecute } from './data.js';
+import { appData, dbExecute, DEFAULT_TAG } from './data.js';
 import { escapeHtml } from './htmlUtils.js';
 
 /**
@@ -126,13 +126,13 @@ export function openUniversalEditModal(title, item, options) {
 
         let finalTag = body.querySelector('#u-item-tag').value;
         if (finalTag === 'NEW') {
-            finalTag = body.querySelector('#u-item-tag-new').value.trim();
-            if (!finalTag) { alert("⚠️ 主分类不能为空"); return false; }
-            if (!appData.tags.includes(finalTag)) {
+            finalTag = body.querySelector('#u-item-tag-new').value.trim() || DEFAULT_TAG;
+            if (finalTag !== DEFAULT_TAG && !appData.tags.includes(finalTag)) {
                 await dbExecute("INSERT OR IGNORE INTO tags (name, is_active) VALUES (?, ?)", [finalTag, true]);
                 appData.tags.push(finalTag);
             }
         }
+        finalTag = finalTag || DEFAULT_TAG;
         result.tag = finalTag;
 
         let finalSub = body.querySelector('#u-item-sub').value;

@@ -1,6 +1,6 @@
 import { appData, dbExecute, loadData } from './data.js';
 import { openUniversalEditModal } from './formUtils.js';
-import { appendRemarkEntry, escapeHtml, textWithLineBreaks } from './htmlUtils.js';
+import { appendRemarkEntry, escapeHtml, insertTextareaNewline, textWithLineBreaks } from './htmlUtils.js';
 
 const mainFilter = document.getElementById('timeline-main-filter');
 const subFilter = document.getElementById('timeline-sub-filter');
@@ -260,7 +260,12 @@ export function renderTimeline() {
       };
       btn.addEventListener('click', save);
       input.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' && !e.shiftKey) {
+        if (e.key === 'Enter' && e.altKey) {
+          e.preventDefault();
+          insertTextareaNewline(input);
+          return;
+        }
+        if (e.key === 'Enter' && !e.shiftKey && !e.altKey) {
           e.preventDefault();
           save();
         }

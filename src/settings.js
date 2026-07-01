@@ -261,21 +261,65 @@ export function initSettingsModule() {
   const editMode = document.getElementById('cleanup-edit-mode');
   const textVal = document.getElementById('cleanup-text-val');
   const inputEl = document.getElementById('auto-cleanup-input');
-  const updateCleanupDisplay = () => { textVal.innerText = appData.settings.auto_cleanup_days ?? 7; displayMode.style.display = 'flex'; editMode.style.display = 'none'; };
+  const getCleanupDays = () => {
+      const days = parseInt(appData.settings.auto_cleanup_days);
+      return Number.isFinite(days) && days >= 0 ? days : 0;
+  };
+  const updateCleanupDisplay = () => { textVal.innerText = getCleanupDays(); displayMode.style.display = 'flex'; editMode.style.display = 'none'; };
   updateCleanupDisplay();
 
-  document.getElementById('cleanup-edit-btn').onclick = () => { inputEl.value = appData.settings.auto_cleanup_days ?? 7; displayMode.style.display = 'none'; editMode.style.display = 'flex'; inputEl.focus(); };
+  document.getElementById('cleanup-edit-btn').onclick = () => { inputEl.value = getCleanupDays(); displayMode.style.display = 'none'; editMode.style.display = 'flex'; inputEl.focus(); };
   document.getElementById('cleanup-cancel-btn').onclick = updateCleanupDisplay;
   document.getElementById('cleanup-save-btn').onclick = async () => {
       let val = parseInt(inputEl.value); if (isNaN(val) || val < 0) val = 0;
+      const oldVal = getCleanupDays();
+
+      if (val > 0) {
+          const confirmSave = confirm(`自动清理会永久删除超过指定天数的已完成待办，删除后无法恢复。建议先备份数据库。\n\n确定要把自动清理设置为 ${val} 天吗？`);
+          if (!confirmSave) {
+              inputEl.value = oldVal;
+              updateCleanupDisplay();
+              return;
+          }
+          const confirmAgain = confirm(`请再次确认：启用 ${val} 天自动清理后，符合条件的已完成待办会被永久删除，删除后无法恢复。\n\n确定保存这个设置吗？`);
+          if (!confirmAgain) {
+              inputEl.value = oldVal;
+              updateCleanupDisplay();
+              return;
+          }
+      }
+
       appData.settings.auto_cleanup_days = val;
       await dbExecute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", ["auto_cleanup_days", val]);
       updateCleanupDisplay();
-      import('./todo.js').then(m => m.autoCleanupTodos()); 
+
+      if (val > 0) {
+          const shouldRunNow = confirm(`是否现在立即执行一次清理？\n\n这将永久删除所有已完成超过 ${val} 天的待办，删除后无法恢复。建议先备份数据库。`);
+          if (!shouldRunNow) return;
+      }
+      import('./todo.js').then(m => m.autoCleanupTodos({ confirmBeforeCleanup: false }));
   };
 
   const pathTextEl = document.getElementById('data-path-text');
-  invoke('get_current_path').then(path => { pathTextEl.innerText = path.replace(/\.json$/, '.db'); });
+  invoke('get_current_db_path')
+      .then(path => { pathTextEl.innerText = path; })
+      .catch(() => invoke('get_current_path').then(path => { pathTextEl.innerText = path.replace(/\.json$/, '.db'); }));
+  document.getElementById('open-db-folder-btn')?.addEventListener('click', async () => {
+      try {
+          const folder = await invoke('open_db_folder');
+          alert(`已打开数据库所在文件夹：\n${folder}`);
+      } catch (error) {
+          alert(`❌ 打开数据库所在文件夹失败：\n${error}`);
+      }
+  });
+  document.getElementById('backup-db-btn')?.addEventListener('click', async () => {
+      try {
+          const backupPath = await invoke('backup_database');
+          alert(`✅ 数据库备份成功：\n${backupPath}`);
+      } catch (error) {
+          alert(`❌ 数据库备份失败：\n${error}`);
+      }
+  });
   document.getElementById('change-path-btn').onclick = () => {
       window.showModal("📁 更改数据存储位置", `<div style="color:var(--text-main); font-size: 14px;">请直接在底部查看您的 my_data.db 文件位置。备份时拷贝该文件即可。</div>`, null, async () => { return true; }); 
   };

@@ -13,6 +13,18 @@ export function textWithLineBreaks(value) {
   return escapeHtml(value).replace(/\n/g, '<br>');
 }
 
+export function insertTextareaNewline(textarea) {
+  if (!textarea) return;
+  const start = Number.isFinite(textarea.selectionStart) ? textarea.selectionStart : textarea.value.length;
+  const end = Number.isFinite(textarea.selectionEnd) ? textarea.selectionEnd : start;
+  const value = textarea.value || '';
+  textarea.value = `${value.slice(0, start)}\n${value.slice(end)}`;
+  const cursor = start + 1;
+  textarea.selectionStart = cursor;
+  textarea.selectionEnd = cursor;
+  textarea.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
 export function escapeInlineJsString(value) {
   const jsEscaped = String(value ?? '')
     .replace(/\\/g, '\\\\')

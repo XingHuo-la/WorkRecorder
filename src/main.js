@@ -1,4 +1,4 @@
-import { loadData, appData } from './data.js';
+import { loadData, appData, DEFAULT_TAG } from './data.js';
 import { initTodoModule } from './todo.js';
 import { initLogModule, renderHistoryList } from './log.js';
 import { initTimelineModule, renderTimeline } from './timeline.js';
@@ -6,6 +6,7 @@ import { initSettingsModule } from './settings.js';
 import { initNotesModule, renderNotesList } from './notes.js';
 import { initQuickCapture } from './quickCapture.js';
 import { renderTodayTimeline } from './todayTimeline.js';
+import { initSearchModule } from './search.js';
 
 const { getCurrentWindow } = window.__TAURI__.window;
 
@@ -63,6 +64,7 @@ async function initApp() {
   safeRun('timeline', initTimelineModule);
   safeRun('settings', initSettingsModule);
   safeRun('quick-capture', initQuickCapture);
+  safeRun('search', initSearchModule);
   safeRun('legacy-tools-toggle', setupLegacyToolsToggle);
 
   // 全局事件 1：点击空白处收起所有三点菜单
@@ -141,8 +143,8 @@ function setupQuickAdvancedOptions() {
     subSelect.innerHTML += '<option value="NEW">新建子项目...</option>';
   };
 
-  tagSelect.innerHTML = '<option value="未分类">未分类</option>';
-  (appData.settings?.active_tags || appData.tags || []).forEach(tag => {
+  tagSelect.innerHTML = `<option value="${DEFAULT_TAG}">${DEFAULT_TAG}</option>`;
+  (appData.settings?.active_tags || appData.tags || []).filter(tag => tag !== DEFAULT_TAG).forEach(tag => {
     tagSelect.innerHTML += `<option value="${tag}">${tag}</option>`;
   });
   tagSelect.innerHTML += '<option value="NEW">新建主分类...</option>';
@@ -167,13 +169,19 @@ function setupLegacyToolsToggle() {
   const toggle = document.getElementById('legacy-tools-toggle');
   const collapse = document.getElementById('legacy-tools-collapse');
   const area = document.getElementById('legacy-capture-area');
+  const strip = document.querySelector('.advanced-tools-strip');
+  const hiddenListAnchor = document.getElementById('history-list-container');
   if (!toggle || !area) return;
+  if (strip && hiddenListAnchor && hiddenListAnchor.parentNode) {
+    hiddenListAnchor.parentNode.insertBefore(strip, hiddenListAnchor);
+    hiddenListAnchor.parentNode.insertBefore(area, hiddenListAnchor);
+  }
 
   const setOpen = (isOpen, shouldScroll = false) => {
     area.classList.toggle('show', isOpen);
     area.setAttribute('aria-hidden', String(!isOpen));
     toggle.setAttribute('aria-expanded', String(isOpen));
-    toggle.innerText = isOpen ? '收起完整整理工具' : '展开完整整理工具';
+    toggle.innerText = isOpen ? '收起高级整理' : '展开高级整理';
     if (collapse) collapse.setAttribute('aria-expanded', String(isOpen));
 
     if (shouldScroll) {
@@ -277,6 +285,7 @@ function setupRouting() {
   const navBtns = [
     { btn: document.getElementById('nav-dashboard'), view: document.getElementById('subview-dashboard') },
     { btn: document.getElementById('nav-timeline'), view: document.getElementById('subview-timeline') },
+    { btn: document.getElementById('nav-search'), view: document.getElementById('subview-search') },
     { btn: document.getElementById('nav-settings'), view: document.getElementById('subview-settings') }
   ].filter(item => item.btn && item.view);
   navBtns.forEach(item => {
@@ -285,6 +294,7 @@ function setupRouting() {
       item.view.style.display = 'block'; item.btn.classList.add('active');
       localStorage.setItem('workRecorder:lastSubview', item.btn.id);
       if (item.btn.id === 'nav-timeline') renderTimeline();
+      if (item.btn.id === 'nav-search') document.getElementById('global-search-input')?.focus();
     });
   });
 

@@ -1,13 +1,19 @@
-import { appData, dbExecute, loadData, getTodayString } from './data.js';
+import { appData, dbExecute, dbQuery, loadData, getTodayString, DEFAULT_TAG } from './data.js';
 import { renderHistoryList } from './log.js'; 
 import { openUniversalEditModal } from './formUtils.js';
-import { appendRemarkEntry, escapeHtml, textWithLineBreaks } from './htmlUtils.js';
+import { appendRemarkEntry, escapeHtml, insertTextareaNewline, textWithLineBreaks } from './htmlUtils.js';
+import { showUndoToast } from './undoToast.js';
 
 function refreshTaskRelatedViews() {
   if (window.renderTodoParents) window.renderTodoParents();
   if (window.renderQuickParentTodos) window.renderQuickParentTodos();
   if (typeof window.renderTodayTimeline === 'function') window.renderTodayTimeline();
   if (typeof window.updateWorkspaceSummary === 'function') window.updateWorkspaceSummary();
+}
+
+async function insertAndReturnId(query, params) {
+  const rows = await dbQuery(`${query} RETURNING id`, params);
+  return rows?.[0]?.id || null;
 }
 
 export function initTodoModule() {
@@ -62,19 +68,14 @@ export function initTodoModule() {
   window.renderTodoTags = () => {
       tagSelect.innerHTML = '';
       const activeTags = (appData.settings && appData.settings.active_tags) ? appData.settings.active_tags : appData.tags;
-      activeTags.forEach(t => {
+      [DEFAULT_TAG, ...activeTags.filter(t => t !== DEFAULT_TAG)].forEach(t => {
         const safeTag = escapeHtml(t);
         tagSelect.innerHTML += `<option value="${safeTag}">${safeTag}</option>`;
       });
       tagSelect.innerHTML += `<option value="NEW">➕ 新建主分类...</option>`; 
       
       // 👇 核心修复 1：当没有任何活跃分类时，强制显示输入框
-      if (activeTags.length === 0 || tagSelect.value === 'NEW') {
-          tagSelect.value = 'NEW';
-          tagNewInput.style.display = 'block';
-      } else {
-          tagNewInput.style.display = 'none';
-      }
+      tagNewInput.style.display = tagSelect.value === 'NEW' ? 'block' : 'none';
       window.renderTodoSubTags();
     };
 
@@ -97,12 +98,11 @@ export function initTodoModule() {
   addTodoBtn.addEventListener('click', async () => {
     const taskInput = document.getElementById('todo-task-input').value.trim();
     if (!taskInput) { alert("⚠️ 待办内容不能为空！"); return; }
-    const finalTag = tagSelect.value === 'NEW' ? tagNewInput.value.trim() : tagSelect.value;
+    const finalTag = (tagSelect.value === 'NEW' ? tagNewInput.value.trim() : tagSelect.value) || DEFAULT_TAG;
     const finalSub = subSelect.value === 'NEW' ? subNewInput.value.trim() : subSelect.value;
-    if (!finalTag) { alert("⚠️ 请输入或选择主分类！"); return; }
 
     // 🌟 外科手术 1：如果新建了标签，直接写进数据库
-    if (tagSelect.value === 'NEW') {
+    if (tagSelect.value === 'NEW' && finalTag !== DEFAULT_TAG) {
         await dbExecute("INSERT OR IGNORE INTO tags (name, is_active) VALUES (?, ?)", [finalTag, true]);
     }
     if (finalSub && subSelect.value === 'NEW') {
@@ -308,7 +308,12 @@ export async function renderTodoList() {
       };
       btn.addEventListener('click', save);
       input.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' && !e.shiftKey) {
+        if (e.key === 'Enter' && e.altKey) {
+          e.preventDefault();
+          insertTextareaNewline(input);
+          return;
+        }
+        if (e.key === 'Enter' && !e.shiftKey && !e.altKey) {
           e.preventDefault();
           save();
         }
@@ -347,13 +352,21 @@ export async function renderTodoList() {
         // 1. 改变待办状态
         await dbExecute("UPDATE todos SET done = ?, completed_at = ? WHERE id = ?", [true, todayStr, id]);
         // 2. 插入一条今日流水
-        await dbExecute(
+        const completedLogId = await insertAndReturnId(
             "INSERT INTO logs (date, time, text, tag, sub_tag, detail, remark, linked_todo, deadline, is_overdue) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [todayStr, timeStr, todo.task, todo.tag, todo.sub_tag || "", todo.detail || "", todo.remark || "", todo.task, getTodoEnd(todo), false]
         );
         
         await loadData(); renderTodoList(); renderHistoryList(); 
         refreshTaskRelatedViews();
+        showUndoToast('已完成待办，并生成完成流水。', async () => {
+          await dbExecute("UPDATE todos SET done = ?, completed_at = ? WHERE id = ?", [false, "", id]);
+          if (completedLogId) await dbExecute("DELETE FROM logs WHERE id=?", [completedLogId]);
+          await loadData();
+          renderTodoList();
+          renderHistoryList();
+          refreshTaskRelatedViews();
+        });
       });
     });
 
@@ -495,7 +508,9 @@ export async function renderTodoList() {
     const clearAllBtn = document.createElement('button'); clearAllBtn.className = 'primary-btn'; clearAllBtn.style.width = '100%'; clearAllBtn.style.marginTop = '15px'; clearAllBtn.style.backgroundColor = 'rgba(var(--color-danger-rgb), 0.2)'; clearAllBtn.style.color = 'var(--color-danger)'; clearAllBtn.style.border = '1px solid rgba(var(--color-danger-rgb), 0.4)'; clearAllBtn.innerText = '🧹 一键清理所有已完成待办 (无法恢复)';
     
     clearAllBtn.onclick = async () => { 
-        window.showModal("🧹 清理已完成待办", `<div style="font-size: 15px; color: var(--text-main);">确定要永久清理 <b>所有已完成的待办</b> 吗？<br><br><span style="color:#ff6b6b;font-size:13px;">⚠️ 此操作彻底无法撤销。</span></div>`, null, async () => {
+        window.showModal("🧹 清理已完成待办", `<div style="font-size: 15px; color: var(--text-main);">确定要永久删除 <b>所有已完成待办</b> 吗？<br><br><span style="color:#ff6b6b;font-size:13px;">删除后无法恢复。建议先备份数据库。</span></div>`, null, async () => {
+            const confirmed = confirm("将永久删除所有已完成待办，删除后无法恢复。建议先备份数据库。\n\n确定继续删除吗？");
+            if (!confirmed) return false;
             // 🌟 外科手术：一键清空
             await dbExecute("DELETE FROM todos WHERE done = ?", [true]);
             await loadData(); renderTodoList(); 
@@ -506,12 +521,21 @@ export async function renderTodoList() {
   }
 }
 
-export async function autoCleanupTodos() {
+export async function autoCleanupTodos(options = {}) {
     if (!appData.settings || appData.settings.auto_cleanup_days === undefined) {
         renderTodoList(); return;
     }
     const days = parseInt(appData.settings.auto_cleanup_days);
-    if (days === 0) { renderTodoList(); return; }
+    if (!Number.isFinite(days) || days <= 0) { renderTodoList(); return; }
+
+    const shouldConfirm = options.confirmBeforeCleanup !== false;
+    if (shouldConfirm) {
+        const confirmed = confirm(`自动清理将永久删除所有已完成超过 ${days} 天的待办，删除后无法恢复。建议先备份数据库。\n\n确定现在执行自动清理吗？`);
+        if (!confirmed) {
+            renderTodoList();
+            return;
+        }
+    }
 
     // 🌟 外科手术：利用 SQLite 原生的时间计算功能，极速自动清理！
     await dbExecute(

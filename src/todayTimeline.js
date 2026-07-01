@@ -1,7 +1,10 @@
-import { appData, dbExecute, getTodayString, loadData } from './data.js';
+import { appData, dbExecute, dbQuery, getTodayString, loadData } from './data.js';
 import { openUniversalEditModal } from './formUtils.js';
 import { appendRemarkEntry, escapeHtml, textWithLineBreaks } from './htmlUtils.js';
-import { convertQuickRecord, updateQuickRecordProject } from './quickCapture.js';
+import { convertQuickRecord, renderInboxRecords, updateQuickRecordProject } from './quickCapture.js';
+import { showUndoToast } from './undoToast.js';
+
+const expandedMoreActionIds = new Set();
 
 function getDateTimeValue(dateStr, timeStr) {
   if ((timeStr || '').includes(' ')) return timeStr;
@@ -22,44 +25,75 @@ function getTodoDisplayTime(todo) {
   return '待办';
 }
 
-function renderLogActions(isUnprocessed) {
+async function insertAndReturnId(query, params) {
+  const rows = await dbQuery(`${query} RETURNING id`, params);
+  return rows?.[0]?.id || null;
+}
+
+function renderActionButton(action, label, className = '') {
+  return `<button type="button" class="${className}" data-action="${action}">${label}</button>`;
+}
+
+function renderTimelineActions(actionKey, primaryActions, secondaryActions) {
+  const secondaryHtml = expandedMoreActionIds.has(actionKey)
+    ? `<div class="today-actions-more">${secondaryActions.join('')}</div>`
+    : '';
+
   return `
     <div class="today-actions">
-      ${isUnprocessed ? `
-        <button type="button" data-action="todo">设为待办</button>
-        <button type="button" data-action="log">设为流水</button>
-        <button type="button" data-action="note">设为笔记</button>
-        <button type="button" data-action="problem">设为问题</button>
-        <button type="button" data-action="conclusion">设为结论</button>
-        <button type="button" data-action="project">关联项目</button>
-      ` : ''}
-      <button type="button" data-action="edit">编辑</button>
-      <button type="button" data-action="remark">补述</button>
-      <button type="button" data-action="delete">删除</button>
+      ${primaryActions.join('')}
+      ${renderActionButton('more', expandedMoreActionIds.has(actionKey) ? '收起' : '更多', 'more-action')}
+      ${secondaryHtml}
     </div>
   `;
+}
+
+function renderLogActions(log, isUnprocessed) {
+  const actionKey = `log-${log.id}`;
+  const primaryActions = isUnprocessed ? [renderActionButton('todo', '转待办', 'primary-action')] : [];
+  const secondaryActions = isUnprocessed
+    ? [
+        renderActionButton('note', '转笔记'),
+        renderActionButton('log', '转流水'),
+        renderActionButton('problem', '转问题'),
+        renderActionButton('conclusion', '转结论'),
+        renderActionButton('project', '归类'),
+        renderActionButton('edit', '编辑'),
+        renderActionButton('remark', '补述'),
+        renderActionButton('delete', '删除', 'danger-action')
+      ]
+    : [
+        renderActionButton('edit', '编辑'),
+        renderActionButton('remark', '补述'),
+        renderActionButton('delete', '删除', 'danger-action')
+      ];
+
+  return renderTimelineActions(actionKey, primaryActions, secondaryActions);
 }
 
 function renderTodoActions(todo) {
-  return `
-    <div class="today-actions">
-      <button type="button" data-action="done">完成</button>
-      <button type="button" data-action="child">子任务</button>
-      <button type="button" data-action="edit">编辑</button>
-      <button type="button" data-action="remark">补述</button>
-      <button type="button" data-action="delete">删除</button>
-    </div>
-  `;
+  return renderTimelineActions(
+    `todo-${todo.id}`,
+    [renderActionButton('done', '完成', 'primary-action')],
+    [
+      renderActionButton('child', '子任务'),
+      renderActionButton('edit', '编辑'),
+      renderActionButton('remark', '补述'),
+      renderActionButton('delete', '删除', 'danger-action')
+    ]
+  );
 }
 
 function renderNoteActions(note) {
-  return `
-    <div class="today-actions">
-      <button type="button" data-action="todo">转为待办</button>
-      <button type="button" data-action="edit">编辑</button>
-      <button type="button" data-action="delete">删除</button>
-    </div>
-  `;
+  return renderTimelineActions(
+    `note-${note.id}`,
+    [],
+    [
+      renderActionButton('todo', '转待办'),
+      renderActionButton('edit', '编辑'),
+      renderActionButton('delete', '删除', 'danger-action')
+    ]
+  );
 }
 
 function buildLogCard(log) {
@@ -71,7 +105,7 @@ function buildLogCard(log) {
   const detail = log.detail ? `<div class="today-detail">${textWithLineBreaks(log.detail)}</div>` : '';
 
   return `
-    <article class="today-item ${isUnprocessed ? 'unprocessed' : ''}" data-kind="log" data-id="${log.id}" data-date="${escapeHtml(log.date || getTodayString())}">
+    <article class="today-item ${isUnprocessed ? 'unprocessed' : ''}" data-kind="log" data-id="${log.id}" data-date="${escapeHtml(log.date || getTodayString())}" data-action-key="log-${log.id}">
       <div class="today-time">${safeTime || '--:--'}</div>
       <div class="today-body">
         <div class="today-line">
@@ -80,7 +114,7 @@ function buildLogCard(log) {
           <span class="today-tag">${safeTag}</span>
         </div>
         ${detail}
-        ${renderLogActions(isUnprocessed)}
+        ${renderLogActions(log, isUnprocessed)}
       </div>
     </article>
   `;
@@ -100,7 +134,7 @@ function buildTodoCard(todo) {
     : '';
 
   return `
-    <article class="today-item" data-kind="todo" data-id="${todo.id}">
+    <article class="today-item" data-kind="todo" data-id="${todo.id}" data-action-key="todo-${todo.id}">
       <div class="today-time">${getTodoDisplayTime(todo)}</div>
       <div class="today-body">
         <div class="today-line">
@@ -123,7 +157,7 @@ function buildNoteCard(note) {
   const safeTime = escapeHtml((note.created_at || note.updated_at || '').substring(11, 16));
 
   return `
-    <article class="today-item" data-kind="note" data-id="${note.id}">
+    <article class="today-item" data-kind="note" data-id="${note.id}" data-action-key="note-${note.id}">
       <div class="today-time">${safeTime || '笔记'}</div>
       <div class="today-body">
         <div class="today-line">
@@ -227,15 +261,24 @@ export function renderTodayTimeline() {
     const kind = card.dataset.kind;
     const id = parseInt(card.dataset.id);
     const dateStr = card.dataset.date || today;
-    const actions = card.querySelectorAll('.today-actions button');
+    const actionKey = card.dataset.actionKey;
+    const actions = card.querySelectorAll('button[data-action]');
 
     actions.forEach(btn => {
       btn.addEventListener('click', async () => {
         const action = btn.dataset.action;
+        if (action === 'more') {
+          if (expandedMoreActionIds.has(actionKey)) expandedMoreActionIds.delete(actionKey);
+          else expandedMoreActionIds.add(actionKey);
+          renderTodayTimeline();
+          return;
+        }
+
         if (kind === 'log') {
           const log = (appData.logs[dateStr] || []).find(item => item.id === id);
           if (!log) return;
           if (action === 'project') {
+            alert('归类只会修改主分类和子项目，不会改变处理状态。未整理记录仍需转为待办、笔记或流水后才算处理完成。');
             const tag = prompt('输入主分类，留空则保持未分类：', log.tag || '未分类');
             if (tag === null) return;
             const subTag = prompt('输入子项目，留空则设为无项目：', log.sub_tag || '');
@@ -247,6 +290,7 @@ export function renderTodayTimeline() {
             if (!note) return;
             await dbExecute("UPDATE logs SET remark=? WHERE id=?", [appendRemarkEntry(log.remark || '', note, new Date(), '补述'), log.id]);
             await loadData();
+            renderInboxRecords();
             renderTodayTimeline();
             return;
           }
@@ -271,6 +315,7 @@ export function renderTodayTimeline() {
             if (!confirm('确定删除这条记录吗？')) return;
             await dbExecute("DELETE FROM logs WHERE id=?", [log.id]);
             await loadData();
+            renderInboxRecords();
             renderTodayTimeline();
             import('./log.js').then(m => m.renderHistoryList());
             return;
@@ -284,14 +329,26 @@ export function renderTodayTimeline() {
           if (!todo) return;
           if (action === 'done') {
             await dbExecute("UPDATE todos SET done=?, completed_at=? WHERE id=?", [true, today, todo.id]);
-            await dbExecute(
+            const completedLogId = await insertAndReturnId(
               "INSERT INTO logs (date, time, text, tag, sub_tag, detail, remark, linked_todo, deadline, is_overdue, status, record_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
               [today, new Date().toLocaleTimeString('en-US', { hour12: false }), `完成待办: ${todo.task}`, todo.tag, todo.sub_tag || '', todo.detail || '', todo.remark || '', todo.task, getTodoEnd(todo), false, 'processed', 'log']
             );
             await loadData();
+            renderInboxRecords();
             renderTodayTimeline();
             import('./todo.js').then(m => m.renderTodoList());
             import('./log.js').then(m => m.renderHistoryList());
+            if (typeof window.updateWorkspaceSummary === 'function') window.updateWorkspaceSummary();
+            showUndoToast('已完成待办，并生成完成流水。', async () => {
+              await dbExecute("UPDATE todos SET done=?, completed_at=? WHERE id=?", [false, '', todo.id]);
+              if (completedLogId) await dbExecute("DELETE FROM logs WHERE id=?", [completedLogId]);
+              await loadData();
+              renderInboxRecords();
+              renderTodayTimeline();
+              import('./todo.js').then(m => m.renderTodoList());
+              import('./log.js').then(m => m.renderHistoryList());
+              if (typeof window.updateWorkspaceSummary === 'function') window.updateWorkspaceSummary();
+            });
             return;
           }
           if (action === 'edit') {

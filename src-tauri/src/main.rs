@@ -3,6 +3,8 @@ use tauri::Manager;
 use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use chrono::Local;
 use rusqlite::Connection;
 use rusqlite::types::ValueRef; // 🌟 引入数据库值解析器
 
@@ -213,6 +215,76 @@ fn db_execute(query: String, params: Vec<String>) -> Result<usize, String> {
 
 // （保留旧的指令，确保我们重写 JS 前，应用绝不崩溃！）
 #[tauri::command] fn get_current_path() -> String { get_data_file_path() }
+#[tauri::command] fn get_current_db_path() -> String { get_db_file_path() }
+
+#[tauri::command]
+fn open_db_folder() -> Result<String, String> {
+    let db_path = PathBuf::from(get_db_file_path());
+    let folder = db_path
+        .parent()
+        .ok_or_else(|| "无法识别数据库所在目录".to_string())?;
+
+    if !folder.exists() {
+        return Err(format!("数据库所在目录不存在: {}", folder.to_string_lossy()));
+    }
+
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut cmd = Command::new("explorer");
+        cmd.arg(folder);
+        cmd
+    };
+
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut cmd = Command::new("open");
+        cmd.arg(folder);
+        cmd
+    };
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = {
+        let mut cmd = Command::new("xdg-open");
+        cmd.arg(folder);
+        cmd
+    };
+
+    command
+        .spawn()
+        .map_err(|e| format!("打开数据库所在文件夹失败: {}", e))?;
+
+    Ok(folder.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn backup_database() -> Result<String, String> {
+    let db_path = PathBuf::from(get_db_file_path());
+    if !db_path.exists() {
+        return Err(format!("数据库文件不存在: {}", db_path.to_string_lossy()));
+    }
+    if !db_path.is_file() {
+        return Err(format!("数据库路径不是文件: {}", db_path.to_string_lossy()));
+    }
+
+    let db_dir = db_path
+        .parent()
+        .ok_or_else(|| "无法识别数据库所在目录".to_string())?;
+    if !db_dir.exists() {
+        return Err(format!("数据库所在目录不存在: {}", db_dir.to_string_lossy()));
+    }
+
+    let backup_dir = db_dir.join("backups");
+    fs::create_dir_all(&backup_dir)
+        .map_err(|e| format!("创建备份目录失败: {}", e))?;
+
+    let file_name = format!("workrecorder_backup_{}.db", Local::now().format("%Y%m%d_%H%M%S"));
+    let backup_path = backup_dir.join(file_name);
+
+    fs::copy(&db_path, &backup_path)
+        .map_err(|e| format!("备份数据库失败: {}", e))?;
+
+    Ok(backup_path.to_string_lossy().to_string())
+}
 #[tauri::command] fn check_path(target: String) -> String { json!({"final_path": target, "exists": false, "is_empty": true}).to_string() }
 #[tauri::command] fn apply_new_path(_new_path: String, _mode: String) -> Result<String, String> { Ok("".to_string()) }
 #[tauri::command] fn load_data() -> String { 
@@ -239,7 +311,7 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            load_data, save_data, get_current_path, check_path, apply_new_path, db_query, db_execute
+            load_data, save_data, get_current_path, get_current_db_path, open_db_folder, backup_database, check_path, apply_new_path, db_query, db_execute
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

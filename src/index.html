@@ -37,6 +37,7 @@
         <div class="nav-menu">
           <button id="nav-dashboard" class="nav-item active">我的工作台</button>
           <button id="nav-timeline" class="nav-item">时间轴</button>
+          <button id="nav-search" class="nav-item">搜索</button>
           <button id="nav-settings" class="nav-item">系统设置</button>
         </div>
 
@@ -59,10 +60,13 @@
           
           <div class="input-card composer-card">
             <div class="quick-capture">
-              <textarea id="quick-capture-input" class="quick-capture-input" placeholder="写下想法、进展、问题、待办、资料或复盘……"></textarea>
+              <textarea id="quick-capture-input" class="quick-capture-input" placeholder="快速记录一句话，稍后再整理……"></textarea>
               <div class="quick-capture-footer">
-                <span class="quick-save-hint">不用分类，先存到今日记录</span>
+                <span class="quick-save-hint">Enter 保存，Shift/Alt + Enter 换行</span>
+                <span id="quick-capture-toast" class="quick-capture-toast" aria-live="polite"></span>
                 <button id="quick-advanced-toggle" type="button" class="icon-btn quick-advanced-toggle">+ 添加类型 / 项目 / 时间</button>
+                <button id="quick-add-todo" type="button" class="icon-btn quick-todo-btn">添加待办</button>
+                <button id="quick-schedule-todo" type="button" class="icon-btn quick-todo-btn">安排待办</button>
                 <button id="quick-capture-save" type="button" class="primary-btn quick-save-btn">保存记录</button>
               </div>
             </div>
@@ -81,7 +85,7 @@
                   </select>
                 </div>
                 <div class="field-col">
-                  <label class="field-label">主分类</label>
+                  <label class="field-label">主分类：可选，未选择时保存为未分类</label>
                   <select id="quick-tag-select" class="hero-input select-hero"></select>
                   <input type="text" id="quick-tag-new" class="hero-input" style="display: none; margin-top: 8px;" placeholder="输入新主分类..." />
                 </div>
@@ -118,13 +122,31 @@
             </div>
           </div>
 
+          <section class="inbox-section" aria-labelledby="inbox-title">
+            <div class="inbox-section-head">
+              <div>
+                <h2 id="inbox-title">待整理</h2>
+                <p>先记录下来，稍后再分类处理。修改分类不会完成整理，转为待办、笔记或流水后才会离开这里。</p>
+              </div>
+            </div>
+            <div id="inbox-records-container" class="inbox-records-container"></div>
+          </section>
+
+          <div class="advanced-tools-strip">
+            <div>
+              <h2>高级整理</h2>
+              <p>需要分类、设置时间或拆分任务时使用。</p>
+            </div>
+            <button id="legacy-tools-toggle" type="button" class="text-link-btn" aria-controls="legacy-capture-area" aria-expanded="false">展开高级整理</button>
+          </div>
+
           <div id="legacy-capture-area" class="legacy-capture-area" aria-hidden="true">
             <div class="legacy-tools-header">
               <div>
-                <h2>完整整理工具</h2>
+                <h2>高级整理</h2>
                 <p>流水、待办、笔记的完整录入入口。</p>
               </div>
-              <button id="legacy-tools-collapse" type="button" class="text-link-btn" aria-controls="legacy-capture-area" aria-expanded="true">收起完整整理工具</button>
+              <button id="legacy-tools-collapse" type="button" class="text-link-btn" aria-controls="legacy-capture-area" aria-expanded="true">收起高级整理</button>
             </div>
 
               <div class="tab-buttons composer-segment legacy-mode-switch" aria-label="整理模式">
@@ -140,7 +162,7 @@
 
               <div class="form-row">
                 <div class="field-col">
-                  <label class="field-label">🏷️ 主分类</label>
+                  <label class="field-label">🏷️ 主分类：可选，未选择时保存为未分类</label>
                   <select id="log-tag-select" class="hero-input select-hero"></select>
                   <input type="text" id="log-tag-new" class="hero-input" style="display: none; margin-top: 8px;" placeholder="输入新主分类..." />
                 </div>
@@ -188,7 +210,7 @@
 
               <div class="form-row">
                 <div class="field-col">
-                  <label class="field-label">🏷️ 主分类</label>
+                  <label class="field-label">🏷️ 主分类：可选，未选择时保存为未分类</label>
                   <select id="todo-tag-select" class="hero-input select-hero"></select>
                   <input type="text" id="todo-tag-new" class="hero-input" style="display: none; margin-top: 8px;" placeholder="输入新主分类..." />
                 </div>
@@ -251,7 +273,7 @@
                   </select>
                 </div>
                 <div class="field-col">
-                  <label class="field-label">🏷️ 主分类</label>
+                  <label class="field-label">🏷️ 主分类：可选，未选择时保存为未分类</label>
                   <select id="note-tag-select" class="hero-input select-hero"></select>
                   <input type="text" id="note-tag-new" class="hero-input" style="display: none; margin-top: 8px;" placeholder="输入新主分类..." />
                 </div>
@@ -285,7 +307,6 @@
           <div class="task-tree-section">
             <div class="section-heading-row">
               <h2>待办任务树</h2>
-              <button id="legacy-tools-toggle" type="button" class="text-link-btn" aria-controls="legacy-capture-area" aria-expanded="false">展开完整整理工具</button>
             </div>
             <p class="section-hint">支持多级子任务，展开任务可继续拆分。</p>
             <div id="todo-list-container" class="task-tree-container"></div>
@@ -310,6 +331,23 @@
           </div>
 
           <div id="timeline-container"></div>
+        </div>
+
+        <div id="subview-search" class="subview" style="display: none;">
+          <h1>搜索</h1>
+          <p style="color: #94A3B8;">输入关键词，查找历史流水、待办和笔记。</p>
+
+          <div class="input-card search-panel">
+            <form id="global-search-form" class="global-search-form">
+              <input id="global-search-input" class="hero-input" type="search" placeholder="搜索关键词..." autocomplete="off" />
+              <button class="primary-btn" type="submit">搜索</button>
+            </form>
+            <div id="global-search-status" class="search-status" aria-live="polite"></div>
+          </div>
+
+          <div id="global-search-results" class="search-results">
+            <div class="search-empty">请输入关键词后搜索。</div>
+          </div>
         </div>
 
         <div id="subview-settings" class="subview" style="display: none;">
@@ -338,7 +376,11 @@
               <div style="display: flex; flex-direction: column; gap: 10px; background: var(--bg-input); padding: 12px; border-radius: 6px; border: 1px dashed var(--border-medium);">
                   <div style="display: flex; justify-content: space-between; align-items: center;">
                       <span id="data-path-text" style="font-family: monospace; color: var(--color-primary); font-size: 13px; word-break: break-all;">加载中...</span>
-                      <button id="change-path-btn" class="primary-btn" style="width: auto; margin: 0; padding: 6px 15px; font-size: 13px;">📁 更改位置</button>
+                      <div style="display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end;">
+                        <button id="open-db-folder-btn" class="icon-btn" style="margin: 0; padding: 6px 12px; font-size: 13px;">打开数据库所在文件夹</button>
+                        <button id="backup-db-btn" class="primary-btn" style="width: auto; margin: 0; padding: 6px 15px; font-size: 13px;">备份数据库</button>
+                        <button id="change-path-btn" class="icon-btn" style="margin: 0; padding: 6px 12px; font-size: 13px;">更改位置</button>
+                      </div>
                   </div>
               </div>
             </div>
@@ -349,11 +391,11 @@
             <div style="display: flex; align-items: center; justify-content: space-between; background: var(--overlay-light); padding: 15px; border-radius: 8px; border: 1px solid var(--border-light);">
               <div>
                 <div style="font-size: 15px; font-weight: bold; color: var(--text-main);">已完成待办自动清理</div>
-                <div style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">超过设定天数后，彻底删除已完成的待办。</div>
+                <div style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">0 表示关闭。开启后会永久删除超过设定天数的已完成待办。</div>
               </div>
               
               <div id="cleanup-display-mode" style="display: flex; align-items: center; gap: 10px;">
-                  <span style="font-size: 14px; color: var(--text-secondary);">清理已完成超过 <b id="cleanup-text-val" style="color: var(--color-primary); font-size: 16px;">7</b> 天</span>
+                  <span style="font-size: 14px; color: var(--text-secondary);">清理已完成超过 <b id="cleanup-text-val" style="color: var(--color-primary); font-size: 16px;">0</b> 天</span>
                   <button id="cleanup-edit-btn" class="icon-btn" style="margin: 0; padding: 6px 12px; font-weight: bold;">更改</button>
               </div>
               

@@ -1,4 +1,4 @@
-import { appData, dbExecute, loadData } from './data.js';
+import { appData, dbExecute, loadData, DEFAULT_TAG } from './data.js';
 import { renderTodoList } from './todo.js';
 import { escapeHtml, textWithLineBreaks } from './htmlUtils.js';
 
@@ -50,18 +50,13 @@ export function initNotesModule() {
   window.renderNoteTags = () => {
     tagSelect.innerHTML = '';
     const activeTags = appData.settings?.active_tags || appData.tags;
-    activeTags.forEach(t => {
+    [DEFAULT_TAG, ...activeTags.filter(t => t !== DEFAULT_TAG)].forEach(t => {
       const safeTag = escapeHtml(t);
       tagSelect.innerHTML += `<option value="${safeTag}">${safeTag}</option>`;
     });
     tagSelect.innerHTML += `<option value="NEW">➕ 新建主分类...</option>`;
 
-    if (activeTags.length === 0 || tagSelect.value === 'NEW') {
-      tagSelect.value = 'NEW';
-      tagNewInput.style.display = 'block';
-    } else {
-      tagNewInput.style.display = 'none';
-    }
+    tagNewInput.style.display = tagSelect.value === 'NEW' ? 'block' : 'none';
     window.renderNoteSubTags();
   };
 
@@ -111,13 +106,12 @@ export function initNotesModule() {
     if (!content) { alert("⚠️ 笔记内容不能为空"); return; }
 
     const noteType = typeSelect.value;
-    const finalTag = getSelectedValue(tagSelect, tagNewInput);
+    const finalTag = getSelectedValue(tagSelect, tagNewInput) || DEFAULT_TAG;
     const finalSub = getSelectedValue(subSelect, subNewInput);
     const actionText = actionInput.value.trim();
     const timestamp = nowString();
 
-    if (!finalTag) { alert("⚠️ 请输入或选择主分类"); return; }
-    if (tagSelect.value === 'NEW') await dbExecute("INSERT OR IGNORE INTO tags (name, is_active) VALUES (?, ?)", [finalTag, true]);
+    if (tagSelect.value === 'NEW' && finalTag !== DEFAULT_TAG) await dbExecute("INSERT OR IGNORE INTO tags (name, is_active) VALUES (?, ?)", [finalTag, true]);
     if (finalSub && subSelect.value === 'NEW') await dbExecute("INSERT INTO sub_tags (main_tag, name) VALUES (?, ?)", [finalTag, finalSub]);
 
     await dbExecute(

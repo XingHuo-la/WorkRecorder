@@ -1,6 +1,6 @@
-import { appData, dbExecute, loadData, getTodayString } from './data.js';
+import { appData, dbExecute, loadData, getTodayString, DEFAULT_TAG } from './data.js';
 import { openUniversalEditModal } from './formUtils.js';
-import { appendRemarkEntry, escapeHtml, textWithLineBreaks } from './htmlUtils.js';
+import { appendRemarkEntry, escapeHtml, insertTextareaNewline, textWithLineBreaks } from './htmlUtils.js';
 import { convertQuickRecord, updateQuickRecordProject } from './quickCapture.js';
 
 // ==========================================
@@ -95,7 +95,7 @@ export function initLogModule() {
 
   window.renderLogTags = () => {
     tagSelect.innerHTML = ''; const activeTags = (appData.settings && appData.settings.active_tags) ? appData.settings.active_tags : appData.tags;
-    activeTags.forEach(t => {
+    [DEFAULT_TAG, ...activeTags.filter(t => t !== DEFAULT_TAG)].forEach(t => {
       const safeTag = escapeHtml(t);
       tagSelect.innerHTML += `<option value="${safeTag}">${safeTag}</option>`;
     });
@@ -118,12 +118,11 @@ export function initLogModule() {
 
   addLogBtn.addEventListener('click', async () => {
     const taskInput = document.getElementById('log-task-input').value.trim(); if (!taskInput) { alert("⚠️ 核心事件不能为空！"); return; }
-    const finalTag = tagSelect.value === 'NEW' ? tagNewInput.value.trim() : tagSelect.value;
+    const finalTag = (tagSelect.value === 'NEW' ? tagNewInput.value.trim() : tagSelect.value) || DEFAULT_TAG;
     const finalSub = subSelect.value === 'NEW' ? subNewInput.value.trim() : subSelect.value;
-    if (!finalTag) { alert("⚠️ 请输入或选择主分类！"); return; }
 
     // 🌟 外科手术 1：同步新标签到数据库
-    if (tagSelect.value === 'NEW') await dbExecute("INSERT OR IGNORE INTO tags (name, is_active) VALUES (?, ?)", [finalTag, true]);
+    if (tagSelect.value === 'NEW' && finalTag !== DEFAULT_TAG) await dbExecute("INSERT OR IGNORE INTO tags (name, is_active) VALUES (?, ?)", [finalTag, true]);
     if (finalSub && subSelect.value === 'NEW') await dbExecute("INSERT INTO sub_tags (main_tag, name) VALUES (?, ?)", [finalTag, finalSub]);
 
     let finalDateStr, finalTimeStr;
@@ -260,7 +259,12 @@ export function renderHistoryList() {
     };
     btn.addEventListener('click', save);
     input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
+      if (e.key === 'Enter' && e.altKey) {
+        e.preventDefault();
+        insertTextareaNewline(input);
+        return;
+      }
+      if (e.key === 'Enter' && !e.shiftKey && !e.altKey) {
         e.preventDefault();
         save();
       }
@@ -277,6 +281,7 @@ export function renderHistoryList() {
       btn.addEventListener('click', async () => {
         const action = btn.getAttribute('data-action');
         if (action === 'project') {
+          alert('归类只会修改主分类和子项目，不会改变处理状态。未整理记录仍需转为待办、笔记或流水后才算处理完成。');
           const tag = prompt('输入主分类，留空则保持未分类：', log.tag || '未分类');
           if (tag === null) return;
           const subTag = prompt('输入子项目，留空则设为无项目：', log.sub_tag || '');

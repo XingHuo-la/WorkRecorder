@@ -1,6 +1,7 @@
 const { invoke } = window.__TAURI__.core;
 
 export let appData = null;
+export const DEFAULT_TAG = "未分类";
 
 // ==========================================
 // 🌟 1. 新增：万能数据库查询器 (向 Rust 发送 SQL 拿数据)
@@ -36,6 +37,10 @@ export async function loadData() {
     
     // 并发向数据库要数据，速度极快
     const tagsRes = await dbQuery("SELECT name FROM tags");
+    if (!tagsRes.some(t => t.name === DEFAULT_TAG)) {
+        await dbExecute("INSERT OR IGNORE INTO tags (name, is_active) VALUES (?, ?)", [DEFAULT_TAG, true]);
+        tagsRes.unshift({ name: DEFAULT_TAG });
+    }
     const subTagsRes = await dbQuery("SELECT main_tag, name FROM sub_tags");
     const settingsRes = await dbQuery("SELECT key, value FROM settings");
     const todosRes = await dbQuery("SELECT * FROM todos");
