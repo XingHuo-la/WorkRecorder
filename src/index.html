@@ -48,8 +48,8 @@
         
         <div id="subview-dashboard" class="subview">
           <div class="dashboard-hero">
-            <h1>今天有什么值得记下来？</h1>
-            <p>写下来就行，稍后再整理。</p>
+            <h1>今日工作台</h1>
+            <p>先写下来，再推进任务。</p>
             <div class="workspace-summary compact-summary" id="workspace-summary" aria-live="polite">
               今日：待办 <strong id="summary-pending-count">0</strong>
               · 完成 <strong id="summary-completed-count">0</strong>
@@ -64,7 +64,7 @@
               <div class="quick-capture-footer">
                 <span class="quick-save-hint">Enter 保存，Shift/Alt + Enter 换行</span>
                 <span id="quick-capture-toast" class="quick-capture-toast" aria-live="polite"></span>
-                <button id="quick-advanced-toggle" type="button" class="icon-btn quick-advanced-toggle">+ 添加类型 / 项目 / 时间</button>
+                <button id="quick-advanced-toggle" type="button" class="icon-btn quick-advanced-toggle">更多选项</button>
                 <button id="quick-add-todo" type="button" class="icon-btn quick-todo-btn">添加待办</button>
                 <button id="quick-schedule-todo" type="button" class="icon-btn quick-todo-btn">安排待办</button>
                 <button id="quick-capture-save" type="button" class="primary-btn quick-save-btn">保存记录</button>
@@ -113,7 +113,7 @@
                 </div>
               </div>
               <div class="form-group quick-parent-field">
-                <label class="field-label">父任务（可选，仅待办生效）</label>
+                <label class="field-label">上级任务（可选，仅待办生效）</label>
                 <select id="quick-parent-todo-select" class="hero-input select-hero"></select>
               </div>
               <div class="form-group">
@@ -126,7 +126,7 @@
             <div class="inbox-section-head">
               <div>
                 <h2 id="inbox-title">待整理</h2>
-                <p>先记录下来，稍后再分类处理。修改分类不会完成整理，转为待办、笔记或流水后才会离开这里。</p>
+                <p title="修改分类不会完成整理，转为待办、笔记或流水后才会离开这里。">待处理内容</p>
               </div>
             </div>
             <div id="inbox-records-container" class="inbox-records-container"></div>
@@ -134,21 +134,22 @@
 
           <div class="advanced-tools-strip">
             <div>
-              <h2>高级整理</h2>
-              <p>需要分类、设置时间或拆分任务时使用。</p>
+              <h2>完整录入</h2>
+              <p>分类、时间、拆分任务或补录历史。</p>
             </div>
-            <button id="legacy-tools-toggle" type="button" class="text-link-btn" aria-controls="legacy-capture-area" aria-expanded="false">展开高级整理</button>
+            <button id="legacy-tools-toggle" type="button" class="text-link-btn" aria-controls="legacy-capture-area" aria-expanded="false">打开完整录入</button>
           </div>
 
           <div id="legacy-capture-area" class="legacy-capture-area" aria-hidden="true">
             <div class="legacy-tools-header">
               <div>
-                <h2>高级整理</h2>
-                <p>流水、待办、笔记的完整录入入口。</p>
+                <h2>完整录入</h2>
+                <p>补录流水、待办或笔记。</p>
               </div>
-              <button id="legacy-tools-collapse" type="button" class="text-link-btn" aria-controls="legacy-capture-area" aria-expanded="true">收起高级整理</button>
+              <button id="legacy-tools-collapse" type="button" class="text-link-btn" aria-controls="legacy-capture-area" aria-expanded="true">收起</button>
             </div>
 
+            <div class="composer-section-label">类型</div>
               <div class="tab-buttons composer-segment legacy-mode-switch" aria-label="整理模式">
                 <button id="tab-log-btn" class="tab-btn active">流水</button>
                 <button id="tab-todo-btn" class="tab-btn">待办</button>
@@ -156,101 +157,155 @@
               </div>
 
             <div id="panel-log" class="tab-panel composer-panel">
-              <div class="form-group">
-                <input type="text" id="log-task-input" placeholder="核心事件……" class="hero-input" />
+              <div class="composer-section">
+                <div class="composer-section-label">内容</div>
+                <input type="text" id="log-task-input" placeholder="记录发生了什么" class="hero-input composer-main-input" />
               </div>
 
-              <div class="form-row">
-                <div class="field-col">
-                  <label class="field-label">🏷️ 主分类：可选，未选择时保存为未分类</label>
-                  <select id="log-tag-select" class="hero-input select-hero"></select>
-                  <input type="text" id="log-tag-new" class="hero-input" style="display: none; margin-top: 8px;" placeholder="输入新主分类..." />
-                </div>
-                <div class="field-col">
-                  <label class="field-label">📁 子项目</label>
-                  <select id="log-sub-tag-select" class="hero-input select-hero"></select>
-                  <input type="text" id="log-sub-tag-new" class="hero-input" style="display: none; margin-top: 8px;" placeholder="输入新子项目..." />
-                </div>
-              </div>
-
-              <div class="form-group">
-                <textarea id="log-detail-input" placeholder="详细说明 (可选)... 补充具体细节、思路或复盘..." class="hero-textarea"></textarea>
-              </div>
-
-              <div class="form-actions">
-                <div class="action-controls">
-                  <div style="display: flex; gap: 20px; align-items: center; margin-bottom: 10px;">
-                    <div class="time-control">
-                      <label class="checkbox-label">
-                        <input type="checkbox" id="log-use-current-time" checked> 🕒 自动时间
-                      </label>
-                      <input type="text" id="log-manual-datetime" style="display: none;" class="datetime-input" placeholder="选择时间..." />
-                    </div>
-                    <div class="status-control">
-                      <label class="radio-label success-text"><input type="radio" name="log-status" value="normal" checked> ✅ 正常</label>
-                      <label class="radio-label danger-text"><input type="radio" name="log-status" value="overdue"> 🚨 延期</label>
-                    </div>
-                  </div>
-                  
-                  <div class="deadline-control" style="display: flex; align-items: center; gap: 10px;">
+              <div class="composer-section">
+                <div class="composer-section-label">时间</div>
+                <div class="legacy-inline-controls">
+                  <div class="time-control">
                     <label class="checkbox-label">
-                      <input type="checkbox" id="log-has-deadline"> 📅 截至日期
+                      <input type="checkbox" id="log-use-current-time" checked> 自动时间
+                    </label>
+                    <input type="text" id="log-manual-datetime" style="display: none;" class="datetime-input" placeholder="选择时间..." />
+                  </div>
+                  <div class="deadline-control">
+                    <label class="checkbox-label">
+                      <input type="checkbox" id="log-has-deadline"> 截至日期
                     </label>
                     <input type="text" id="log-deadline-input" style="display: none;" class="datetime-input" placeholder="选择截止时间..." />
                   </div>
                 </div>
-                <button id="add-log-btn" class="primary-btn hero-btn">💾 记录一下</button>
+              </div>
+
+              <div class="composer-section">
+                <div class="composer-section-label">归属</div>
+              <div class="form-row legacy-owner-row">
+                <div class="field-col">
+                  <label class="field-label">主分类</label>
+                  <select id="log-tag-select" class="hero-input select-hero"></select>
+                  <input type="text" id="log-tag-new" class="hero-input" style="display: none; margin-top: 8px;" placeholder="输入新主分类..." />
+                </div>
+                <div class="field-col">
+                  <label class="field-label">子项目</label>
+                  <select id="log-sub-tag-select" class="hero-input select-hero"></select>
+                  <input type="text" id="log-sub-tag-new" class="hero-input" style="display: none; margin-top: 8px;" placeholder="输入新子项目..." />
+                </div>
+              </div>
+              </div>
+
+              <div class="composer-section">
+                <div class="composer-section-label">说明</div>
+                <textarea id="log-detail-input" placeholder="详细说明 (可选)... 补充具体细节、思路或复盘..." class="hero-textarea"></textarea>
+              </div>
+
+              <div class="composer-section">
+                <div class="composer-section-label">状态</div>
+              <div class="form-actions">
+                <div class="action-controls">
+                  <div class="status-control legacy-inline-controls">
+                    <label class="radio-label success-text"><input type="radio" name="log-status" value="normal" checked> 正常</label>
+                    <label class="radio-label danger-text"><input type="radio" name="log-status" value="overdue"> 延期</label>
+                  </div>
+                </div>
+                <button id="add-log-btn" class="btn btn-primary legacy-save-btn">保存流水</button>
+              </div>
               </div>
             </div>
 
             <div id="panel-todo" class="tab-panel composer-panel" style="display: none;">
-              <div class="form-group">
-                <input type="text" id="todo-task-input" placeholder="待办事项..." class="hero-input" />
+              <div class="composer-section">
+                <div class="composer-section-label">内容</div>
+                <input type="text" id="todo-task-input" placeholder="输入要做的事" class="hero-input composer-main-input" />
               </div>
 
-              <div class="form-row">
+              <div class="composer-section">
+                <div class="composer-section-label">时间</div>
+                <label class="checkbox-label" style="margin-bottom: 8px;">
+                  <input type="checkbox" id="todo-has-date-range"> 计划时间
+                </label>
+                <div id="todo-date-range-fields" style="display: none; align-items: center; gap: 10px; flex-wrap: wrap;">
+                  <div id="todo-time-range-picker"></div>
+                  <input type="text" id="todo-start-input" class="datetime-input time-range-compatible-input" placeholder="开始时间..." readonly />
+                  <input type="text" id="todo-end-input" class="datetime-input time-range-compatible-input" placeholder="结束/截止时间..." readonly />
+                </div>
+              </div>
+
+              <div class="composer-section">
+                <div class="composer-section-label">归属</div>
+              <div class="form-row legacy-owner-row">
                 <div class="field-col">
-                  <label class="field-label">🏷️ 主分类：可选，未选择时保存为未分类</label>
+                  <label class="field-label">主分类</label>
                   <select id="todo-tag-select" class="hero-input select-hero"></select>
                   <input type="text" id="todo-tag-new" class="hero-input" style="display: none; margin-top: 8px;" placeholder="输入新主分类..." />
                 </div>
                 <div class="field-col">
-                  <label class="field-label">📁 子项目</label>
+                  <label class="field-label">子项目</label>
                   <select id="todo-sub-tag-select" class="hero-input select-hero"></select>
                   <input type="text" id="todo-sub-tag-new" class="hero-input" style="display: none; margin-top: 8px;" placeholder="输入新子项目..." />
                 </div>
               </div>
+              </div>
 
-              <div class="form-group">
+              <div class="composer-section">
+                <div class="composer-section-label">说明</div>
                 <textarea id="todo-detail-input" placeholder="详细说明 (可选)... 记录执行标准、灵感或补充信息..." class="hero-textarea"></textarea>
               </div>
 
+              <div class="composer-section">
+                <div class="composer-section-label">其他选项</div>
               <div class="form-actions">
                 <div class="action-controls">
                   <div class="parent-task-control" style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
                     <label class="checkbox-label">
-                      <input type="checkbox" id="todo-has-parent"> 拆成子任务
+                      <input type="checkbox" id="todo-has-parent"> 设为下级任务
                     </label>
                     <select id="todo-parent-select" class="datetime-input" style="display: none; width: 260px !important;"></select>
                   </div>
-                  <label class="checkbox-label" style="margin-bottom: 8px;">
-                    <input type="checkbox" id="todo-has-date-range"> 📅 计划时间
-                  </label>
-                  <div id="todo-date-range-fields" style="display: none; align-items: center; gap: 10px; flex-wrap: wrap;">
-                    <input type="text" id="todo-start-input" class="datetime-input" placeholder="开始时间..." />
-                    <span style="color: var(--text-muted); font-size: 13px;">至</span>
-                    <input type="text" id="todo-end-input" class="datetime-input" placeholder="结束/截止时间..." />
-                  </div>
                 </div>
-                <button id="add-todo-btn" class="primary-btn hero-btn">➕ 添加待办</button>
+                <button id="add-todo-btn" class="btn btn-primary legacy-save-btn">保存待办</button>
+              </div>
               </div>
             </div>
 
             <div id="panel-note" class="tab-panel composer-panel note-composer" style="display: none;">
-              <div class="form-group note-editor-shell">
-                <textarea id="note-content-input" class="hero-textarea note-main-input" placeholder="现在有什么值得记下来？&#10;&#10;例如：导师建议第三章不要按年份写。&#10;例如：实验结果波动，怀疑随机种子没固定。"></textarea>
+              <div class="composer-section note-editor-shell">
+                <div class="composer-section-label">内容</div>
+                <textarea id="note-content-input" class="hero-textarea note-main-input" placeholder="写下想法或结论"></textarea>
               </div>
 
+              <div class="composer-section">
+                <div class="composer-section-label">时间</div>
+                <p class="legacy-muted-text">保存时使用当前时间。</p>
+              </div>
+
+              <div class="composer-section">
+                <div class="composer-section-label">归属</div>
+              <div class="form-row note-meta-row legacy-owner-row">
+                <div class="field-col">
+                  <label class="field-label">主分类</label>
+                  <select id="note-tag-select" class="hero-input select-hero"></select>
+                  <input type="text" id="note-tag-new" class="hero-input" style="display: none; margin-top: 8px;" placeholder="输入新主分类..." />
+                </div>
+                <div class="field-col">
+                  <label class="field-label">子项目</label>
+                  <select id="note-sub-tag-select" class="hero-input select-hero"></select>
+                  <input type="text" id="note-sub-tag-new" class="hero-input" style="display: none; margin-top: 8px;" placeholder="输入新子项目..." />
+                </div>
+              </div>
+              </div>
+
+              <div class="composer-section">
+                <div class="composer-section-label">说明</div>
+                <div class="note-action-field" style="display:none;">
+                  <input type="text" id="note-action-input" class="hero-input" placeholder="可选：顺手生成一个后续待办..." />
+                </div>
+              </div>
+
+              <div class="composer-section">
+                <div class="composer-section-label">其他选项</div>
               <div class="note-type-chips" aria-label="笔记类型">
                 <button type="button" class="note-chip-btn active" data-note-type="idea">想法</button>
                 <button type="button" class="note-chip-btn" data-note-type="problem">问题</button>
@@ -260,10 +315,7 @@
                 <button type="button" class="note-chip-btn" data-note-type="review">复盘</button>
               </div>
 
-              <div class="form-row note-meta-row">
-                <div class="field-col note-type-select-field">
-                  <label class="field-label">记录类型</label>
-                  <select id="note-type-select" class="hero-input select-hero">
+              <select id="note-type-select" class="hero-input select-hero note-type-select-field" aria-label="记录类型">
                     <option value="idea">想法</option>
                     <option value="problem">问题</option>
                     <option value="source">资料</option>
@@ -271,28 +323,13 @@
                     <option value="method">方法</option>
                     <option value="review">复盘</option>
                   </select>
-                </div>
-                <div class="field-col">
-                  <label class="field-label">🏷️ 主分类：可选，未选择时保存为未分类</label>
-                  <select id="note-tag-select" class="hero-input select-hero"></select>
-                  <input type="text" id="note-tag-new" class="hero-input" style="display: none; margin-top: 8px;" placeholder="输入新主分类..." />
-                </div>
-                <div class="field-col">
-                  <label class="field-label">📁 子项目</label>
-                  <select id="note-sub-tag-select" class="hero-input select-hero"></select>
-                  <input type="text" id="note-sub-tag-new" class="hero-input" style="display: none; margin-top: 8px;" placeholder="输入新子项目..." />
-                </div>
-              </div>
-
-              <div class="form-group note-action-field" style="display:none;">
-                <input type="text" id="note-action-input" class="hero-input" placeholder="可选：顺手生成一个后续待办..." />
-              </div>
 
               <div class="form-actions note-actions">
                 <div class="action-controls">
                   <button type="button" id="toggle-note-action-btn" class="icon-btn">+ 后续待办</button>
                 </div>
-                <button id="add-note-btn" class="primary-btn hero-btn">保存记录</button>
+                <button id="add-note-btn" class="btn btn-primary legacy-save-btn">保存笔记</button>
+              </div>
               </div>
             </div>
           </div>
@@ -306,11 +343,13 @@
 
           <div class="task-tree-section">
             <div class="section-heading-row">
-              <h2>待办任务树</h2>
+              <h2>今日待办 / 待办任务树</h2>
             </div>
-            <p class="section-hint">支持多级子任务，展开任务可继续拆分。</p>
             <div id="todo-list-container" class="task-tree-container"></div>
           </div>
+          <section class="completed-todos-section" aria-label="已完成待办">
+            <div id="completed-todos-container" class="completed-todos-container"></div>
+          </section>
           <div id="history-list-container" class="legacy-hidden-list"></div>
           <div id="notes-list-container" class="legacy-hidden-list"></div>
         </div>

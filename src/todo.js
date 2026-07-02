@@ -2,13 +2,21 @@ import { appData, dbExecute, dbQuery, loadData, getTodayString, DEFAULT_TAG } fr
 import { renderHistoryList } from './log.js'; 
 import { openUniversalEditModal } from './formUtils.js';
 import { appendRemarkEntry, escapeHtml, insertTextareaNewline, textWithLineBreaks } from './htmlUtils.js';
+import { openScheduleTodoModal } from './quickCapture.js';
 import { showUndoToast } from './undoToast.js';
+import { createTimeRangePicker } from './timeRangePicker.js';
 
 function refreshTaskRelatedViews() {
   if (window.renderTodoParents) window.renderTodoParents();
   if (window.renderQuickParentTodos) window.renderQuickParentTodos();
   if (typeof window.renderTodayTimeline === 'function') window.renderTodayTimeline();
   if (typeof window.updateWorkspaceSummary === 'function') window.updateWorkspaceSummary();
+}
+
+function hasPendingDescendant(todoId) {
+  const targetId = String(todoId);
+  const children = (appData.todos || []).filter(todo => String(todo.parent_id || '') === targetId);
+  return children.some(child => !child.done || hasPendingDescendant(child.id));
 }
 
 async function insertAndReturnId(query, params) {
@@ -19,6 +27,7 @@ async function insertAndReturnId(query, params) {
 export function initTodoModule() {
   const hasDateRangeCb = document.getElementById('todo-has-date-range');
   const dateRangeFields = document.getElementById('todo-date-range-fields');
+  const timeRangeContainer = document.getElementById('todo-time-range-picker');
   const startInput = document.getElementById('todo-start-input');
   const endInput = document.getElementById('todo-end-input');
   const hasParentCb = document.getElementById('todo-has-parent');
@@ -31,9 +40,16 @@ export function initTodoModule() {
     return;
   }
 
-  const fpConfig = { ...window.fpGlobalConfig };
-  const fpStart = window.flatpickr ? flatpickr(startInput, fpConfig) : null;
-  const fpEnd = window.flatpickr ? flatpickr(endInput, fpConfig) : null;
+  const timeRangePicker = createTimeRangePicker(timeRangeContainer, {
+    valueStart: startInput.value,
+    valueEnd: endInput.value,
+    allowDateOnly: true,
+    minuteStep: 30,
+    onChange: (start, end) => {
+      startInput.value = start;
+      endInput.value = end;
+    }
+  });
 
   hasDateRangeCb.onchange = () => dateRangeFields.style.display = hasDateRangeCb.checked ? 'flex' : 'none';
   hasParentCb.onchange = () => parentSelect.style.display = hasParentCb.checked ? 'block' : 'none';
@@ -54,7 +70,7 @@ export function initTodoModule() {
       return names.join(' / ');
     };
 
-    parentSelect.innerHTML = '<option value="">选择父任务...</option>';
+    parentSelect.innerHTML = '<option value="">选择上级任务...</option>';
     appData.todos
       .filter(t => !t.done)
       .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0) || a.id - b.id)
@@ -139,8 +155,9 @@ export function initTodoModule() {
     if(hasDateRangeCb.checked) {
       hasDateRangeCb.checked = false;
       dateRangeFields.style.display = 'none';
-      if (fpStart) fpStart.clear();
-      if (fpEnd) fpEnd.clear();
+      startInput.value = "";
+      endInput.value = "";
+      timeRangePicker?.clear();
     }
     if(hasParentCb.checked) {
       hasParentCb.checked = false;
@@ -157,8 +174,12 @@ export function initTodoModule() {
 
 export async function renderTodoList() {
   const container = document.getElementById('todo-list-container'); if(!container) return; container.innerHTML = ""; 
+  const completedContainer = document.getElementById('completed-todos-container');
+  if (completedContainer) completedContainer.innerHTML = "";
   if (typeof window.updateWorkspaceSummary === 'function') window.updateWorkspaceSummary();
   let pendingTodos = appData.todos.filter(t => !t.done); const completedTodos = appData.todos.filter(t => t.done);
+  const completedSection = completedContainer?.closest('.completed-todos-section');
+  if (completedSection) completedSection.style.display = completedTodos.length > 0 ? '' : 'none';
 
   const getTodoEnd = (todo) => todo.end_at || todo.deadline || "";
   const sortTodos = (a, b) => {
@@ -260,7 +281,8 @@ export async function renderTodoList() {
               <button class="quick-note-btn" type="button">追加</button>
             </div>
             <div style="display: flex; gap: 10px; border-top: 1px dashed var(--border-light); padding-top: 10px; justify-content: flex-end; flex-wrap: wrap;">
-              <button type="button" class="icon-btn add-child-todo-btn" data-id="${todo.id}" style="margin:0;">＋ 子任务</button>
+              <button type="button" class="icon-btn add-child-todo-btn" data-id="${todo.id}" style="margin:0;">快速添加下级任务</button>
+              <button type="button" class="icon-btn full-child-todo-btn" data-id="${todo.id}" style="margin:0;">完整添加下级任务</button>
               <div class="dropdown-wrapper" onclick="event.preventDefault(); event.stopPropagation();">
                   <button class="dots-btn icon-btn" style="padding: 4px 10px; margin: 0; font-size: 13px;" onclick="
                       const menu = this.nextElementSibling; const isShow = menu.classList.contains('show');
@@ -281,7 +303,7 @@ export async function renderTodoList() {
     };
 
   if (pendingTodos.length === 0) {
-    container.innerHTML = "<div class='empty-state'><strong>当前没有待办</strong><span>新增任务后会出现在这里，也可以从流水完成记录自动沉淀。</span></div>";
+    container.innerHTML = "<div class='empty-state'><strong>今天还没有待办</strong></div>";
   } else {
     rootTodos.forEach(todo => container.insertAdjacentHTML('beforeend', buildTodoCard(todo)));
 
@@ -325,10 +347,11 @@ export async function renderTodoList() {
         const parentId = btn.getAttribute('data-id');
         const parentTodo = appData.todos.find(item => String(item.id) === String(parentId));
         if (!parentTodo) return;
-        const task = prompt('输入子任务内容：', '');
+        const task = prompt('输入下级任务内容：', '');
         if (!task) return;
         const currentTag = parentTodo.tag || '';
         const currentSub = parentTodo.sub_tag || '';
+        // 快速添加下级任务继承上级任务的分类、子项目和截止时间，完整创建入口可自行修改时间。
         dbExecute(
           "INSERT INTO todos (task, done, tag, sub_tag, detail, remark, deadline, start_at, end_at, parent_id, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
           [task.trim(), false, currentTag, currentSub, '', '', parentTodo.deadline || '', '', parentTodo.deadline || '', parentTodo.id, '']
@@ -340,11 +363,30 @@ export async function renderTodoList() {
       });
     });
 
+    document.querySelectorAll('.full-child-todo-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const parentId = btn.getAttribute('data-id');
+        const parentTodo = appData.todos.find(item => String(item.id) === String(parentId));
+        if (!parentTodo) return;
+        openScheduleTodoModal(null, {
+          parentTodoId: parentTodo.id,
+          parentTodo,
+          defaultTag: parentTodo.tag || DEFAULT_TAG,
+          defaultSubTag: parentTodo.sub_tag || ''
+          // 完整创建下级任务默认继承分类和子项目；时间默认不继承，避免误排期。
+        });
+      });
+    });
+
     // 🌟 外科手术：打钩完成待办
     document.querySelectorAll('.todo-cb').forEach(cb => {
       cb.addEventListener('change', async (e) => {
         const id = parseInt(e.target.getAttribute('data-id')); 
         const todo = appData.todos.find(t => t.id === id);
+        if (hasPendingDescendant(id) && !confirm('该任务还有未完成的下级任务，仍要完成吗？')) {
+          e.target.checked = false;
+          return;
+        }
         
         const todayStr = getTodayString();
         const timeStr = new Date().toLocaleTimeString('en-US', {hour12: false});
@@ -433,8 +475,9 @@ export async function renderTodoList() {
 
   // ---------------- 已完成待办区域 ----------------
   if (completedTodos.length > 0) {
-    const detailsStr = `<details class="glass-accordion border-success" style="margin-top: 30px;"><summary class="log-summary" style="background: rgba(74, 222, 128, 0.05);"><span class="log-text" style="color: #94A3B8;">✅ 查看与清理已完成待办 (${completedTodos.length} 个)</span></summary><div class="expanded-content" id="completed-todos-drawer" style="padding: 15px;"></div></details>`;
-    container.insertAdjacentHTML('beforeend', detailsStr);
+    const completedMount = completedContainer || container;
+    const detailsStr = `<details class="glass-accordion border-success completed-todos-accordion"><summary class="log-summary completed-todos-summary"><span class="log-text">已完成 ${completedTodos.length} 个</span></summary><div class="expanded-content" id="completed-todos-drawer" style="padding: 15px;"></div></details>`;
+    completedMount.insertAdjacentHTML('beforeend', detailsStr);
     const drawer = document.getElementById('completed-todos-drawer');
     
     completedTodos.forEach(todo => {
@@ -505,7 +548,7 @@ export async function renderTodoList() {
       actionsDiv.append(remarkBtn, delBtn); itemDiv.append(checkbox, contentCol, actionsDiv); drawer.appendChild(itemDiv);
     });
 
-    const clearAllBtn = document.createElement('button'); clearAllBtn.className = 'primary-btn'; clearAllBtn.style.width = '100%'; clearAllBtn.style.marginTop = '15px'; clearAllBtn.style.backgroundColor = 'rgba(var(--color-danger-rgb), 0.2)'; clearAllBtn.style.color = 'var(--color-danger)'; clearAllBtn.style.border = '1px solid rgba(var(--color-danger-rgb), 0.4)'; clearAllBtn.innerText = '🧹 一键清理所有已完成待办 (无法恢复)';
+    const clearAllBtn = document.createElement('button'); clearAllBtn.className = 'icon-btn completed-clear-btn'; clearAllBtn.style.width = 'auto'; clearAllBtn.style.marginTop = '15px'; clearAllBtn.innerText = '一键清理所有已完成待办';
     
     clearAllBtn.onclick = async () => { 
         window.showModal("🧹 清理已完成待办", `<div style="font-size: 15px; color: var(--text-main);">确定要永久删除 <b>所有已完成待办</b> 吗？<br><br><span style="color:#ff6b6b;font-size:13px;">删除后无法恢复。建议先备份数据库。</span></div>`, null, async () => {

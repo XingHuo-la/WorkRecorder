@@ -1,7 +1,7 @@
 import { appData, dbExecute, dbQuery, getTodayString, loadData } from './data.js';
 import { openUniversalEditModal } from './formUtils.js';
 import { appendRemarkEntry, escapeHtml, textWithLineBreaks } from './htmlUtils.js';
-import { convertQuickRecord, renderInboxRecords, updateQuickRecordProject } from './quickCapture.js';
+import { convertQuickRecord, openScheduleTodoModal, renderInboxRecords, updateQuickRecordProject } from './quickCapture.js';
 import { showUndoToast } from './undoToast.js';
 
 const expandedMoreActionIds = new Set();
@@ -23,6 +23,12 @@ function getTodoDisplayTime(todo) {
   if (endText.includes(' ')) return endText.substring(11, 16);
   if (endText.includes(':')) return endText.substring(0, 5);
   return '待办';
+}
+
+function hasPendingDescendant(todoId) {
+  const targetId = String(todoId);
+  const children = (appData.todos || []).filter(todo => String(todo.parent_id || '') === targetId);
+  return children.some(child => !child.done || hasPendingDescendant(child.id));
 }
 
 async function insertAndReturnId(query, params) {
@@ -76,7 +82,8 @@ function renderTodoActions(todo) {
     `todo-${todo.id}`,
     [renderActionButton('done', '完成', 'primary-action')],
     [
-      renderActionButton('child', '子任务'),
+      renderActionButton('child', '快速添加下级任务'),
+      renderActionButton('childFull', '完整添加下级任务'),
       renderActionButton('edit', '编辑'),
       renderActionButton('remark', '补述'),
       renderActionButton('delete', '删除', 'danger-action')
@@ -251,7 +258,7 @@ export function renderTodayTimeline() {
   ].sort((a, b) => b.time.localeCompare(a.time));
 
   if (items.length === 0) {
-    container.innerHTML = "<div class='empty-state'><strong>今天还没有记录</strong><span>先写一句，记录会自动进入今日时间线。</span></div>";
+    container.innerHTML = "<div class='empty-state'><strong>今天还没有记录</strong></div>";
     return;
   }
 
@@ -299,7 +306,7 @@ export function renderTodayTimeline() {
             return;
           }
           if (action === 'child') {
-            const task = prompt('输入子任务内容：', '');
+            const task = prompt('输入下级任务内容：', '');
             if (!task) return;
             await dbExecute(
               "INSERT INTO todos (task, done, tag, sub_tag, detail, remark, deadline, start_at, end_at, parent_id, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -328,6 +335,7 @@ export function renderTodayTimeline() {
           const todo = appData.todos.find(item => item.id === id);
           if (!todo) return;
           if (action === 'done') {
+            if (hasPendingDescendant(todo.id) && !confirm('该任务还有未完成的下级任务，仍要完成吗？')) return;
             await dbExecute("UPDATE todos SET done=?, completed_at=? WHERE id=?", [true, today, todo.id]);
             const completedLogId = await insertAndReturnId(
               "INSERT INTO logs (date, time, text, tag, sub_tag, detail, remark, linked_todo, deadline, is_overdue, status, record_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -353,6 +361,28 @@ export function renderTodayTimeline() {
           }
           if (action === 'edit') {
             renderEditTodoModal(todo);
+            return;
+          }
+          if (action === 'child') {
+            const task = prompt('输入下级任务内容：', '');
+            if (!task) return;
+            await dbExecute(
+              "INSERT INTO todos (task, done, tag, sub_tag, detail, remark, deadline, start_at, end_at, parent_id, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              [task.trim(), false, todo.tag || '未分类', todo.sub_tag || '', '', '', getTodoEnd(todo), '', getTodoEnd(todo), todo.id, '']
+            );
+            await loadData();
+            renderTodayTimeline();
+            import('./todo.js').then(m => m.renderTodoList());
+            if (typeof window.renderQuickParentTodos === 'function') window.renderQuickParentTodos();
+            return;
+          }
+          if (action === 'childFull') {
+            openScheduleTodoModal(null, {
+              parentTodoId: todo.id,
+              parentTodo: todo,
+              defaultTag: todo.tag || '未分类',
+              defaultSubTag: todo.sub_tag || ''
+            });
             return;
           }
           if (action === 'remark') {

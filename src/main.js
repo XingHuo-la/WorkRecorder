@@ -122,7 +122,7 @@ function setupQuickAdvancedOptions() {
     if (!parentSelect) return;
     const currentValue = parentSelect.value;
     const byId = new Map((appData.todos || []).map(todo => [todo.id, todo]));
-    parentSelect.innerHTML = '<option value="">无父任务</option>';
+    parentSelect.innerHTML = '<option value="">无上级任务</option>';
     (appData.todos || [])
       .filter(todo => !todo.done)
       .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0) || a.id - b.id)
@@ -181,11 +181,15 @@ function setupLegacyToolsToggle() {
     area.classList.toggle('show', isOpen);
     area.setAttribute('aria-hidden', String(!isOpen));
     toggle.setAttribute('aria-expanded', String(isOpen));
-    toggle.innerText = isOpen ? '收起高级整理' : '展开高级整理';
-    if (collapse) collapse.setAttribute('aria-expanded', String(isOpen));
+    toggle.innerText = isOpen ? '收起' : '打开完整录入';
+    if (strip) strip.style.display = isOpen ? 'none' : '';
+    if (collapse) {
+      collapse.setAttribute('aria-expanded', String(isOpen));
+      collapse.innerText = '收起';
+    }
 
     if (shouldScroll) {
-      const target = isOpen ? area : toggle.closest('.task-tree-section');
+      const target = isOpen ? area : toggle.closest('.advanced-tools-strip');
       target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
   };
@@ -228,8 +232,8 @@ window.showModal = function(title, htmlContent, onReady, onConfirm, options = {}
         <h3 id="global-modal-title" style="margin-top:0; color:var(--text-main); border-bottom:1px solid var(--border-medium); padding-bottom:15px; margin-bottom:20px;"></h3>
         <div id="global-modal-body"></div>
         <div class="modal-actions" style="display:flex; justify-content:flex-end; gap:12px; margin-top:25px; border-top:1px dashed var(--border-medium); padding-top:15px;">
-          <button id="global-modal-cancel" class="primary-btn" style="background:transparent; border:1px solid var(--border-medium); color:var(--text-muted); width:auto; padding:8px 16px; margin:0;">取消</button>
-          <button id="global-modal-confirm" class="primary-btn" style="width:auto; padding:8px 20px; margin:0;"></button>
+          <button id="global-modal-cancel" class="btn btn-ghost" style="width:auto; padding:8px 16px; margin:0;">取消</button>
+          <button id="global-modal-confirm" class="btn btn-primary" style="width:auto; padding:8px 20px; margin:0;"></button>
         </div>
       </div>`;
     document.body.appendChild(overlay);
@@ -258,9 +262,9 @@ window.showModal = function(title, htmlContent, onReady, onConfirm, options = {}
   const isDanger = options.danger || false;
   confirmBtn.innerText = options.btnText || (isDanger ? "🗑️ 确认删除" : "💾 确认保存");
   if (isDanger) {
-      confirmBtn.className = "primary-btn danger-btn"; 
+      confirmBtn.className = "btn btn-danger";
   } else {
-      confirmBtn.className = "primary-btn";
+      confirmBtn.className = "btn btn-primary";
   }
 
   const newCancel = cancelBtn.cloneNode(true); cancelBtn.parentNode.replaceChild(newCancel, cancelBtn);
@@ -314,9 +318,9 @@ function setupTabs() {
     btnLog.classList.toggle('active', tab === 'log');
     btnTodo.classList.toggle('active', isTodo);
     btnNote.classList.toggle('active', isNote);
-    panelLog.style.display = tab === 'log' ? 'block' : 'none';
-    panelTodo.style.display = isTodo ? 'block' : 'none';
-    if (panelNote) panelNote.style.display = isNote ? 'block' : 'none';
+    panelLog.style.display = tab === 'log' ? 'flex' : 'none';
+    panelTodo.style.display = isTodo ? 'flex' : 'none';
+    if (panelNote) panelNote.style.display = isNote ? 'flex' : 'none';
     localStorage.setItem('workRecorder:lastInputTab', tab);
   };
 

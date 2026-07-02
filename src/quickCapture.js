@@ -1,6 +1,7 @@
 import { appData, dbExecute, dbQuery, getTodayString, loadData, DEFAULT_TAG } from './data.js';
 import { escapeHtml, insertTextareaNewline } from './htmlUtils.js';
 import { showUndoToast } from './undoToast.js';
+import { createTimeRangePicker } from './timeRangePicker.js';
 
 let quickToastTimer = null;
 
@@ -223,7 +224,8 @@ function buildTodoPath(todo, byId) {
 }
 
 function renderTagOptions(selectedTag = DEFAULT_TAG) {
-  const tags = [DEFAULT_TAG, ...(appData?.settings?.active_tags || appData?.tags || []).filter(tag => tag !== DEFAULT_TAG)];
+  const baseTags = [DEFAULT_TAG, ...(appData?.settings?.active_tags || appData?.tags || []).filter(tag => tag !== DEFAULT_TAG)];
+  const tags = selectedTag && !baseTags.includes(selectedTag) ? [...baseTags, selectedTag] : baseTags;
   return tags.map(tag => {
     const safeTag = escapeHtml(tag);
     const selected = tag === selectedTag ? ' selected' : '';
@@ -231,14 +233,16 @@ function renderTagOptions(selectedTag = DEFAULT_TAG) {
   }).join('');
 }
 
-function renderParentTodoOptions() {
+function renderParentTodoOptions(selectedParentId = '') {
   const byId = new Map((appData?.todos || []).map(todo => [todo.id, todo]));
-  const options = ['<option value="">无父任务</option>'];
+  const selectedId = String(selectedParentId || '');
+  const options = [`<option value=""${selectedId ? '' : ' selected'}>无上级任务</option>`];
   (appData?.todos || [])
     .filter(todo => !todo.done)
     .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0) || a.id - b.id)
     .forEach(todo => {
-      options.push(`<option value="${todo.id}">${escapeHtml(buildTodoPath(todo, byId))}</option>`);
+      const selected = String(todo.id) === selectedId ? ' selected' : '';
+      options.push(`<option value="${todo.id}"${selected}>${escapeHtml(buildTodoPath(todo, byId))}</option>`);
     });
   return options.join('');
 }
@@ -284,54 +288,69 @@ export async function addQuickTodo(inputEl) {
   showQuickToast('已添加待办');
 }
 
-function renderScheduleTodoModalHtml(defaultTitle) {
+function renderScheduleTodoModalHtml(defaultTitle, options = {}) {
+  const parentTodo = options.parentTodo || null;
+  const selectedTag = options.defaultTag || DEFAULT_TAG;
+  const selectedSubTag = options.defaultSubTag || '';
+  const selectedParentId = options.parentTodoId || '';
+  const parentHint = parentTodo
+    ? `<div class="schedule-parent-context">上级任务：${escapeHtml(buildTodoPath(parentTodo, new Map((appData?.todos || []).map(todo => [todo.id, todo]))))}</div>`
+    : '';
   return `
     <div class="schedule-todo-modal">
-      <div class="form-group">
+      ${parentHint}
+      <div class="form-group schedule-title-field">
         <label class="field-label">待办标题</label>
-        <input id="schedule-todo-title" class="hero-input" value="${escapeHtml(defaultTitle)}" placeholder="输入待办标题" />
+        <input id="schedule-todo-title" class="hero-input" value="${escapeHtml(defaultTitle)}" placeholder="输入待办，例如：整理发布说明" />
       </div>
-      <div class="form-row">
-        <div class="field-col">
-          <label class="field-label">主分类：可选，未选择时保存为未分类</label>
-          <select id="schedule-todo-tag" class="hero-input select-hero">${renderTagOptions(DEFAULT_TAG)}</select>
+      <div class="form-group schedule-time-field">
+        <label class="field-label">什么时候？</label>
+        <div id="schedule-time-range-picker"></div>
+      </div>
+
+      <details id="schedule-more-settings" class="schedule-more-settings">
+        <summary>更多设置</summary>
+        <div class="schedule-settings-group">
+          <div class="schedule-settings-title">归属</div>
+          <div class="form-row schedule-meta-row">
+            <div class="field-col">
+              <label class="field-label">主分类</label>
+              <select id="schedule-todo-tag" class="hero-input select-hero">${renderTagOptions(selectedTag)}</select>
+            </div>
+            <div class="field-col">
+              <label class="field-label">子项目</label>
+              <input id="schedule-todo-sub-tag" class="hero-input" value="${escapeHtml(selectedSubTag)}" placeholder="可选" />
+            </div>
+          </div>
         </div>
-        <div class="field-col">
-          <label class="field-label">子项目（可选）</label>
-          <input id="schedule-todo-sub-tag" class="hero-input" placeholder="可选：输入子项目" />
+        <div class="form-row schedule-custom-time-row time-range-compatible-fields">
+          <div class="field-col">
+            <label class="field-label">兼容开始时间</label>
+            <input id="schedule-todo-start" class="hero-input datetime-input time-range-compatible-input" placeholder="由时间选择器同步" readonly />
+          </div>
+          <div class="field-col">
+            <label class="field-label">兼容结束/截止时间</label>
+            <input id="schedule-todo-end" class="hero-input datetime-input time-range-compatible-input" placeholder="由时间选择器同步" readonly />
+          </div>
         </div>
-      </div>
-      <div class="schedule-time-shortcuts" aria-label="时间快捷选项">
-        <button type="button" data-range="today">今天</button>
-        <button type="button" data-range="tomorrow">明天</button>
-        <button type="button" data-range="week">本周</button>
-        <button type="button" data-range="custom">自定义</button>
-        <button type="button" data-range="none">无时间</button>
-      </div>
-      <div class="form-row">
-        <div class="field-col">
-          <label class="field-label">计划开始时间（可选）</label>
-          <input id="schedule-todo-start" class="hero-input datetime-input" placeholder="可选：计划开始时间" />
+        <div class="form-group">
+          <label class="field-label">上级任务</label>
+          <select id="schedule-todo-parent" class="hero-input select-hero">${renderParentTodoOptions(selectedParentId)}</select>
         </div>
-        <div class="field-col">
-          <label class="field-label">计划结束/截止时间（可选）</label>
-          <input id="schedule-todo-end" class="hero-input datetime-input" placeholder="可选：计划结束或截止时间" />
+        <div class="form-group">
+          <label class="field-label">详细说明</label>
+          <textarea id="schedule-todo-detail" class="hero-textarea" placeholder="可选：补充执行标准、背景或注意事项"></textarea>
         </div>
-      </div>
-      <div class="form-group">
-        <label class="field-label">父任务（可选）</label>
-        <select id="schedule-todo-parent" class="hero-input select-hero">${renderParentTodoOptions()}</select>
-      </div>
-      <div class="form-group">
-        <label class="field-label">详细说明（可选）</label>
-        <textarea id="schedule-todo-detail" class="hero-textarea" placeholder="可选：补充执行标准、背景或注意事项"></textarea>
-      </div>
-      <div class="form-group">
-        <label class="field-label">子任务列表（可选）</label>
-        <div id="schedule-subtasks" class="schedule-subtasks"></div>
-        <button id="schedule-add-subtask" type="button" class="icon-btn schedule-add-subtask">+ 添加子任务</button>
-        <div class="schedule-modal-hint">子任务会继承当前待办的主分类、子项目和计划时间。</div>
-      </div>
+        <div class="form-group">
+          <label class="field-label">下级任务</label>
+          <div id="schedule-subtasks" class="schedule-subtasks"></div>
+          <div class="schedule-subtask-actions">
+            <button id="schedule-add-subtask" type="button" class="btn btn-secondary schedule-add-subtask">快速添加下级任务</button>
+            <button id="schedule-full-subtask-info" type="button" class="btn btn-ghost schedule-full-subtask-info">完整添加下级任务</button>
+          </div>
+          <div class="schedule-modal-hint">下级任务会继承当前待办的主分类、子项目和时间；完整创建可在保存后从任务卡片进入。</div>
+        </div>
+      </details>
     </div>
   `;
 }
@@ -340,7 +359,7 @@ function addScheduleSubtaskRow(container, value = '') {
   const row = document.createElement('div');
   row.className = 'schedule-subtask-row';
   row.innerHTML = `
-    <input class="hero-input schedule-subtask-input" value="${escapeHtml(value)}" placeholder="子任务内容" />
+    <input class="hero-input schedule-subtask-input" value="${escapeHtml(value)}" placeholder="下级任务内容" />
     <button type="button" class="icon-btn schedule-remove-subtask">删除</button>
   `;
   row.querySelector('.schedule-remove-subtask').addEventListener('click', () => row.remove());
@@ -351,44 +370,30 @@ function setupScheduleTodoModal(body) {
   const startInput = body.querySelector('#schedule-todo-start');
   const endInput = body.querySelector('#schedule-todo-end');
   const titleInput = body.querySelector('#schedule-todo-title');
+  const timeRangeContainer = body.querySelector('#schedule-time-range-picker');
   const subtasks = body.querySelector('#schedule-subtasks');
   const addSubtaskBtn = body.querySelector('#schedule-add-subtask');
-  const fpConfig = window.fpGlobalConfig || { enableTime: true, enableSeconds: true, time_24hr: true, dateFormat: "Y-m-d H:i:S", locale: "zh" };
+  const fullSubtaskInfoBtn = body.querySelector('#schedule-full-subtask-info');
 
-  if (window.flatpickr) {
-    flatpickr(startInput, fpConfig);
-    flatpickr(endInput, fpConfig);
-  }
-
-  body.querySelectorAll('.schedule-time-shortcuts button[data-range]').forEach(button => {
-    button.addEventListener('click', () => {
-      const today = new Date();
-      const range = button.dataset.range;
-      if (range === 'today') {
-        startInput.value = formatDateOnly(today);
-        endInput.value = formatDateOnly(today);
-      } else if (range === 'tomorrow') {
-        const tomorrow = addDays(today, 1);
-        startInput.value = formatDateOnly(tomorrow);
-        endInput.value = formatDateOnly(tomorrow);
-      } else if (range === 'week') {
-        startInput.value = formatDateOnly(today);
-        endInput.value = formatDateOnly(getThisWeekEnd(today));
-      } else if (range === 'none') {
-        if (startInput._flatpickr) startInput._flatpickr.clear();
-        else startInput.value = '';
-        if (endInput._flatpickr) endInput._flatpickr.clear();
-        else endInput.value = '';
-      } else if (range === 'custom') {
-        startInput.focus();
-        startInput._flatpickr?.open();
-      }
-    });
+  createTimeRangePicker(timeRangeContainer, {
+    valueStart: startInput?.value || '',
+    valueEnd: endInput?.value || '',
+    allowDateOnly: true,
+    minuteStep: 30,
+    onChange: (start, end) => {
+      if (startInput) startInput.value = start;
+      if (endInput) endInput.value = end;
+      startInput?.dispatchEvent(new Event('change', { bubbles: true }));
+      endInput?.dispatchEvent(new Event('change', { bubbles: true }));
+    }
   });
 
-  addSubtaskBtn.addEventListener('click', () => {
+  addSubtaskBtn?.addEventListener('click', () => {
     addScheduleSubtaskRow(subtasks);
     subtasks.lastElementChild?.querySelector('input')?.focus();
+  });
+  fullSubtaskInfoBtn?.addEventListener('click', () => {
+    alert('保存当前待办后，可在任务卡片中使用“完整添加下级任务”。');
   });
   titleInput?.focus();
 }
@@ -406,7 +411,7 @@ async function confirmScheduleTodo(body, input) {
     .filter(Boolean);
 
   if (!title) {
-    alert('待办标题不能为空');
+    alert('先写待办内容');
     return false;
   }
   if (startAt && endAt && Date.parse(startAt) > Date.parse(endAt)) {
@@ -433,12 +438,12 @@ async function confirmScheduleTodo(body, input) {
   return true;
 }
 
-export function openScheduleTodoModal(inputEl) {
-  const input = inputEl || document.getElementById('quick-capture-input');
-  const defaultTitle = (input?.value || '').trim().replace(/\s+/g, ' ');
+export function openScheduleTodoModal(inputEl, options = {}) {
+  const input = inputEl === undefined ? document.getElementById('quick-capture-input') : inputEl;
+  const defaultTitle = (options.defaultTitle || input?.value || '').trim().replace(/\s+/g, ' ');
   window.showModal(
     '安排待办',
-    renderScheduleTodoModalHtml(defaultTitle),
+    renderScheduleTodoModalHtml(defaultTitle, options),
     setupScheduleTodoModal,
     body => confirmScheduleTodo(body, input),
     { btnText: '保存待办' }
@@ -451,11 +456,11 @@ export function renderInboxRecords() {
 
   const records = loadInboxRecords(10);
   if (records.length === 0) {
-    container.innerHTML = "<div class='inbox-empty'>暂无待整理记录，想到什么可以先写在上面。<br>修改分类不会完成整理，转为待办、笔记或流水后才会离开这里。</div>";
+    container.innerHTML = "<div class='inbox-empty' title='修改分类不会完成整理，转为待办、笔记或流水后才会离开这里。'>没有待整理内容</div>";
     return;
   }
 
-  const inboxHint = "<div class='inbox-process-hint'>修改分类不会完成整理，转为待办、笔记或流水后才会离开这里。</div>";
+  const inboxHint = "<div class='inbox-process-hint'>修改分类不会完成整理</div>";
   container.innerHTML = records.map(record => {
     const content = record.detail || record.text || '';
     const summary = content.replace(/\s+/g, ' ').trim();
@@ -549,7 +554,7 @@ export function initQuickCapture() {
       const isHidden = advancedPanel.style.display === 'none';
       advancedPanel.style.display = isHidden ? 'block' : 'none';
       advancedToggle.classList.toggle('active', isHidden);
-      advancedToggle.innerText = isHidden ? '收起类型 / 项目 / 时间' : '+ 添加类型 / 项目 / 时间';
+      advancedToggle.innerText = isHidden ? '收起选项' : '更多选项';
     });
   }
 
