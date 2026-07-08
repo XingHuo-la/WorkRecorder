@@ -5,6 +5,14 @@ import { appendRemarkEntry, escapeHtml, insertTextareaNewline, textWithLineBreak
 import { openScheduleTodoModal } from './quickCapture.js';
 import { showUndoToast } from './undoToast.js';
 import { createTimeRangePicker } from './timeRangePicker.js';
+import {
+  applyCreatedTodoRelation,
+  applyExistingTodoRelation,
+  getCreateParentId,
+  renderTaskRelationPickerHtml,
+  setupTaskRelationPicker,
+  validateTaskRelation
+} from './taskRelations.js';
 
 function refreshTaskRelatedViews() {
   if (window.renderTodoParents) window.renderTodoParents();
@@ -32,6 +40,7 @@ export function initTodoModule() {
   const endInput = document.getElementById('todo-end-input');
   const hasParentCb = document.getElementById('todo-has-parent');
   const parentSelect = document.getElementById('todo-parent-select');
+  const parentControl = document.querySelector('.parent-task-control');
   const tagSelect = document.getElementById('todo-tag-select'); const tagNewInput = document.getElementById('todo-tag-new');
   const subSelect = document.getElementById('todo-sub-tag-select'); const subNewInput = document.getElementById('todo-sub-tag-new');
   const addTodoBtn = document.getElementById('add-todo-btn');
@@ -53,6 +62,15 @@ export function initTodoModule() {
 
   hasDateRangeCb.onchange = () => dateRangeFields.style.display = hasDateRangeCb.checked ? 'flex' : 'none';
   hasParentCb.onchange = () => parentSelect.style.display = hasParentCb.checked ? 'block' : 'none';
+  if (parentControl && !parentControl.querySelector('.task-relation-picker')) {
+    hasParentCb.closest('label')?.style.setProperty('display', 'none');
+    parentSelect.style.display = 'none';
+    parentSelect.insertAdjacentHTML('afterend', renderTaskRelationPickerHtml('todo-create-relation', {
+      label: '任务关系',
+      defaultMode: 'independent'
+    }));
+  }
+  const todoCreateRelationPicker = setupTaskRelationPicker(parentControl, 'todo-create-relation');
 
   window.renderTodoParents = () => {
     if (!parentSelect) return;
@@ -79,6 +97,7 @@ export function initTodoModule() {
         parentSelect.innerHTML += `<option value="${todo.id}">${safeTask}</option>`;
       });
     if ([...parentSelect.options].some(opt => opt.value === currentValue)) parentSelect.value = currentValue;
+    todoCreateRelationPicker?.refresh?.();
   };
 
   window.renderTodoTags = () => {
@@ -88,9 +107,9 @@ export function initTodoModule() {
         const safeTag = escapeHtml(t);
         tagSelect.innerHTML += `<option value="${safeTag}">${safeTag}</option>`;
       });
-      tagSelect.innerHTML += `<option value="NEW">➕ 新建主分类...</option>`; 
+      tagSelect.innerHTML += `<option value="NEW">新建主分类...</option>`;
       
-      // 👇 核心修复 1：当没有任何活跃分类时，强制显示输入框
+      // 当没有任何活跃分类时，强制显示输入框。
       tagNewInput.style.display = tagSelect.value === 'NEW' ? 'block' : 'none';
       window.renderTodoSubTags();
     };
@@ -102,7 +121,7 @@ export function initTodoModule() {
       const safeSub = escapeHtml(t);
       subSelect.innerHTML += `<option value="${safeSub}">${safeSub}</option>`;
     });
-    subSelect.innerHTML += `<option value="NEW">➕ 新建子项目...</option>`;
+    subSelect.innerHTML += `<option value="NEW">新建子项目...</option>`;
   };
 
   tagSelect.addEventListener('change', () => { tagNewInput.style.display = tagSelect.value === 'NEW' ? 'block' : 'none'; if(tagSelect.value === 'NEW') tagNewInput.focus(); subNewInput.style.display = 'none'; window.renderTodoSubTags(); });
@@ -113,7 +132,7 @@ export function initTodoModule() {
 
   addTodoBtn.addEventListener('click', async () => {
     const taskInput = document.getElementById('todo-task-input').value.trim();
-    if (!taskInput) { alert("⚠️ 待办内容不能为空！"); return; }
+    if (!taskInput) { alert("待办内容不能为空"); return; }
     const finalTag = (tagSelect.value === 'NEW' ? tagNewInput.value.trim() : tagSelect.value) || DEFAULT_TAG;
     const finalSub = subSelect.value === 'NEW' ? subNewInput.value.trim() : subSelect.value;
 
@@ -129,16 +148,26 @@ export function initTodoModule() {
     const startVal = hasDateRangeCb.checked ? startInput.value : "";
     const endVal = hasDateRangeCb.checked ? endInput.value : "";
     if (hasDateRangeCb.checked && startVal && endVal && new Date(startVal) > new Date(endVal)) {
-      alert("⚠️ 计划开始时间不能晚于结束时间");
+      alert("计划开始时间不能晚于结束时间");
       return;
     }
-    const parentId = hasParentCb.checked ? parentSelect.value : "";
+    const relation = todoCreateRelationPicker?.getValue?.() || {
+      mode: hasParentCb.checked && parentSelect.value ? 'child' : 'independent',
+      targetId: hasParentCb.checked ? parentSelect.value : ''
+    };
+    const relationCheck = validateTaskRelation(relation);
+    if (!relationCheck.ok) {
+      alert(relationCheck.message);
+      return;
+    }
+    const parentId = getCreateParentId(relationCheck.relation);
 
     // 🌟 外科手术 2：插入一条新待办
-    await dbExecute(
+    const createdTodoId = await insertAndReturnId(
         "INSERT INTO todos (task, done, tag, sub_tag, detail, remark, deadline, start_at, end_at, parent_id, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [taskInput, false, finalTag, finalSub, detailInput, "", endVal, startVal, endVal, parentId, ""]
     );
+    await applyCreatedTodoRelation(createdTodoId, relationCheck.relation);
     
     // 刷新数据与UI
     await loadData(); 
@@ -164,6 +193,7 @@ export function initTodoModule() {
       parentSelect.style.display = 'none';
       parentSelect.value = "";
     }
+    todoCreateRelationPicker?.reset?.();
     renderTodoList(); 
     if(window.renderLogTags) window.renderLogTags();
     refreshTaskRelatedViews();
@@ -237,15 +267,15 @@ export async function renderTodoList() {
           let bg, color, border, text;
           if (diff < 0) {
               bg = 'rgba(var(--color-danger-rgb), 0.15)'; color = 'var(--color-danger)'; border = 'rgba(var(--color-danger-rgb), 0.5)'; 
-              text = startAt ? `🚨 ${safeStart} 至 ${safeEnd}` : `🚨 已延期 (${safeEnd})`;
+              text = startAt ? `已延期 ${safeStart} 至 ${safeEnd}` : `已延期 (${safeEnd})`;
               accordionThemeClass = "border-danger";
           } else if (diff === 0) {
               bg = 'rgba(var(--color-warning-rgb), 0.15)'; color = 'var(--color-warning)'; border = 'rgba(var(--color-warning-rgb), 0.5)'; 
-              text = startAt ? `🔥 ${safeStart} 至 ${safeEnd}` : `🔥 今日到期 (${safeEnd})`;
+              text = startAt ? `今日到期 ${safeStart} 至 ${safeEnd}` : `今日到期 (${safeEnd})`;
               accordionThemeClass = "border-warning";
           } else {
               bg = 'rgba(var(--color-primary-rgb), 0.15)'; color = 'var(--color-primary)'; border = 'rgba(var(--color-primary-rgb), 0.5)'; 
-              text = startAt ? `📅 ${safeStart} 至 ${safeEnd}` : `📅 截至 ${safeEnd}`;
+              text = startAt ? `${safeStart} 至 ${safeEnd}` : `截至 ${safeEnd}`;
           }
           
           deadlineHtml = `<span style="background: ${bg}; color: ${color}; border: 1px solid ${border}; padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-left: 10px; white-space: nowrap;">${text}</span>`;
@@ -253,13 +283,13 @@ export async function renderTodoList() {
       
       let remarkHtml = todo.remark ? `<div class="item-remark">${textWithLineBreaks(todo.remark)}</div>` : "";
       let detailBadge = todo.detail ? `<span style="background: var(--overlay-light); color: var(--text-muted); border: 1px solid var(--border-medium); padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-left: 8px; white-space: nowrap;">详</span>` : "";
-      let remarkBadge = todo.remark ? `<span style="background: rgba(var(--color-warning-rgb), 0.15); color: var(--color-warning); border: 1px solid rgba(var(--color-warning-rgb), 0.3); padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-left: 8px; white-space: nowrap;">补</span>` : "";
+      let remarkBadge = todo.remark ? `<span style="background: rgba(var(--color-warning-rgb), 0.15); color: var(--color-warning); border: 1px solid rgba(var(--color-warning-rgb), 0.3); padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-left: 8px; white-space: nowrap;">述</span>` : "";
       const childHtml = childTodos.length > 0
         ? `<div class="subtask-list">${childTodos.map(child => buildTodoCard(child, depth + 1)).join('')}</div>`
         : "";
 
       return `
-        <details class="glass-accordion ${accordionThemeClass} ${depth > 0 ? 'subtask-card' : ''}" style="margin-bottom: 8px;">
+        <details class="glass-accordion ${accordionThemeClass} ${depth > 0 ? 'subtask-card' : ''} ${depth >= 2 ? 'deep-subtask-card' : ''}" data-depth="${depth}" style="margin-bottom: 8px;">
           <summary class="log-summary" style="display:flex; align-items:center;">
             <input type="checkbox" class="todo-cb" data-id="${todo.id}" style="margin-right:12px; width:18px; height:18px; cursor:pointer;" onclick="event.stopPropagation();">
             <span class="log-text"><b>[${safeTag}]</b> ${safeTask} ${childProgressHtml} ${subTagHtml} ${deadlineHtml} ${detailBadge} ${remarkBadge}</span>
@@ -289,11 +319,12 @@ export async function renderTodoList() {
                       document.querySelectorAll('.dropdown-menu.show').forEach(m => m.classList.remove('show'));
                       document.querySelectorAll('.elevated-zindex').forEach(el => el.classList.remove('elevated-zindex'));
                       if (!isShow) { menu.classList.add('show'); const card = this.closest('.glass-accordion'); if(card) card.classList.add('elevated-zindex'); }
-                  ">⋮ 操作</button>
+                  ">操作</button>
                   <div class="dropdown-menu">
                       <div class="dropdown-item add-remark-todo-btn" data-id="${todo.id}">💬 添加/修改补述</div>
+                      <div class="dropdown-item move-todo-btn" data-id="${todo.id}">调整层级</div>
                       <div class="dropdown-item edit-todo-btn" data-id="${todo.id}">✏️ 编辑任务</div>
-                      <div class="dropdown-item danger del-todo-btn" data-id="${todo.id}">🗑️ 删除待办</div>
+                      <div class="dropdown-item danger del-todo-btn" data-id="${todo.id}">删除待办</div>
                   </div>
               </div>
             </div>
@@ -351,7 +382,6 @@ export async function renderTodoList() {
         if (!task) return;
         const currentTag = parentTodo.tag || '';
         const currentSub = parentTodo.sub_tag || '';
-        // 快速添加下级任务继承上级任务的分类、子项目和截止时间，完整创建入口可自行修改时间。
         dbExecute(
           "INSERT INTO todos (task, done, tag, sub_tag, detail, remark, deadline, start_at, end_at, parent_id, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
           [task.trim(), false, currentTag, currentSub, '', '', parentTodo.deadline || '', '', parentTodo.deadline || '', parentTodo.id, '']
@@ -373,12 +403,10 @@ export async function renderTodoList() {
           parentTodo,
           defaultTag: parentTodo.tag || DEFAULT_TAG,
           defaultSubTag: parentTodo.sub_tag || ''
-          // 完整创建下级任务默认继承分类和子项目；时间默认不继承，避免误排期。
         });
       });
     });
 
-    // 🌟 外科手术：打钩完成待办
     document.querySelectorAll('.todo-cb').forEach(cb => {
       cb.addEventListener('change', async (e) => {
         const id = parseInt(e.target.getAttribute('data-id')); 
@@ -393,7 +421,6 @@ export async function renderTodoList() {
         
         // 1. 改变待办状态
         await dbExecute("UPDATE todos SET done = ?, completed_at = ? WHERE id = ?", [true, todayStr, id]);
-        // 2. 插入一条今日流水
         const completedLogId = await insertAndReturnId(
             "INSERT INTO logs (date, time, text, tag, sub_tag, detail, remark, linked_todo, deadline, is_overdue) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [todayStr, timeStr, todo.task, todo.tag, todo.sub_tag || "", todo.detail || "", todo.remark || "", todo.task, getTodoEnd(todo), false]
@@ -412,15 +439,15 @@ export async function renderTodoList() {
       });
     });
 
-    // 🌟 外科手术：修改补述
+    // 修改补述
     document.querySelectorAll('.add-remark-todo-btn').forEach(btn => {
         btn.onclick = (e) => {
             closeMenus();
             const id = parseInt(e.target.getAttribute('data-id')); 
             const todo = appData.todos.find(t => t.id === id);
-            window.showModal("💬 待办事项补述与复盘", `
+            window.showModal("待办事项补述与复盘", `
                 <div class="form-group">
-                    <label class="field-label" style="color:var(--color-primary);">💡 记录执行情况、不完美的地方、遗留问题或注意事项：</label>
+                    <label class="field-label" style="color:var(--color-primary);">记录执行情况、不完善的地方、遗留问题或注意事项：</label>
                     <textarea id="m-todo-remark" class="hero-textarea" style="margin-top:10px; min-height: 120px;">${escapeHtml(todo.remark)}</textarea>
                 </div>
             `, body => body.querySelector('#m-todo-remark').focus(), async (body) => {
@@ -432,7 +459,40 @@ export async function renderTodoList() {
         };
     });
 
-    // 🌟 外科手术：编辑待办
+    document.querySelectorAll('.move-todo-btn').forEach(btn => {
+      btn.onclick = async (e) => {
+        closeMenus();
+        const id = parseInt(e.target.getAttribute('data-id'));
+        const todo = appData.todos.find(t => t.id === id);
+        if (!todo) return;
+        let relationPicker = null;
+        window.showModal('调整任务层级', `
+          <div class="form-group">
+            <div class="task-relation-current">当前任务：${escapeHtml(todo.task || '')}</div>
+            ${renderTaskRelationPickerHtml('move-todo-relation', {
+              label: '移动方式',
+              defaultMode: todo.parent_id ? 'child' : 'independent',
+              defaultTargetId: todo.parent_id || ''
+            })}
+          </div>
+        `, body => {
+          relationPicker = setupTaskRelationPicker(body, 'move-todo-relation', { sourceTodoId: todo.id });
+        }, async () => {
+          const relation = relationPicker?.getValue?.() || { mode: 'independent', targetId: '' };
+          const result = await applyExistingTodoRelation(todo.id, relation);
+          if (!result.ok) {
+            alert(result.message);
+            return false;
+          }
+          await loadData();
+          renderTodoList();
+          refreshTaskRelatedViews();
+          return true;
+        }, { btnText: '保存层级' });
+      };
+    });
+
+    // 编辑待办
     document.querySelectorAll('.edit-todo-btn').forEach(btn => {
       btn.onclick = (e) => {
         closeMenus();
@@ -456,14 +516,14 @@ export async function renderTodoList() {
       };
     });
 
-    // 🌟 外科手术：删除待办
+    // 删除待办
     document.querySelectorAll('.del-todo-btn').forEach(btn => {
       btn.onclick = async (e) => {
         closeMenus();
         const id = parseInt(e.target.getAttribute('data-id')); 
         const todo = appData.todos.find(t => t.id === id);
         const safeTask = escapeHtml(todo.task);
-        window.showModal("⚠️ 确认删除待办", `<div style="font-size: 15px; color: var(--text-main);">确定要永久删除待办 <b>"${safeTask}"</b> 吗？</div>`, null, async () => {
+        window.showModal("确认删除待办", `<div style="font-size: 15px; color: var(--text-main);">确定要永久删除待办 <b>"${safeTask}"</b> 吗？</div>`, null, async () => {
             await dbExecute("UPDATE todos SET parent_id=? WHERE parent_id=?", ["", id]);
             await dbExecute("DELETE FROM todos WHERE id=?", [id]);
             await loadData(); renderTodoList(); 
@@ -494,7 +554,7 @@ export async function renderTodoList() {
       const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.checked = true; checkbox.style.accentColor = '#4ade80';
       checkbox.style.marginTop = '4px'; 
       
-      // 🌟 外科手术：撤销已完成
+      // 撤销已完成
       checkbox.addEventListener('change', async () => {
         const completedDate = todo.completed_at || getTodayString(); 
         // 1. 恢复待办状态
@@ -516,16 +576,16 @@ export async function renderTodoList() {
 
       if (todo.remark) {
           const rDiv = document.createElement('div'); rDiv.className = 'item-remark-completed';
-          rDiv.innerHTML = `<b>💡 补述：</b>${textWithLineBreaks(todo.remark)}`; contentCol.appendChild(rDiv);
+          rDiv.innerHTML = `<b>补述：</b>${textWithLineBreaks(todo.remark)}`; contentCol.appendChild(rDiv);
       }
       
       const actionsDiv = document.createElement('div'); actionsDiv.className = 'item-actions'; actionsDiv.style.marginTop = '0';
       
       const remarkBtn = document.createElement('button'); remarkBtn.className = 'icon-btn'; remarkBtn.innerText = '💬'; remarkBtn.title = "添加/修改补述";
       remarkBtn.onclick = () => {
-          window.showModal("💬 待办事项补述与复盘", `
+          window.showModal("待办事项补述与复盘", `
               <div class="form-group">
-                  <label class="field-label" style="color:var(--color-primary);">💡 记录执行情况、遗留问题或注意事项：</label>
+                  <label class="field-label" style="color:var(--color-primary);">记录执行情况、遗留问题或注意事项：</label>
                   <textarea id="m-todo-remark" class="hero-textarea" style="margin-top:10px; min-height: 120px;">${escapeHtml(todo.remark)}</textarea>
               </div>
           `, body => body.querySelector('#m-todo-remark').focus(), async (body) => {
@@ -536,9 +596,9 @@ export async function renderTodoList() {
           });
       };
 
-      const delBtn = document.createElement('button'); delBtn.className = 'icon-btn del-btn'; delBtn.innerText = '🗑️';
+      const delBtn = document.createElement('button'); delBtn.className = 'icon-btn del-btn'; delBtn.innerText = '删除';
       delBtn.onclick = async () => { 
-          window.showModal("⚠️ 永久删除", `<div style="font-size: 15px; color: var(--text-main);">确定永久删除已完成的待办 <b>"${safeTask}"</b> 吗？此操作不可恢复。</div>`, null, async () => {
+          window.showModal("永久删除", `<div style="font-size: 15px; color: var(--text-main);">确定永久删除已完成的待办 <b>"${safeTask}"</b> 吗？此操作不可恢复。</div>`, null, async () => {
               await dbExecute("DELETE FROM todos WHERE id=?", [todo.id]);
               await loadData(); renderTodoList();
               refreshTaskRelatedViews();
@@ -551,10 +611,9 @@ export async function renderTodoList() {
     const clearAllBtn = document.createElement('button'); clearAllBtn.className = 'icon-btn completed-clear-btn'; clearAllBtn.style.width = 'auto'; clearAllBtn.style.marginTop = '15px'; clearAllBtn.innerText = '一键清理所有已完成待办';
     
     clearAllBtn.onclick = async () => { 
-        window.showModal("🧹 清理已完成待办", `<div style="font-size: 15px; color: var(--text-main);">确定要永久删除 <b>所有已完成待办</b> 吗？<br><br><span style="color:#ff6b6b;font-size:13px;">删除后无法恢复。建议先备份数据库。</span></div>`, null, async () => {
+        window.showModal("清理已完成待办", `<div style="font-size: 15px; color: var(--text-main);">确定要永久删除 <b>所有已完成待办</b> 吗？<br><br><span style="color:#ff6b6b;font-size:13px;">删除后无法恢复，建议先备份数据库。</span></div>`, null, async () => {
             const confirmed = confirm("将永久删除所有已完成待办，删除后无法恢复。建议先备份数据库。\n\n确定继续删除吗？");
             if (!confirmed) return false;
-            // 🌟 外科手术：一键清空
             await dbExecute("DELETE FROM todos WHERE done = ?", [true]);
             await loadData(); renderTodoList(); 
             refreshTaskRelatedViews();
@@ -580,7 +639,7 @@ export async function autoCleanupTodos(options = {}) {
         }
     }
 
-    // 🌟 外科手术：利用 SQLite 原生的时间计算功能，极速自动清理！
+    // 利用 SQLite 原生的时间计算功能自动清理。
     await dbExecute(
         "DELETE FROM todos WHERE done = ? AND completed_at != ? AND date(completed_at) < date('now', 'localtime', ?)", 
         [true, "", `-${days} days`]

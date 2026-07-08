@@ -7,6 +7,7 @@ import { initNotesModule, renderNotesList } from './notes.js';
 import { initQuickCapture } from './quickCapture.js';
 import { renderTodayTimeline } from './todayTimeline.js';
 import { initSearchModule } from './search.js';
+import { renderTaskRelationPickerHtml, setupTaskRelationPicker } from './taskRelations.js';
 
 const { getCurrentWindow } = window.__TAURI__.window;
 
@@ -103,8 +104,18 @@ function setupQuickAdvancedOptions() {
   const tagNewInput = document.getElementById('quick-tag-new');
   const subNewInput = document.getElementById('quick-sub-tag-new');
   const parentSelect = document.getElementById('quick-parent-todo-select');
+  const parentField = document.querySelector('.quick-parent-field');
 
   if (!typeSelect || !tagSelect || !subSelect) return;
+
+  if (parentField && parentSelect && !parentField.querySelector('.task-relation-picker')) {
+    parentSelect.style.display = 'none';
+    parentSelect.insertAdjacentHTML('afterend', renderTaskRelationPickerHtml('quick-task-relation', {
+      label: '任务关系',
+      defaultMode: 'independent'
+    }));
+    window.quickTaskRelationPicker = setupTaskRelationPicker(parentField, 'quick-task-relation');
+  }
 
   const buildTodoPath = (todo, byId) => {
     const names = [todo.task];
@@ -130,6 +141,7 @@ function setupQuickAdvancedOptions() {
         parentSelect.innerHTML += `<option value="${todo.id}">${buildTodoPath(todo, byId)}</option>`;
       });
     if ([...parentSelect.options].some(option => option.value === currentValue)) parentSelect.value = currentValue;
+    window.quickTaskRelationPicker?.refresh?.();
   };
 
   const renderQuickSubTags = () => {
@@ -240,7 +252,6 @@ window.showModal = function(title, htmlContent, onReady, onConfirm, options = {}
     overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.style.display = 'none'; });
 
     const modal = overlay.querySelector('.custom-modal');
-    modal.className = `custom-modal ${options.themeClass || ''}`; // 预留主题扩展接口
     modal.addEventListener('scroll', () => {
       if (document.querySelector('.flatpickr-calendar.open')) {
         document.querySelectorAll('.flatpickr-input').forEach(input => {
@@ -252,6 +263,8 @@ window.showModal = function(title, htmlContent, onReady, onConfirm, options = {}
     });
   }
 
+  const modal = overlay.querySelector('.custom-modal');
+  if (modal) modal.className = `custom-modal ${options.themeClass || ''}`.trim(); // 预留主题扩展接口
   document.getElementById('global-modal-title').innerHTML = title;
   document.getElementById('global-modal-body').innerHTML = htmlContent;
   overlay.style.display = 'flex';

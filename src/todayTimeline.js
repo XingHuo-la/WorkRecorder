@@ -1,10 +1,22 @@
 import { appData, dbExecute, dbQuery, getTodayString, loadData } from './data.js';
 import { openUniversalEditModal } from './formUtils.js';
-import { appendRemarkEntry, escapeHtml, textWithLineBreaks } from './htmlUtils.js';
-import { convertQuickRecord, openScheduleTodoModal, renderInboxRecords, updateQuickRecordProject } from './quickCapture.js';
+import { appendRemarkEntry, escapeHtml } from './htmlUtils.js';
+import { openQuickConvertModal, openScheduleTodoModal, renderInboxRecords, updateQuickRecordProject } from './quickCapture.js';
 import { showUndoToast } from './undoToast.js';
 
 const expandedMoreActionIds = new Set();
+
+function formatTimelineTitle(text, fallback = '') {
+  const clean = (text || fallback || '').trim().replace(/\s+/g, ' ');
+  if (!clean) return fallback;
+  return clean.length > 10 ? `${clean.substring(0, 8)}...` : clean;
+}
+
+function formatTimelineContent(text) {
+  const clean = (text || '').trim().replace(/\s+/g, ' ');
+  if (!clean) return '';
+  return clean.length > 20 ? `${clean.substring(0, 18)}...` : clean;
+}
 
 function getDateTimeValue(dateStr, timeStr) {
   if ((timeStr || '').includes(' ')) return timeStr;
@@ -105,14 +117,15 @@ function renderNoteActions(note) {
 
 function buildLogCard(log) {
   const isUnprocessed = log.status === 'unprocessed' || log.record_type === 'quick';
-  const badge = isUnprocessed ? '未整理' : (log.record_type === 'note' ? '笔记' : '流水');
+  const badge = log.record_type === 'note' ? '笔记' : '流水';
   const safeTime = escapeHtml(log.time || '').substring(0, 5);
-  const safeTitle = escapeHtml(log.text || '');
+  const safeTitle = escapeHtml(formatTimelineTitle(log.text, '流水'));
   const safeTag = escapeHtml(log.tag || '未分类');
-  const detail = log.detail ? `<div class="today-detail">${textWithLineBreaks(log.detail)}</div>` : '';
+  const detailText = formatTimelineContent(log.detail || '');
+  const detail = detailText ? `<div class="today-detail">${escapeHtml(detailText)}</div>` : '';
 
   return `
-    <article class="today-item ${isUnprocessed ? 'unprocessed' : ''}" data-kind="log" data-id="${log.id}" data-date="${escapeHtml(log.date || getTodayString())}" data-action-key="log-${log.id}">
+    <article class="today-item" data-kind="log" data-id="${log.id}" data-date="${escapeHtml(log.date || getTodayString())}" data-action-key="log-${log.id}">
       <div class="today-time">${safeTime || '--:--'}</div>
       <div class="today-body">
         <div class="today-line">
@@ -128,7 +141,7 @@ function buildLogCard(log) {
 }
 
 function buildTodoCard(todo) {
-  const safeTask = escapeHtml(todo.task || '');
+  const safeTask = escapeHtml(formatTimelineTitle(todo.task, '待办'));
   const safeTag = escapeHtml(todo.tag || '未分类');
   const endText = getTodoEnd(todo);
   const safeEnd = escapeHtml(endText);
@@ -159,7 +172,7 @@ function buildTodoCard(todo) {
 
 function buildNoteCard(note) {
   const title = note.title || note.content || '笔记';
-  const safeTitle = escapeHtml(title.length > 28 ? `${title.substring(0, 28)}...` : title);
+  const safeTitle = escapeHtml(formatTimelineTitle(title, '笔记'));
   const safeTag = escapeHtml(note.tag || '未分类');
   const safeTime = escapeHtml((note.created_at || note.updated_at || '').substring(11, 16));
 
@@ -247,7 +260,9 @@ export function renderTodayTimeline() {
   if (typeof window.updateWorkspaceSummary === 'function') window.updateWorkspaceSummary();
 
   const today = getTodayString();
-  const logs = (appData.logs[today] || []).slice();
+  const logs = (appData.logs[today] || [])
+    .filter(log => log.status !== 'unprocessed' && log.record_type !== 'quick')
+    .slice();
   const todos = (appData.todos || []).filter(todo => !todo.done);
   const notes = (appData.notes || []).filter(note => (note.created_at || '').startsWith(today));
 
@@ -327,7 +342,7 @@ export function renderTodayTimeline() {
             import('./log.js').then(m => m.renderHistoryList());
             return;
           }
-          await convertQuickRecord(log, action);
+          openQuickConvertModal(log, action);
           return;
         }
 

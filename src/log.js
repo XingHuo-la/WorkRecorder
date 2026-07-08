@@ -2,6 +2,7 @@ import { appData, dbExecute, loadData, getTodayString, DEFAULT_TAG } from './dat
 import { openUniversalEditModal } from './formUtils.js';
 import { appendRemarkEntry, escapeHtml, insertTextareaNewline, textWithLineBreaks } from './htmlUtils.js';
 import { convertQuickRecord, updateQuickRecordProject } from './quickCapture.js';
+import { attachDateTimePicker } from './timeRangePicker.js';
 
 // ==========================================
 // 📅 全局挂载增强版 Flatpickr (保持你原有的完美配置)
@@ -86,12 +87,22 @@ export function initLogModule() {
     return;
   }
 
-  const fpConfig = { ...window.fpGlobalConfig };
-  const fpManual = window.flatpickr ? flatpickr(manualDatetimeInput, fpConfig) : null; 
-  const fpDeadline = window.flatpickr ? flatpickr(deadlineInput, fpConfig) : null;
+  attachDateTimePicker(manualDatetimeInput);
+  const deadlinePicker = attachDateTimePicker(deadlineInput);
+  const manualPickerEl = manualDatetimeInput.nextElementSibling;
+  const deadlinePickerEl = deadlineInput.nextElementSibling;
 
-  useCurrentTimeCb.onchange = () => manualDatetimeInput.style.display = useCurrentTimeCb.checked ? 'none' : 'block';
-  hasDeadlineCb.onchange = () => deadlineInput.style.display = hasDeadlineCb.checked ? 'block' : 'none';
+  const syncLogTimeVisibility = () => {
+    const showManual = !useCurrentTimeCb.checked;
+    const showDeadline = hasDeadlineCb.checked;
+    manualDatetimeInput.style.display = showManual ? 'block' : 'none';
+    if (manualPickerEl) manualPickerEl.style.display = showManual ? 'block' : 'none';
+    deadlineInput.style.display = showDeadline ? 'block' : 'none';
+    if (deadlinePickerEl) deadlinePickerEl.style.display = showDeadline ? 'block' : 'none';
+  };
+  useCurrentTimeCb.onchange = syncLogTimeVisibility;
+  hasDeadlineCb.onchange = syncLogTimeVisibility;
+  syncLogTimeVisibility();
 
   window.renderLogTags = () => {
     tagSelect.innerHTML = ''; const activeTags = (appData.settings && appData.settings.active_tags) ? appData.settings.active_tags : appData.tags;
@@ -148,7 +159,7 @@ export function initLogModule() {
     
     document.getElementById('log-task-input').value = ""; document.getElementById('log-detail-input').value = "";
     tagSelect.value = finalTag; tagNewInput.style.display = 'none'; window.renderLogSubTags(); subSelect.value = finalSub; 
-    if(hasDeadlineCb.checked) { hasDeadlineCb.checked = false; deadlineInput.style.display = 'none'; if (fpDeadline) fpDeadline.clear(); }
+    if(hasDeadlineCb.checked) { hasDeadlineCb.checked = false; deadlinePicker?.clear(); syncLogTimeVisibility(); }
     renderHistoryList(); 
     if(window.renderTodoTags) window.renderTodoTags();
   });

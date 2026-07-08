@@ -1,15 +1,34 @@
 import { appData, dbExecute, dbQuery, getTodayString, loadData, DEFAULT_TAG } from './data.js';
 import { escapeHtml, insertTextareaNewline } from './htmlUtils.js';
 import { showUndoToast } from './undoToast.js';
-import { createTimeRangePicker } from './timeRangePicker.js';
+import { attachDateTimePicker, createTimeRangePicker } from './timeRangePicker.js';
+import {
+  applyCreatedTodoRelation,
+  getCreateParentId,
+  renderTaskRelationPickerHtml,
+  setupTaskRelationPicker,
+  validateTaskRelation
+} from './taskRelations.js';
 
 let quickToastTimer = null;
 
 export function deriveRecordTitle(content) {
-  const firstLine = (content || "").split(/\n|。|！|？|\.|\!|\?/).find(Boolean) || content || "";
+  const firstLine = (content || "").replace(/\r\n/g, '\n').split('\n').find(line => line.trim()) || content || "";
   const clean = firstLine.trim().replace(/\s+/g, ' ');
   if (!clean) return "快速记录";
-  return clean.length > 24 ? `${clean.substring(0, 24)}...` : clean;
+  return clean;
+}
+
+function formatInboxTitle(title) {
+  const clean = (title || '').trim().replace(/\s+/g, ' ');
+  if (!clean) return '快速记录';
+  return clean.length > 10 ? `${clean.substring(0, 8)}...` : clean;
+}
+
+function formatInboxContent(text) {
+  const clean = (text || '').replace(/\s+/g, ' ').trim();
+  if (!clean) return '';
+  return clean.length > 20 ? `${clean.substring(0, 18)}...` : clean;
 }
 
 function currentTimeString() {
@@ -54,6 +73,10 @@ function resolveQuickMeta() {
     subTag: subTag || "",
     recordType: getAdvancedValue('quick-type-select', 'quick') || 'quick',
     parentId: getAdvancedValue('quick-parent-todo-select', ''),
+    relation: window.quickTaskRelationPicker?.getValue?.() || {
+      mode: getAdvancedValue('quick-parent-todo-select', '') ? 'child' : 'independent',
+      targetId: getAdvancedValue('quick-parent-todo-select', '')
+    },
     plannedTodo: getAdvancedValue('quick-action-input', ''),
     deadline: getAdvancedValue('quick-deadline-input', ''),
     isOverdue: getAdvancedCheckbox('quick-is-overdue'),
@@ -102,10 +125,19 @@ async function saveAsProcessedLog(content, title, meta) {
 }
 
 async function saveAsTodo(content, title, meta) {
-  await dbExecute(
+  const relationCheck = validateTaskRelation(meta.relation);
+  if (!relationCheck.ok) {
+    alert(relationCheck.message);
+    return false;
+  }
+  const parentId = getCreateParentId(relationCheck.relation);
+  meta.parentId = parentId;
+  const createdTodoId = await insertAndReturnId(
     "INSERT INTO todos (task, done, tag, sub_tag, detail, remark, deadline, start_at, end_at, parent_id, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    [title, false, meta.tag, meta.subTag, content, "", meta.deadline, meta.hasManualTime ? `${meta.dateStr} ${meta.timeStr}` : "", meta.deadline, meta.parentId || "", ""]
+    [title, false, meta.tag, meta.subTag, content, "", meta.deadline, meta.hasManualTime ? `${meta.dateStr} ${meta.timeStr}` : "", meta.deadline, parentId, ""]
   );
+  await applyCreatedTodoRelation(createdTodoId, relationCheck.relation);
+  return createdTodoId;
 }
 
 async function saveAsNote(content, title, meta, noteType = 'idea') {
@@ -118,10 +150,18 @@ async function saveAsNote(content, title, meta, noteType = 'idea') {
 
 async function createFollowUpTodo(content, meta) {
   if (!meta.plannedTodo) return;
-  await dbExecute(
+  const relationCheck = validateTaskRelation(meta.relation);
+  if (!relationCheck.ok) {
+    alert(relationCheck.message);
+    return;
+  }
+  const parentId = getCreateParentId(relationCheck.relation);
+  meta.parentId = parentId;
+  const createdTodoId = await insertAndReturnId(
     "INSERT INTO todos (task, done, tag, sub_tag, detail, remark, deadline, start_at, end_at, parent_id, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     [meta.plannedTodo, false, meta.tag, meta.subTag, `来自快速记录：${content}`, "", meta.deadline, "", meta.deadline, meta.parentId || "", ""]
   );
+  await applyCreatedTodoRelation(createdTodoId, relationCheck.relation);
 }
 
 async function syncQuickMetaOptions(meta) {
@@ -144,12 +184,15 @@ function clearQuickInputs(input) {
   const overdueInput = document.getElementById('quick-is-overdue');
   const parentInput = document.getElementById('quick-parent-todo-select');
   if (actionInput) actionInput.value = "";
-  if (timeInput?._flatpickr) timeInput._flatpickr.clear();
+  if (timeInput?._timeRangePicker) timeInput._timeRangePicker.clear();
+  else if (timeInput?._flatpickr) timeInput._flatpickr.clear();
   else if (timeInput) timeInput.value = "";
-  if (deadlineInput?._flatpickr) deadlineInput._flatpickr.clear();
+  if (deadlineInput?._timeRangePicker) deadlineInput._timeRangePicker.clear();
+  else if (deadlineInput?._flatpickr) deadlineInput._flatpickr.clear();
   else if (deadlineInput) deadlineInput.value = "";
   if (overdueInput) overdueInput.checked = false;
   if (parentInput) parentInput.value = "";
+  window.quickTaskRelationPicker?.reset?.();
 }
 
 function isInboxRecord(log) {
@@ -247,11 +290,191 @@ function renderParentTodoOptions(selectedParentId = '') {
   return options.join('');
 }
 
-async function createTodoRecord({ task, tag, subTag = '', detail = '', startAt = '', endAt = '', parentId = '' }) {
-  return insertAndReturnId(
+function getActiveTagSet() {
+  return new Set(appData?.settings?.active_tags || appData?.tags || []);
+}
+
+function getTagSuggestions(keyword = '') {
+  const activeSet = getActiveTagSet();
+  const query = keyword.trim().toLowerCase();
+  return (appData?.tags || [])
+    .filter(Boolean)
+    .map(name => ({ name, active: activeSet.has(name) }))
+    .filter(item => !query || item.name.toLowerCase().includes(query))
+    .sort((a, b) => {
+      if (a.name === DEFAULT_TAG) return -1;
+      if (b.name === DEFAULT_TAG) return 1;
+      if (a.active !== b.active) return a.active ? -1 : 1;
+      return a.name.localeCompare(b.name, 'zh-Hans-CN');
+    })
+    .slice(0, 10);
+}
+
+async function ensureTagAndSubTag(tag, subTag) {
+  const finalTag = tag || DEFAULT_TAG;
+  if (finalTag && !(appData?.tags || []).includes(finalTag)) {
+    await dbExecute("INSERT OR IGNORE INTO tags (name, is_active) VALUES (?, ?)", [finalTag, true]);
+  }
+  if (subTag && !(appData?.sub_tags?.[finalTag] || []).includes(subTag)) {
+    await dbExecute("INSERT OR IGNORE INTO sub_tags (main_tag, name) VALUES (?, ?)", [finalTag, subTag]);
+  }
+}
+
+function renderTagPickerHtml(prefix, tag = '', subTag = '') {
+  return `
+    <div class="form-row inbox-tag-picker-row">
+      <div class="field-col inbox-tag-field">
+        <label class="field-label">主分类</label>
+        <input type="text" id="${prefix}-tag-input" class="hero-input inbox-tag-search-input" value="${escapeHtml(tag || '')}" autocomplete="off" placeholder="未选择则保持未分类" />
+        <div id="${prefix}-tag-results" class="tag-search-results" role="listbox"></div>
+      </div>
+      <div class="field-col inbox-sub-tag-field">
+        <label class="field-label">子项目</label>
+        <input type="text" id="${prefix}-sub-input" class="hero-input" value="${escapeHtml(subTag || '')}" autocomplete="off" placeholder="可选，输入或选择子项目" />
+        <div id="${prefix}-sub-results" class="tag-search-results" role="listbox"></div>
+      </div>
+    </div>
+  `;
+}
+
+function setupTagPicker(body, prefix) {
+  const tagInput = body.querySelector(`#${prefix}-tag-input`);
+  const tagResults = body.querySelector(`#${prefix}-tag-results`);
+  const subInput = body.querySelector(`#${prefix}-sub-input`);
+  const subResults = body.querySelector(`#${prefix}-sub-results`);
+  if (!tagInput || !tagResults || !subInput || !subResults) return;
+
+  let selectedTagIndex = -1;
+  let selectedSubIndex = -1;
+
+  const renderTagResults = () => {
+    const suggestions = getTagSuggestions(tagInput.value);
+    selectedTagIndex = Math.min(selectedTagIndex, suggestions.length - 1);
+    tagResults.innerHTML = suggestions.length ? suggestions.map((item, index) => `
+      <button type="button" class="tag-search-option${index === selectedTagIndex ? ' active' : ''}" data-value="${escapeHtml(item.name)}">
+        <span>${escapeHtml(item.name)}</span>
+        <em>${item.active ? '活跃' : '非活跃'}</em>
+      </button>
+    `).join('') : '<div class="tag-search-empty">没有匹配标签，保存后将新建</div>';
+    tagResults.classList.add('show');
+  };
+
+  const renderSubResults = () => {
+    const mainTag = tagInput.value.trim() || DEFAULT_TAG;
+    const query = subInput.value.trim().toLowerCase();
+    const suggestions = (appData?.sub_tags?.[mainTag] || [])
+      .filter(item => !query || item.toLowerCase().includes(query))
+      .slice(0, 8);
+    selectedSubIndex = Math.min(selectedSubIndex, suggestions.length - 1);
+    subResults.innerHTML = suggestions.length ? suggestions.map((item, index) => `
+      <button type="button" class="tag-search-option${index === selectedSubIndex ? ' active' : ''}" data-value="${escapeHtml(item)}">
+        <span>${escapeHtml(item)}</span>
+      </button>
+    `).join('') : '';
+    subResults.classList.toggle('show', suggestions.length > 0);
+  };
+
+  const chooseTag = value => {
+    tagInput.value = value || DEFAULT_TAG;
+    selectedTagIndex = -1;
+    tagResults.classList.remove('show');
+    renderSubResults();
+  };
+
+  const chooseSub = value => {
+    subInput.value = value || '';
+    selectedSubIndex = -1;
+    subResults.classList.remove('show');
+  };
+
+  tagInput.addEventListener('focus', renderTagResults);
+  tagInput.addEventListener('input', () => {
+    selectedTagIndex = -1;
+    renderTagResults();
+    renderSubResults();
+  });
+  tagInput.addEventListener('keydown', event => {
+    const options = [...tagResults.querySelectorAll('.tag-search-option')];
+    if (!options.length) return;
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      selectedTagIndex = (selectedTagIndex + 1) % options.length;
+      renderTagResults();
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      selectedTagIndex = selectedTagIndex <= 0 ? options.length - 1 : selectedTagIndex - 1;
+      renderTagResults();
+    } else if (event.key === 'Enter' && selectedTagIndex >= 0) {
+      event.preventDefault();
+      chooseTag(options[selectedTagIndex].dataset.value);
+    } else if (event.key === 'Escape') {
+      tagResults.classList.remove('show');
+    }
+  });
+  tagResults.addEventListener('mousedown', event => {
+    const option = event.target.closest('.tag-search-option');
+    if (option) {
+      event.preventDefault();
+      chooseTag(option.dataset.value);
+    }
+  });
+
+  subInput.addEventListener('focus', renderSubResults);
+  subInput.addEventListener('input', () => {
+    selectedSubIndex = -1;
+    renderSubResults();
+  });
+  subInput.addEventListener('keydown', event => {
+    const options = [...subResults.querySelectorAll('.tag-search-option')];
+    if (!options.length) return;
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      selectedSubIndex = (selectedSubIndex + 1) % options.length;
+      renderSubResults();
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      selectedSubIndex = selectedSubIndex <= 0 ? options.length - 1 : selectedSubIndex - 1;
+      renderSubResults();
+    } else if (event.key === 'Enter' && selectedSubIndex >= 0) {
+      event.preventDefault();
+      chooseSub(options[selectedSubIndex].dataset.value);
+    } else if (event.key === 'Escape') {
+      subResults.classList.remove('show');
+    }
+  });
+  subResults.addEventListener('mousedown', event => {
+    const option = event.target.closest('.tag-search-option');
+    if (option) {
+      event.preventDefault();
+      chooseSub(option.dataset.value);
+    }
+  });
+
+  body.addEventListener('click', event => {
+    if (!event.target.closest('.inbox-tag-field')) tagResults.classList.remove('show');
+    if (!event.target.closest('.inbox-sub-tag-field')) subResults.classList.remove('show');
+  });
+}
+
+function getTagPickerValue(tag) {
+  return tag && tag !== DEFAULT_TAG ? tag : '';
+}
+
+async function createTodoRecord({ task, tag, subTag = '', detail = '', startAt = '', endAt = '', parentId = '', relation = null }) {
+  const relationCheck = relation ? validateTaskRelation(relation) : { ok: true, relation: null };
+  if (!relationCheck.ok) {
+    alert(relationCheck.message);
+    return null;
+  }
+  const finalParentId = relationCheck.relation ? getCreateParentId(relationCheck.relation) : parentId;
+  const createdTodoId = await insertAndReturnId(
     "INSERT INTO todos (task, done, tag, sub_tag, detail, remark, deadline, start_at, end_at, parent_id, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    [task, false, tag || DEFAULT_TAG, subTag || '', detail || '', '', endAt || '', startAt || '', endAt || '', parentId || '', '']
+    [task, false, tag || DEFAULT_TAG, subTag || '', detail || '', '', endAt || '', startAt || '', endAt || '', finalParentId || '', '']
   );
+  if (createdTodoId && relationCheck.relation) {
+    await applyCreatedTodoRelation(createdTodoId, relationCheck.relation);
+  }
+  return createdTodoId;
 }
 
 async function refreshAfterTodoCreate() {
@@ -264,28 +487,178 @@ async function refreshAfterTodoCreate() {
 }
 
 export async function addQuickTodo(inputEl) {
-  const input = inputEl || document.getElementById('quick-capture-input');
-  if (!input) return;
+  openQuickDirectModal('todo', inputEl);
+}
 
-  const content = input.value.trim();
-  if (!content) {
-    showQuickToast('先写点待办内容', 'warning');
-    input.focus();
-    return;
+function getQuickDirectDraft(inputEl) {
+  const input = inputEl || document.getElementById('quick-capture-input');
+  const content = input?.value.trim() || '';
+  return {
+    input,
+    content,
+    title: deriveRecordTitle(content),
+    detail: content
+  };
+}
+
+function renderQuickDirectModalHtml(targetType, draft) {
+  const tagPicker = renderTagPickerHtml('quick-direct', '', '');
+  if (targetType === 'todo') {
+    return `
+      <div class="quick-direct-modal">
+        <div class="form-group">
+          <label class="field-label">待办标题</label>
+          <input id="quick-direct-title" class="hero-input" value="${escapeHtml(draft.title)}" />
+        </div>
+        <div class="form-group">
+          <label class="field-label">内容</label>
+          <textarea id="quick-direct-detail" class="hero-textarea">${escapeHtml(draft.detail)}</textarea>
+        </div>
+        <div class="form-group">
+          <label class="field-label">任务时间</label>
+          <div id="quick-direct-time-picker"></div>
+          <input id="quick-direct-start" type="hidden" />
+          <input id="quick-direct-end" type="hidden" />
+        </div>
+        ${tagPicker}
+        <div class="form-group">
+          ${renderTaskRelationPickerHtml('quick-direct-relation', {
+            label: '任务关系',
+            defaultMode: 'independent'
+          })}
+        </div>
+      </div>
+    `;
   }
 
-  const meta = resolveQuickMeta();
-  await syncQuickMetaOptions(meta);
-  await createTodoRecord({
-    task: deriveRecordTitle(content),
-    tag: meta.tag || DEFAULT_TAG,
-    subTag: meta.subTag || '',
-    detail: content
-  });
+  if (targetType === 'note') {
+    return `
+      <div class="quick-direct-modal">
+        <div class="form-group">
+          <label class="field-label">笔记标题</label>
+          <input id="quick-direct-title" class="hero-input" value="${escapeHtml(draft.title)}" />
+        </div>
+        <div class="form-group">
+          <label class="field-label">内容</label>
+          <textarea id="quick-direct-detail" class="hero-textarea">${escapeHtml(draft.detail)}</textarea>
+        </div>
+        ${tagPicker}
+      </div>
+    `;
+  }
 
-  clearQuickInputs(input);
-  await refreshAfterTodoCreate();
-  showQuickToast('已添加待办');
+  return `
+    <div class="quick-direct-modal">
+      <div class="form-group">
+        <label class="field-label">流水标题</label>
+        <input id="quick-direct-title" class="hero-input" value="${escapeHtml(draft.title)}" />
+      </div>
+      <div class="form-group">
+        <label class="field-label">内容</label>
+        <textarea id="quick-direct-detail" class="hero-textarea">${escapeHtml(draft.detail)}</textarea>
+      </div>
+      <div class="form-group">
+        <label class="field-label">发生时间</label>
+        <input id="quick-direct-occurred-at" class="hero-input datetime-input" value="${escapeHtml(`${getTodayString()} ${currentTimeString()}`)}" />
+      </div>
+      ${tagPicker}
+    </div>
+  `;
+}
+
+function setupQuickDirectModal(body, targetType) {
+  setupTagPicker(body, 'quick-direct');
+  if (targetType === 'todo') {
+    const startInput = body.querySelector('#quick-direct-start');
+    const endInput = body.querySelector('#quick-direct-end');
+    body._taskRelationPicker = setupTaskRelationPicker(body, 'quick-direct-relation');
+    createTimeRangePicker(body.querySelector('#quick-direct-time-picker'), {
+      allowDateOnly: true,
+      minuteStep: 30,
+      onChange: (start, end) => {
+        if (startInput) startInput.value = start;
+        if (endInput) endInput.value = end;
+      }
+    });
+  }
+  if (targetType === 'log') {
+    setupInboxDateTimeInput(body, '#quick-direct-occurred-at');
+  }
+  body.querySelector('#quick-direct-title')?.focus();
+}
+
+async function confirmQuickDirectModal(body, targetType, draft) {
+  const title = body.querySelector('#quick-direct-title')?.value.trim() || '';
+  const detail = body.querySelector('#quick-direct-detail')?.value.trim() || '';
+  const tag = body.querySelector('#quick-direct-tag-input')?.value.trim() || DEFAULT_TAG;
+  const subTag = body.querySelector('#quick-direct-sub-input')?.value.trim() || '';
+  if (!title) {
+    alert('标题不能为空');
+    return false;
+  }
+  await ensureTagAndSubTag(tag, subTag);
+
+  if (targetType === 'todo') {
+    const startAt = body.querySelector('#quick-direct-start')?.value || '';
+    const endAt = body.querySelector('#quick-direct-end')?.value || '';
+    if (startAt && endAt && Date.parse(startAt) > Date.parse(endAt)) {
+      alert('计划开始时间不能晚于结束时间');
+      return false;
+    }
+    const createdTodoId = await createTodoRecord({
+      task: title,
+      tag,
+      subTag,
+      detail,
+      startAt,
+      endAt,
+      relation: body._taskRelationPicker?.getValue?.() || { mode: 'independent', targetId: '' }
+    });
+    if (!createdTodoId) return false;
+  } else if (targetType === 'note') {
+    const now = `${getTodayString()} ${currentTimeString()}`;
+    await insertAndReturnId(
+      "INSERT INTO notes (title, content, note_type, status, tag, sub_tag, source_type, source_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [title, detail, 'idea', 'usable', tag, subTag, 'quick', '', now, now]
+    );
+  } else {
+    const parts = parseDateTimeParts(body.querySelector('#quick-direct-occurred-at')?.value);
+    await dbExecute(
+      "INSERT INTO logs (date, time, text, tag, sub_tag, detail, remark, linked_todo, deadline, is_overdue, status, record_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [parts.dateStr, parts.timeStr, title, tag, subTag, detail, "", "", "", false, "processed", "log"]
+    );
+  }
+
+  clearQuickInputs(draft.input);
+  await refreshAfterQuickSave();
+  showQuickToast(targetType === 'todo' ? '已转为待办' : targetType === 'note' ? '已转为笔记' : '已记为流水');
+  return true;
+}
+
+export function openQuickDirectModal(targetType, inputEl) {
+  const draft = getQuickDirectDraft(inputEl);
+  if (!draft.content) {
+    showQuickToast('先写点内容', 'warning');
+    draft.input?.focus();
+    return;
+  }
+  const titles = {
+    todo: '确认转为待办',
+    note: '确认转为笔记',
+    log: '确认记为流水'
+  };
+  const buttons = {
+    todo: '保存待办',
+    note: '保存笔记',
+    log: '保存流水'
+  };
+  window.showModal(
+    titles[targetType] || '确认保存',
+    renderQuickDirectModalHtml(targetType, draft),
+    body => setupQuickDirectModal(body, targetType),
+    body => confirmQuickDirectModal(body, targetType, draft),
+    { btnText: buttons[targetType] || '保存' }
+  );
 }
 
 function renderScheduleTodoModalHtml(defaultTitle, options = {}) {
@@ -335,7 +708,12 @@ function renderScheduleTodoModalHtml(defaultTitle, options = {}) {
         </div>
         <div class="form-group">
           <label class="field-label">上级任务</label>
-          <select id="schedule-todo-parent" class="hero-input select-hero">${renderParentTodoOptions(selectedParentId)}</select>
+          <select id="schedule-todo-parent" class="hero-input select-hero" style="display:none;">${renderParentTodoOptions(selectedParentId)}</select>
+          ${renderTaskRelationPickerHtml('schedule-todo-relation', {
+            label: '任务关系',
+            defaultMode: selectedParentId ? 'child' : 'independent',
+            defaultTargetId: selectedParentId
+          })}
         </div>
         <div class="form-group">
           <label class="field-label">详细说明</label>
@@ -374,6 +752,7 @@ function setupScheduleTodoModal(body) {
   const subtasks = body.querySelector('#schedule-subtasks');
   const addSubtaskBtn = body.querySelector('#schedule-add-subtask');
   const fullSubtaskInfoBtn = body.querySelector('#schedule-full-subtask-info');
+  body._taskRelationPicker = setupTaskRelationPicker(body, 'schedule-todo-relation');
 
   createTimeRangePicker(timeRangeContainer, {
     valueStart: startInput?.value || '',
@@ -405,6 +784,7 @@ async function confirmScheduleTodo(body, input) {
   const startAt = body.querySelector('#schedule-todo-start')?.value.trim() || '';
   const endAt = body.querySelector('#schedule-todo-end')?.value.trim() || '';
   const parentId = body.querySelector('#schedule-todo-parent')?.value.trim() || '';
+  const relation = body._taskRelationPicker?.getValue?.() || { mode: parentId ? 'child' : 'independent', targetId: parentId };
   const detail = body.querySelector('#schedule-todo-detail')?.value.trim() || '';
   const childTasks = [...body.querySelectorAll('.schedule-subtask-input')]
     .map(item => item.value.trim())
@@ -419,7 +799,8 @@ async function confirmScheduleTodo(body, input) {
     return false;
   }
 
-  const parentTodoId = await createTodoRecord({ task: title, tag, subTag, detail, startAt, endAt, parentId });
+  const parentTodoId = await createTodoRecord({ task: title, tag, subTag, detail, startAt, endAt, parentId, relation });
+  if (!parentTodoId) return false;
   for (const childTask of childTasks) {
     await createTodoRecord({
       task: childTask,
@@ -450,6 +831,285 @@ export function openScheduleTodoModal(inputEl, options = {}) {
   );
 }
 
+function getRecordDetail(record) {
+  return record?.detail || record?.text || '';
+}
+
+function getRecordTitle(record) {
+  return record?.text || deriveRecordTitle(getRecordDetail(record));
+}
+
+function storedTitleMatchesFirstLine(storedTitle, firstLine) {
+  const stored = (storedTitle || '').trim().replace(/\s+/g, ' ');
+  const first = (firstLine || '').trim().replace(/\s+/g, ' ');
+  if (!stored || !first) return false;
+  if (stored === first) return true;
+  if (stored.endsWith('...') && first.startsWith(stored.slice(0, -3))) return true;
+  return false;
+}
+
+function splitRecordDetail(record) {
+  const detail = getRecordDetail(record).replace(/\r\n/g, '\n');
+  const lines = detail.split('\n');
+  const firstContentIndex = lines.findIndex(line => line.trim());
+  if (firstContentIndex < 0) return { body: '', full: '' };
+
+  const firstLine = lines[firstContentIndex];
+  const title = getRecordTitle(record);
+  const hasBodyLines = lines.length > firstContentIndex + 1;
+  if (hasBodyLines && storedTitleMatchesFirstLine(title, firstLine)) {
+    return {
+      body: lines.slice(firstContentIndex + 1).join('\n'),
+      full: detail
+    };
+  }
+
+  if (!hasBodyLines && storedTitleMatchesFirstLine(title, firstLine)) {
+    return { body: '', full: detail };
+  }
+
+  return { body: detail, full: detail };
+}
+
+function renderInboxActions(extraClass = '') {
+  return `
+    <div class="inbox-record-actions${extraClass ? ` ${extraClass}` : ''}">
+      <div class="inbox-convert-menu">
+        <button type="button" class="inbox-convert-trigger" data-action="convert">类型转换</button>
+        <div class="inbox-convert-panel">
+          <button type="button" data-action="todo">转待办</button>
+          <button type="button" data-action="note">转笔记</button>
+          <button type="button" data-action="log">转流水</button>
+        </div>
+      </div>
+      <button type="button" data-action="project">修改分类</button>
+      <button type="button" data-action="edit">编辑</button>
+    </div>
+  `;
+}
+
+function setupInboxDateTimeInput(body, selector) {
+  const input = body.querySelector(selector);
+  if (!input) return;
+  attachDateTimePicker(input);
+}
+
+function openInboxProjectModal(record) {
+  const currentTag = getTagPickerValue(record.tag);
+  window.showModal('修改分类', `
+    <div class="inbox-modal-note">修改分类不会完成整理，这条内容仍会留在待整理。</div>
+    ${renderTagPickerHtml('inbox-project', currentTag, record.sub_tag || '')}
+  `, body => {
+    setupTagPicker(body, 'inbox-project');
+    body.querySelector('#inbox-project-tag-input')?.focus();
+  }, async body => {
+    const tag = body.querySelector('#inbox-project-tag-input')?.value.trim() || DEFAULT_TAG;
+    const subTag = body.querySelector('#inbox-project-sub-input')?.value.trim() || '';
+    await ensureTagAndSubTag(tag, subTag);
+    await updateQuickRecordProject(record, tag, subTag);
+    showQuickToast('分类已更新，这条记录仍在待整理中。');
+    return true;
+  }, { btnText: '保存分类', themeClass: 'inbox-project-modal' });
+}
+
+function openInboxEditModal(record) {
+  const detail = getRecordDetail(record);
+  const currentTag = getTagPickerValue(record.tag);
+  window.showModal('编辑待整理内容', `
+    <div class="form-group">
+      <label class="field-label">标题</label>
+      <input id="inbox-edit-title" class="hero-input" value="${escapeHtml(getRecordTitle(record))}" />
+    </div>
+    <div class="form-group">
+      <label class="field-label">内容</label>
+      <textarea id="inbox-edit-detail" class="hero-textarea inbox-edit-detail">${escapeHtml(detail)}</textarea>
+    </div>
+    ${renderTagPickerHtml('inbox-edit', currentTag, record.sub_tag || '')}
+  `, body => {
+    setupTagPicker(body, 'inbox-edit');
+    body.querySelector('#inbox-edit-detail')?.focus();
+  }, async body => {
+    const detailValue = body.querySelector('#inbox-edit-detail')?.value.trim() || '';
+    const title = body.querySelector('#inbox-edit-title')?.value.trim() || deriveRecordTitle(detailValue);
+    const tag = body.querySelector('#inbox-edit-tag-input')?.value.trim() || DEFAULT_TAG;
+    const subTag = body.querySelector('#inbox-edit-sub-input')?.value.trim() || '';
+    if (!detailValue && !title) {
+      alert('内容不能为空');
+      return false;
+    }
+    await ensureTagAndSubTag(tag, subTag);
+    await dbExecute("UPDATE logs SET text=?, detail=?, tag=?, sub_tag=? WHERE id=?", [title, detailValue, tag, subTag, record.id]);
+    await refreshAfterInboxAction();
+    showQuickToast('待整理内容已更新');
+    return true;
+  }, { btnText: '保存修改' });
+}
+
+function renderConvertModalHtml(record, targetType) {
+  const title = getRecordTitle(record);
+  const detail = getRecordDetail(record);
+  const tagPicker = renderTagPickerHtml('inbox-convert', getTagPickerValue(record.tag), record.sub_tag || '');
+
+  if (targetType === 'todo') {
+    return `
+      <div class="form-group">
+        <label class="field-label">待办标题</label>
+        <input id="inbox-convert-title" class="hero-input" value="${escapeHtml(title)}" />
+      </div>
+      <div class="form-group">
+        <label class="field-label">详细说明</label>
+        <textarea id="inbox-convert-detail" class="hero-textarea inbox-convert-detail">${escapeHtml(detail)}</textarea>
+      </div>
+      <div class="form-group inbox-convert-time">
+        <label class="field-label">任务时长</label>
+        <div id="inbox-convert-time-picker"></div>
+      </div>
+      ${tagPicker}
+      <div class="form-group">
+        <label class="field-label">上级任务</label>
+        <select id="inbox-convert-parent" class="hero-input select-hero" style="display:none;">${renderParentTodoOptions('')}</select>
+        ${renderTaskRelationPickerHtml('inbox-convert-relation', {
+          label: '任务关系',
+          defaultMode: 'independent'
+        })}
+      </div>
+    `;
+  }
+
+  if (targetType === 'note' || targetType === 'problem' || targetType === 'conclusion') {
+    const defaultNoteType = targetType === 'problem' ? 'problem' : targetType === 'conclusion' ? 'review' : 'idea';
+    return `
+      <div class="form-group">
+        <label class="field-label">笔记标题</label>
+        <input id="inbox-convert-title" class="hero-input" value="${escapeHtml(title)}" />
+      </div>
+      <div class="form-group">
+        <label class="field-label">笔记类型</label>
+        <select id="inbox-convert-note-type" class="hero-input select-hero">
+          <option value="idea"${defaultNoteType === 'idea' ? ' selected' : ''}>想法</option>
+          <option value="problem"${defaultNoteType === 'problem' ? ' selected' : ''}>问题</option>
+          <option value="source">资料</option>
+          <option value="decision">决策</option>
+          <option value="method">方法</option>
+          <option value="review"${defaultNoteType === 'review' ? ' selected' : ''}>复盘</option>
+        </select>
+      </div>
+      ${tagPicker}
+      <div class="form-group">
+        <label class="field-label">笔记内容</label>
+        <textarea id="inbox-convert-detail" class="hero-textarea">${escapeHtml(detail)}</textarea>
+      </div>
+      <div class="form-group">
+        <label class="field-label">顺手生成待办</label>
+        <input id="inbox-convert-followup" class="hero-input" placeholder="可选，例如：整理成行动清单" />
+      </div>
+    `;
+  }
+
+  return `
+    <div class="form-group">
+      <label class="field-label">流水标题</label>
+      <input id="inbox-convert-title" class="hero-input" value="${escapeHtml(title)}" />
+    </div>
+    <div class="form-row">
+      <div class="field-col">
+        <label class="field-label">发生时间</label>
+        <input id="inbox-convert-occurred-at" class="hero-input datetime-input" value="${escapeHtml(`${record.date || getTodayString()} ${record.time || currentTimeString()}`)}" />
+      </div>
+      <div class="field-col">
+        <label class="field-label">截至时间</label>
+        <input id="inbox-convert-deadline" class="hero-input datetime-input" value="${escapeHtml(record.deadline || '')}" placeholder="可选" />
+      </div>
+    </div>
+    ${tagPicker}
+    <div class="form-group">
+      <label class="field-label">详细说明</label>
+      <textarea id="inbox-convert-detail" class="hero-textarea">${escapeHtml(detail)}</textarea>
+    </div>
+  `;
+}
+
+function setupConvertModal(body, targetType) {
+  setupTagPicker(body, 'inbox-convert');
+  if (targetType === 'todo') {
+    body._taskRelationPicker = setupTaskRelationPicker(body, 'inbox-convert-relation');
+    const startInput = document.createElement('input');
+    const endInput = document.createElement('input');
+    startInput.type = 'hidden';
+    endInput.type = 'hidden';
+    startInput.id = 'inbox-convert-start';
+    endInput.id = 'inbox-convert-end';
+    body.append(startInput, endInput);
+    createTimeRangePicker(body.querySelector('#inbox-convert-time-picker'), {
+      allowDateOnly: true,
+      minuteStep: 30,
+      onChange: (start, end) => {
+        startInput.value = start;
+        endInput.value = end;
+      }
+    });
+  } else if (targetType === 'log') {
+    setupInboxDateTimeInput(body, '#inbox-convert-occurred-at');
+    setupInboxDateTimeInput(body, '#inbox-convert-deadline');
+  }
+  body.querySelector('#inbox-convert-title')?.focus();
+}
+
+function parseDateTimeParts(value, fallbackDate = getTodayString(), fallbackTime = currentTimeString()) {
+  const raw = (value || '').trim();
+  if (!raw) return { dateStr: fallbackDate, timeStr: fallbackTime };
+  const [dateStr, timeStr = fallbackTime] = raw.split(' ');
+  return { dateStr: dateStr || fallbackDate, timeStr: timeStr || fallbackTime };
+}
+
+export function openQuickConvertModal(record, targetType) {
+  const titles = {
+    todo: '转为待办',
+    note: '转为笔记',
+    problem: '转为问题笔记',
+    conclusion: '转为结论笔记',
+    log: '转为流水'
+  };
+  window.showModal(titles[targetType] || '转换待整理内容', renderConvertModalHtml(record, targetType), body => {
+    setupConvertModal(body, targetType);
+  }, async body => {
+    const title = body.querySelector('#inbox-convert-title')?.value.trim() || '';
+    const detail = body.querySelector('#inbox-convert-detail')?.value.trim() || '';
+    const tag = body.querySelector('#inbox-convert-tag-input')?.value.trim() || DEFAULT_TAG;
+    const subTag = body.querySelector('#inbox-convert-sub-input')?.value.trim() || '';
+    if (!title) {
+      alert('标题不能为空');
+      return false;
+    }
+
+    const options = { title, detail, tag, subTag };
+    if (targetType === 'todo') {
+      options.startAt = body.querySelector('#inbox-convert-start')?.value || '';
+      options.endAt = body.querySelector('#inbox-convert-end')?.value || '';
+      options.parentId = body.querySelector('#inbox-convert-parent')?.value || '';
+      options.relation = body._taskRelationPicker?.getValue?.() || {
+        mode: options.parentId ? 'child' : 'independent',
+        targetId: options.parentId
+      };
+      if (options.startAt && options.endAt && Date.parse(options.startAt) > Date.parse(options.endAt)) {
+        alert('计划开始时间不能晚于结束时间');
+        return false;
+      }
+    } else if (targetType === 'note' || targetType === 'problem' || targetType === 'conclusion') {
+      options.noteType = body.querySelector('#inbox-convert-note-type')?.value || 'idea';
+      options.followUpTodo = body.querySelector('#inbox-convert-followup')?.value.trim() || '';
+    } else if (targetType === 'log') {
+      const parts = parseDateTimeParts(body.querySelector('#inbox-convert-occurred-at')?.value, record.date, record.time);
+      options.dateStr = parts.dateStr;
+      options.timeStr = parts.timeStr;
+      options.deadline = body.querySelector('#inbox-convert-deadline')?.value.trim() || '';
+    }
+
+    await convertQuickRecord(record, targetType, options);
+    return true;
+  }, { btnText: '确认转换' });
+}
+
 export function renderInboxRecords() {
   const container = document.getElementById('inbox-records-container');
   if (!container || !appData) return;
@@ -462,29 +1122,39 @@ export function renderInboxRecords() {
 
   const inboxHint = "<div class='inbox-process-hint'>修改分类不会完成整理</div>";
   container.innerHTML = records.map(record => {
-    const content = record.detail || record.text || '';
-    const summary = content.replace(/\s+/g, ' ').trim();
-    const safeSummary = escapeHtml(summary.length > 96 ? `${summary.substring(0, 96)}...` : summary);
-    const safeTime = escapeHtml(`${record.date || getTodayString()} ${(record.time || '').substring(0, 5)}`);
+    const title = getRecordTitle(record);
+    const displayTitle = formatInboxTitle(title);
+    const { body, full } = splitRecordDetail(record);
+    const detail = body.trim() ? body : full;
+    const detailLength = detail.trim().length;
+    const previewSource = body.trim() ? body : full;
+    const preview = formatInboxContent(previewSource);
+    const safeTitle = escapeHtml(displayTitle);
+    const safePreview = escapeHtml(preview);
+    const safeDetail = escapeHtml(detail || '没有更多内容。');
+    const metaParts = [`${record.date || getTodayString()} ${(record.time || '').substring(0, 5)}`];
+    if (detailLength > 0) metaParts.push(`${detailLength} 字`);
+    const safeMeta = escapeHtml(metaParts.join(' · '));
 
     return `
-      <article class="inbox-record" data-id="${record.id}" data-date="${escapeHtml(record.date)}">
-        <div class="inbox-record-main">
-          <div class="inbox-record-text">${safeSummary || '快速记录'}</div>
-          <div class="inbox-record-time">${safeTime}</div>
+      <article class="inbox-record" data-id="${record.id}" data-date="${escapeHtml(record.date)}" tabindex="0" role="button" aria-expanded="false">
+        <div class="inbox-record-summary">
+          <div class="inbox-record-main">
+            <div class="inbox-record-title">${safeTitle}</div>
+            <div class="inbox-record-text">${safePreview || '点击查看详情'}</div>
+            <div class="inbox-record-time">${safeMeta}<span class="inbox-detail-toggle-label"> · 点击展开详情</span></div>
+          </div>
         </div>
-        <div class="inbox-record-actions">
-          <button type="button" data-action="todo">转待办</button>
-          <button type="button" data-action="note">转笔记</button>
-          <button type="button" data-action="log">转流水</button>
-          <button type="button" data-action="project">修改分类</button>
+        <div class="inbox-record-detail" aria-hidden="true">
+          <div class="inbox-record-detail-content">${safeDetail}</div>
         </div>
+        ${renderInboxActions('inbox-record-bottom-actions')}
       </article>
     `;
   }).join('') + inboxHint;
 
   container.querySelectorAll('.inbox-record button[data-action]').forEach(button => {
-    button.addEventListener('click', async () => {
+    button.addEventListener('click', async event => {
       const card = button.closest('.inbox-record');
       const id = parseInt(card.dataset.id);
       const date = card.dataset.date;
@@ -492,16 +1162,35 @@ export function renderInboxRecords() {
       if (!record) return;
 
       const action = button.dataset.action;
+      if (action === 'convert') return;
       if (action === 'project') {
-        const tag = prompt('输入主分类，留空则保持未分类：', record.tag || '未分类');
-        if (tag === null) return;
-        const subTag = prompt('输入子项目，留空则设为无项目：', record.sub_tag || '');
-        await updateQuickRecordProject(record, tag || '未分类', subTag || '');
-        showQuickToast('分类已更新，这条记录仍在待整理中。转为待办、笔记或流水后才算处理完成。');
+        openInboxProjectModal(record);
+      } else if (action === 'edit') {
+        openInboxEditModal(record);
       } else {
-        await convertQuickRecord(record, action);
+        openQuickConvertModal(record, action);
       }
-      await refreshAfterInboxAction();
+    });
+  });
+
+  container.querySelectorAll('.inbox-record').forEach(card => {
+    const toggleCard = () => {
+      const isExpanded = card.classList.toggle('expanded');
+      card.setAttribute('aria-expanded', String(isExpanded));
+      card.querySelector('.inbox-record-detail')?.setAttribute('aria-hidden', String(!isExpanded));
+      const detailLabel = card.querySelector('.inbox-detail-toggle-label');
+      if (detailLabel) detailLabel.textContent = isExpanded ? ' · 收起详情' : ' · 点击展开详情';
+    };
+    card.addEventListener('click', event => {
+      if (event.target.closest('button, input, textarea, select, a, .inbox-convert-panel')) return;
+      toggleCard();
+    });
+    card.addEventListener('keydown', event => {
+      if (event.target.closest('button, input, textarea, select, a')) return;
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        toggleCard();
+      }
     });
   });
 }
@@ -523,7 +1212,8 @@ export async function saveQuickRecord(inputEl) {
   await syncQuickMetaOptions(meta);
 
   if (meta.recordType === 'todo') {
-    await saveAsTodo(content, title, meta);
+    const createdTodoId = await saveAsTodo(content, title, meta);
+    if (!createdTodoId) return;
   } else if (meta.recordType === 'log') {
     await saveAsProcessedLog(content, title, meta);
   } else if (meta.recordType === 'note' || meta.recordType === 'problem' || meta.recordType === 'conclusion') {
@@ -539,30 +1229,42 @@ export async function saveQuickRecord(inputEl) {
   showQuickToast(meta.recordType === 'quick' ? '已保存到待整理' : '已保存');
 }
 
+function setupInboxCollapseToggle() {
+  const section = document.querySelector('.inbox-section');
+  const toggle = document.getElementById('inbox-collapse-toggle');
+  if (!section || !toggle || toggle.dataset.bound === '1') return;
+
+  const storageKey = 'workRecorderInboxCollapsed';
+  const applyState = collapsed => {
+    section.classList.toggle('collapsed', collapsed);
+    toggle.setAttribute('aria-expanded', String(!collapsed));
+    toggle.setAttribute('aria-label', collapsed ? '展开待整理' : '收起待整理');
+    toggle.title = collapsed ? '展开待整理' : '收起待整理';
+    toggle.textContent = collapsed ? '+' : '-';
+  };
+
+  applyState(localStorage.getItem(storageKey) === '1');
+  toggle.addEventListener('click', () => {
+    const collapsed = !section.classList.contains('collapsed');
+    localStorage.setItem(storageKey, collapsed ? '1' : '0');
+    applyState(collapsed);
+  });
+  toggle.dataset.bound = '1';
+}
+
 export function initQuickCapture() {
   const input = document.getElementById('quick-capture-input');
   const saveBtn = document.getElementById('quick-capture-save');
   const addTodoBtn = document.getElementById('quick-add-todo');
-  const scheduleTodoBtn = document.getElementById('quick-schedule-todo');
-  const advancedToggle = document.getElementById('quick-advanced-toggle');
-  const advancedPanel = document.getElementById('quick-advanced-panel');
+  const saveNoteBtn = document.getElementById('quick-save-note');
+  const saveLogBtn = document.getElementById('quick-save-log');
 
   if (!input || !saveBtn) return;
 
-  if (advancedToggle && advancedPanel) {
-    advancedToggle.addEventListener('click', () => {
-      const isHidden = advancedPanel.style.display === 'none';
-      advancedPanel.style.display = isHidden ? 'block' : 'none';
-      advancedToggle.classList.toggle('active', isHidden);
-      advancedToggle.innerText = isHidden ? '收起选项' : '更多选项';
-    });
-  }
-
-  const fpConfig = window.fpGlobalConfig || { enableTime: true, enableSeconds: true, time_24hr: true, dateFormat: "Y-m-d H:i:S", locale: "zh" };
   const timeInput = document.getElementById('quick-time-input');
   const deadlineInput = document.getElementById('quick-deadline-input');
-  if (window.flatpickr && timeInput) flatpickr(timeInput, fpConfig);
-  if (window.flatpickr && deadlineInput) flatpickr(deadlineInput, fpConfig);
+  attachDateTimePicker(timeInput);
+  attachDateTimePicker(deadlineInput);
 
   let isComposing = false;
   input.addEventListener('compositionstart', () => { isComposing = true; });
@@ -586,41 +1288,83 @@ export function initQuickCapture() {
   addTodoBtn?.addEventListener('click', async () => {
     await addQuickTodo(input);
   });
-  scheduleTodoBtn?.addEventListener('click', () => {
-    openScheduleTodoModal(input);
+  saveNoteBtn?.addEventListener('click', () => {
+    openQuickDirectModal('note', input);
   });
-
+  saveLogBtn?.addEventListener('click', () => {
+    openQuickDirectModal('log', input);
+  });
+  setupInboxCollapseToggle();
   renderInboxRecords();
 }
 
-export async function convertQuickRecord(log, targetType) {
+export async function convertQuickRecord(log, targetType, options = {}) {
   if (!log) return;
-  const tag = log.tag || DEFAULT_TAG;
-  const subTag = log.sub_tag || "";
-  const detail = log.detail || log.text || "";
+  const originalLog = {
+    date: log.date || getTodayString(),
+    time: log.time || currentTimeString(),
+    text: log.text || "",
+    detail: log.detail || "",
+    tag: log.tag || DEFAULT_TAG,
+    sub_tag: log.sub_tag || "",
+    deadline: log.deadline || "",
+    status: log.status || "unprocessed",
+    record_type: log.record_type || "quick"
+  };
+  const tag = options.tag || log.tag || DEFAULT_TAG;
+  const subTag = options.subTag ?? log.sub_tag ?? "";
+  const title = options.title || log.text || deriveRecordTitle(log.detail || "");
+  const detail = options.detail ?? (log.detail || log.text || "");
   let createdTodoId = null;
   let createdNoteId = null;
+  let createdFollowUpTodoId = null;
+
+  await ensureTagAndSubTag(tag, subTag);
 
   if (targetType === 'todo') {
+    const endAt = options.endAt || log.deadline || "";
+    const startAt = options.startAt || "";
+    const relationCheck = validateTaskRelation(options.relation || {
+      mode: options.parentId ? 'child' : 'independent',
+      targetId: options.parentId || ''
+    });
+    if (!relationCheck.ok) {
+      alert(relationCheck.message);
+      return;
+    }
+    const parentId = getCreateParentId(relationCheck.relation);
     createdTodoId = await insertAndReturnId(
       "INSERT INTO todos (task, done, tag, sub_tag, detail, remark, deadline, start_at, end_at, parent_id, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      [log.text, false, tag, subTag, detail, log.remark || "", log.deadline || "", "", log.deadline || "", "", ""]
+      [title, false, tag, subTag, detail, log.remark || "", endAt, startAt, endAt, parentId, ""]
     );
+    await applyCreatedTodoRelation(createdTodoId, relationCheck.relation);
   }
 
   if (targetType === 'note' || targetType === 'problem' || targetType === 'conclusion') {
-    const noteType = targetType === 'problem' ? 'problem' : targetType === 'conclusion' ? 'review' : 'idea';
+    const noteType = options.noteType || (targetType === 'problem' ? 'problem' : targetType === 'conclusion' ? 'review' : 'idea');
     const typeName = targetType === 'problem' ? '问题' : targetType === 'conclusion' ? '结论' : '笔记';
     const now = `${getTodayString()} ${currentTimeString()}`;
     createdNoteId = await insertAndReturnId(
       "INSERT INTO notes (title, content, note_type, status, tag, sub_tag, source_type, source_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      [log.text, detail, noteType, "usable", tag, subTag, "log", log.id, now, now]
+      [title, detail, noteType, "usable", tag, subTag, "log", log.id, now, now]
     );
+    if (options.followUpTodo) {
+      createdFollowUpTodoId = await insertAndReturnId(
+        "INSERT INTO todos (task, done, tag, sub_tag, detail, remark, deadline, start_at, end_at, parent_id, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [options.followUpTodo, false, tag, subTag, `来自笔记：${title}`, "", "", "", "", "", ""]
+      );
+    }
     log.record_type = typeName;
   }
 
   const recordType = targetType === 'log' ? 'log' : targetType;
-  await dbExecute("UPDATE logs SET status=?, record_type=?, tag=?, sub_tag=? WHERE id=?", ["processed", recordType, tag, subTag, log.id]);
+  const updatedDate = options.dateStr || originalLog.date;
+  const updatedTime = options.timeStr || originalLog.time;
+  const updatedDeadline = options.deadline ?? originalLog.deadline;
+  await dbExecute(
+    "UPDATE logs SET date=?, time=?, text=?, detail=?, deadline=?, status=?, record_type=?, tag=?, sub_tag=? WHERE id=?",
+    [updatedDate, updatedTime, title, detail, updatedDeadline, "processed", recordType, tag, subTag, log.id]
+  );
   await loadData();
   renderInboxRecords();
   import('./log.js').then(m => m.renderHistoryList());
@@ -632,12 +1376,16 @@ export async function convertQuickRecord(log, targetType) {
   showUndoToast(getQuickConvertMessage(targetType), async () => {
     if (createdTodoId) await dbExecute("DELETE FROM todos WHERE id=?", [createdTodoId]);
     if (createdNoteId) await dbExecute("DELETE FROM notes WHERE id=?", [createdNoteId]);
-    await dbExecute("UPDATE logs SET status=?, record_type=? WHERE id=?", ["unprocessed", "quick", log.id]);
+    if (createdFollowUpTodoId) await dbExecute("DELETE FROM todos WHERE id=?", [createdFollowUpTodoId]);
+    await dbExecute(
+      "UPDATE logs SET date=?, time=?, text=?, detail=?, deadline=?, tag=?, sub_tag=?, status=?, record_type=? WHERE id=?",
+      [originalLog.date, originalLog.time, originalLog.text, originalLog.detail, originalLog.deadline, originalLog.tag, originalLog.sub_tag, originalLog.status, originalLog.record_type, log.id]
+    );
     await refreshAfterInboxAction();
     if (typeof window.renderQuickParentTodos === 'function') window.renderQuickParentTodos();
   });
 
-  return { logId: log.id, createdTodoId, createdNoteId, targetType };
+  return { logId: log.id, createdTodoId, createdNoteId, createdFollowUpTodoId, targetType };
 }
 
 export async function updateQuickRecordProject(log, tag, subTag) {

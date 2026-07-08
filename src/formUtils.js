@@ -1,5 +1,6 @@
 import { appData, dbExecute, DEFAULT_TAG } from './data.js';
 import { escapeHtml } from './htmlUtils.js';
+import { attachDateTimePicker, createTimeRangePicker } from './timeRangePicker.js';
 
 /**
  * 🌟 通用高阶表单弹窗构造器 (支持多主题与全模块适配)
@@ -36,8 +37,7 @@ export function openUniversalEditModal(title, item, options) {
         `<div class="field-col"><label class="field-label">🕒 发生时间</label><input type="text" id="u-item-time" class="datetime-input" style="width:100% !important;" value="${escapeHtml(dateStr)} ${escapeHtml(item.time)}"></div>` : "";
     const dateFieldsHtml = isLog
         ? `<div class="field-col"><label class="field-label">📅 截至日期</label><input type="text" id="u-item-deadline" class="datetime-input" style="width:100% !important;" value="${safeEndAt}" placeholder="(点击选择...)"></div>`
-        : `<div class="field-col"><label class="field-label">📅 计划开始</label><input type="text" id="u-item-start" class="datetime-input" style="width:100% !important;" value="${safeStartAt}" placeholder="(可选...)"></div>
-           <div class="field-col"><label class="field-label">📅 计划结束</label><input type="text" id="u-item-deadline" class="datetime-input" style="width:100% !important;" value="${safeEndAt}" placeholder="(可选...)"></div>`;
+        : `<div class="field-col" style="flex:1 1 100%;"><label class="field-label">📅 计划时间</label><div id="u-item-time-range"></div><input type="text" id="u-item-start" class="datetime-input time-range-compatible-input" value="${safeStartAt}" readonly><input type="text" id="u-item-deadline" class="datetime-input time-range-compatible-input" value="${safeEndAt}" readonly></div>`;
 
     // 3. 构建核心 HTML 模板 (🌟 注意这里的 value="\${safeText}" 和 textarea 里的 \${safeDetail})
     const formHtml = `
@@ -93,21 +93,21 @@ export function openUniversalEditModal(title, item, options) {
             if (restoreBtn) restoreBtn.onclick = () => onRestore(cleanText);
         }
 
-        // --- 日历防遮挡逻辑提取 ---
-        const fpOptions = {
-            ...window.fpGlobalConfig,
-            onOpen: function(selectedDates, dStr, instance) {
-                const modal = instance.element.closest('.custom-modal');
-                if (modal) { modal.style.paddingBottom = '370px'; setTimeout(() => modal.scrollTo({ top: modal.scrollHeight, behavior: 'smooth' }), 50); }
-            },
-            onClose: function(selectedDates, dStr, instance) {
-                const modal = instance.element.closest('.custom-modal');
-                if (modal) modal.style.paddingBottom = '25px'; 
-            }
-        };
-        if (isLog) flatpickr(body.querySelector('#u-item-time'), fpOptions);
-        if (!isLog) flatpickr(body.querySelector('#u-item-start'), fpOptions);
-        flatpickr(body.querySelector('#u-item-deadline'), fpOptions);
+        if (isLog) {
+            attachDateTimePicker(body.querySelector('#u-item-time'));
+            attachDateTimePicker(body.querySelector('#u-item-deadline'));
+        } else {
+            const startInput = body.querySelector('#u-item-start');
+            const endInput = body.querySelector('#u-item-deadline');
+            createTimeRangePicker(body.querySelector('#u-item-time-range'), {
+                valueStart: startInput?.value || '',
+                valueEnd: endInput?.value || '',
+                onChange: (start, end) => {
+                    if (startInput) startInput.value = start;
+                    if (endInput) endInput.value = end;
+                }
+            });
+        }
 
     }, async (body) => {
         // 5. 统一的数据获取与校验层
