@@ -1081,7 +1081,7 @@ D:\MyDesktopApp\work_data\my_data.db
 当前版本显示为：
 
 ```text
-v1.1.0
+v1.1.2
 ```
 
 点击“检查更新”：
