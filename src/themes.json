@@ -12,7 +12,10 @@
       "bg-card": "rgba(30, 40, 55, 0.45)", "bg-input": "rgba(20, 30, 50, 0.6)", "bg-elevated": "#1e293b",
       "text-main": "#f8f9fa", "text-muted": "#94A3B8", "text-secondary": "#CBD5E1",
       "border-light": "rgba(255, 255, 255, 0.1)", "border-medium": "rgba(255, 255, 255, 0.2)",
-      "overlay-light": "rgba(255, 255, 255, 0.05)", "overlay-hover": "rgba(255, 255, 255, 0.1)"
+      "overlay-light": "rgba(255, 255, 255, 0.05)", "overlay-hover": "rgba(255, 255, 255, 0.1)",
+      "sidebar-text": "#f8f9fa", "sidebar-text-muted": "#cbd5e1",
+      "game-table": "#115846", "game-table-deep": "#083d32", "game-card": "#f8fafc", "game-card-border": "#cbd5e1",
+      "game-card-red": "#c92a43", "game-card-black": "#111827", "game-card-accent": "#facc15"
     },
     "background": {
       "image-url": "none",
@@ -33,7 +36,10 @@
       "bg-card": "rgba(255, 255, 255, 0.65)", "bg-input": "rgba(248, 250, 252, 0.7)", "bg-elevated": "#ffffff",
       "text-main": "#0f172a", "text-muted": "#64748b", "text-secondary": "#334155",
       "border-light": "rgba(0, 0, 0, 0.08)", "border-medium": "rgba(0, 0, 0, 0.15)",
-      "overlay-light": "rgba(0, 0, 0, 0.04)", "overlay-hover": "rgba(0, 0, 0, 0.08)"
+      "overlay-light": "rgba(0, 0, 0, 0.04)", "overlay-hover": "rgba(0, 0, 0, 0.08)",
+      "sidebar-text": "#0f172a", "sidebar-text-muted": "#64748b",
+      "game-table": "#176a53", "game-table-deep": "#0a483a", "game-card": "#ffffff", "game-card-border": "#cbd5e1",
+      "game-card-red": "#d12c45", "game-card-black": "#111827", "game-card-accent": "#d8a84e"
     },
     "background": {
       "image-url": "none",
@@ -54,10 +60,37 @@
       "bg-card": "rgba(255, 255, 255, 0.7)", "bg-input": "rgba(255, 241, 242, 0.8)", "bg-elevated": "#ffffff",
       "text-main": "#4c0519", "text-muted": "#9f1239", "text-secondary": "#881337",
       "border-light": "rgba(225, 29, 72, 0.08)", "border-medium": "rgba(225, 29, 72, 0.15)",
-      "overlay-light": "rgba(225, 29, 72, 0.04)", "overlay-hover": "rgba(225, 29, 72, 0.08)"
+      "overlay-light": "rgba(225, 29, 72, 0.04)", "overlay-hover": "rgba(225, 29, 72, 0.08)",
+      "sidebar-text": "#4c0519", "sidebar-text-muted": "#9f1239",
+      "game-table": "#75525f", "game-table-deep": "#553844", "game-card": "#fffafb", "game-card-border": "#e8cbd4",
+      "game-card-red": "#d63e69", "game-card-black": "#35252d", "game-card-accent": "#f59e0b"
     },
     "background": {
       "image-url": "./assets/themes/sakura-bg.jpg",
+      "overlay-color": "transparent",
+      "global-blur": "0px"
+    }
+  },
+  {
+    "id": "lavender-calendar",
+    "name": "紫雾日程",
+    "isDark": false,
+    "colors": {
+      "color-primary": "#8773c1", "color-primary-rgb": "135, 115, 193", "color-primary-dark": "#755eb5",
+      "color-success": "#5eb7a7", "color-success-rgb": "94, 183, 167",
+      "color-danger": "#d16f86", "color-danger-rgb": "209, 111, 134",
+      "color-warning": "#d8a84e", "color-warning-rgb": "216, 168, 78",
+      "bg-body": "#f3f4ff", "bg-sidebar": "#755eb5", "bg-panel": "#fbfbfb",
+      "bg-card": "#ffffff", "bg-input": "#fbfbff", "bg-elevated": "#ffffff",
+      "text-main": "#312c3d", "text-muted": "#9a94a8", "text-secondary": "#6f687d",
+      "border-light": "rgba(92, 78, 126, 0.10)", "border-medium": "rgba(92, 78, 126, 0.18)",
+      "overlay-light": "rgba(135, 115, 193, 0.07)", "overlay-hover": "rgba(135, 115, 193, 0.13)",
+      "sidebar-text": "#ffffff", "sidebar-text-muted": "#f3effc",
+      "game-table": "#4f6f68", "game-table-deep": "#354f49", "game-card": "#ffffff", "game-card-border": "#d9d4e5",
+      "game-card-red": "#c94f6c", "game-card-black": "#2e2937", "game-card-accent": "#d8a84e"
+    },
+    "background": {
+      "image-url": "none",
       "overlay-color": "transparent",
       "global-blur": "0px"
     }
@@ -75,7 +108,10 @@
       "bg-card": "rgba(8, 47, 73, 0.45)", "bg-input": "rgba(22, 78, 99, 0.5)", "bg-elevated": "#082f49",
       "text-main": "#ecfeff", "text-muted": "#67e8f9", "text-secondary": "#a5f3fc",
       "border-light": "rgba(45, 212, 191, 0.15)", "border-medium": "rgba(45, 212, 191, 0.25)",
-      "overlay-light": "rgba(45, 212, 191, 0.08)", "overlay-hover": "rgba(45, 212, 191, 0.15)"
+      "overlay-light": "rgba(45, 212, 191, 0.08)", "overlay-hover": "rgba(45, 212, 191, 0.15)",
+      "sidebar-text": "#ecfeff", "sidebar-text-muted": "#67e8f9",
+      "game-table": "#0d6066", "game-table-deep": "#083f49", "game-card": "#ecfeff", "game-card-border": "#8bd3d8",
+      "game-card-red": "#c2415b", "game-card-black": "#102a32", "game-card-accent": "#2dd4bf"
     },
     "background": {
       "image-url": "/assets/themes/aurora-bg.jpg",

@@ -1,4 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod notes_fs;
+
 use tauri::Manager;
 use serde_json::{json, Value};
 use std::fs;
@@ -61,6 +63,7 @@ fn init_and_migrate_db() -> Result<(), String> {
         CREATE TABLE IF NOT EXISTS tags (name TEXT PRIMARY KEY, is_active BOOLEAN);
         CREATE TABLE IF NOT EXISTS sub_tags (id INTEGER PRIMARY KEY AUTOINCREMENT, main_tag TEXT NOT NULL, name TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
+        CREATE TABLE IF NOT EXISTS freecell_games (id INTEGER PRIMARY KEY AUTOINCREMENT, deal_key TEXT NOT NULL, result TEXT NOT NULL, duration_seconds INTEGER NOT NULL, move_count INTEGER NOT NULL, started_at TEXT NOT NULL, ended_at TEXT NOT NULL);
         COMMIT;"
     ).map_err(|e| format!("建表失败: {}", e))?;
 
@@ -101,6 +104,43 @@ fn init_and_migrate_db() -> Result<(), String> {
         add_column_if_missing(&conn, "logs", "record_type", "record_type TEXT DEFAULT 'log'")?;
         conn.execute_batch("PRAGMA user_version = 4;")
             .map_err(|e| format!("数据库升级到 v4 失败: {}", e))?;
+    }
+
+    if schema_version < 5 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS freecell_games (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                deal_key TEXT NOT NULL,
+                result TEXT NOT NULL,
+                duration_seconds INTEGER NOT NULL,
+                move_count INTEGER NOT NULL,
+                started_at TEXT NOT NULL,
+                ended_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_freecell_games_ended_at ON freecell_games(ended_at DESC);
+            PRAGMA user_version = 5;"
+        ).map_err(|e| format!("数据库升级到 v5 失败: {}", e))?;
+    }
+
+    // v6：笔记改为「文件优先」。正文只存在磁盘 .md 文件里，
+    // note_index 仅保存元数据索引与相对路径，便于快速列表与搜索。
+    if schema_version < 6 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS note_index (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                rel_path TEXT NOT NULL UNIQUE,
+                title TEXT,
+                note_type TEXT,
+                status TEXT,
+                tag TEXT,
+                sub_tag TEXT,
+                created_at TEXT,
+                updated_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_note_index_updated_at ON note_index(updated_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_note_index_tag ON note_index(tag, sub_tag);
+            PRAGMA user_version = 6;"
+        ).map_err(|e| format!("数据库升级到 v6 失败: {}", e))?;
     }
 
     let json_exists = Path::new(&json_path).exists();
@@ -176,49 +216,76 @@ fn init_and_migrate_db() -> Result<(), String> {
 }
 
 // 🌟 万能桥梁 1：让前端直接查询数据库，并返回标准的 JSON 数组格式
+//
+// 用 async fn 而非同步 fn：同步命令默认在 Tauri 主线程执行，
+// 前端连续高频调用（例如批量写索引）时会把主线程占满，
+// 后续 IPC 响应发不回去，前端 await 永远不 resolve。
 #[tauri::command]
-fn db_query(query: String, params: Vec<String>) -> Result<String, String> {
+async fn db_query(query: String, params: Vec<String>) -> Result<String, String> {
     let conn = Connection::open(get_db_file_path()).map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(&query).map_err(|e| e.to_string())?;
     let column_names: Vec<String> = stmt.column_names().into_iter().map(|s| s.to_string()).collect();
     let rusqlite_params = rusqlite::params_from_iter(params.iter());
-    
+
+    // 逐行取列值。任何一列取值失败都退化为 NULL，而不是让整个查询 panic。
     let rows = stmt.query_map(rusqlite_params, |row| {
         let mut map = serde_json::Map::new();
         for i in 0..column_names.len() {
-            let val = row.get_ref(i).unwrap();
-            let json_val = match val {
-                ValueRef::Null => Value::Null,
-                ValueRef::Integer(i) => json!(i),
-                ValueRef::Real(f) => json!(f),
-                ValueRef::Text(t) => json!(std::str::from_utf8(t).unwrap_or("")),
-                ValueRef::Blob(_) => Value::Null,
+            let json_val = match row.get_ref(i) {
+                Ok(ValueRef::Null) | Err(_) => Value::Null,
+                Ok(ValueRef::Integer(int_val)) => json!(int_val),
+                Ok(ValueRef::Real(float_val)) => json!(float_val),
+                Ok(ValueRef::Text(text)) => json!(String::from_utf8_lossy(text).to_string()),
+                Ok(ValueRef::Blob(_)) => Value::Null,
             };
             map.insert(column_names[i].clone(), json_val);
         }
         Ok(Value::Object(map))
     }).map_err(|e| e.to_string())?;
 
+    // 单行解析失败时收集错误信息，全部失败才向上报，避免个别坏行让整个视图空白。
     let mut result_vec = Vec::new();
-    for row in rows { result_vec.push(row.unwrap()); }
+    let mut first_error: Option<String> = None;    for row in rows {
+        match row {
+            Ok(value) => result_vec.push(value),
+            Err(e) => {
+                if first_error.is_none() {
+                    first_error = Some(e.to_string());
+                }
+            }
+        }
+    }
+
+    if result_vec.is_empty() {
+        if let Some(err) = first_error {
+            return Err(format!("查询结果解析失败: {}", err));
+        }
+    }
+
     Ok(json!(result_vec).to_string())
 }
 
 // 🌟 万能桥梁 2：让前端直接修改/删除/插入数据
+//
+// 同样必须是 async：批量写入（笔记索引同步就是典型）会连续调用几十次，
+// 同步命令占主线程会让后面的调用排队到看起来像是卡死。
 #[tauri::command]
-fn db_execute(query: String, params: Vec<String>) -> Result<usize, String> {
+async fn db_execute(query: String, params: Vec<String>) -> Result<usize, String> {
     let conn = Connection::open(get_db_file_path()).map_err(|e| e.to_string())?;
     let rusqlite_params = rusqlite::params_from_iter(params.iter());
-    let rows_affected = conn.execute(&query, rusqlite_params).map_err(|e| e.to_string())?;
-    Ok(rows_affected)
+    conn.execute(&query, rusqlite_params).map_err(|e| e.to_string())
 }
 
 // （保留旧的指令，确保我们重写 JS 前，应用绝不崩溃！）
-#[tauri::command] fn get_current_path() -> String { get_data_file_path() }
-#[tauri::command] fn get_current_db_path() -> String { get_db_file_path() }
+//
+// 这些同样必须是 async：同步命令在主线程执行，前端启动阶段会密集调用
+// get_current_path（设置数据路径 provider、迁移笔记、加载笔记列表各一次），
+// 一旦主线程排队，后续 IPC 就会卡住不返回。
+#[tauri::command] async fn get_current_path() -> String { get_data_file_path() }
+#[tauri::command] async fn get_current_db_path() -> String { get_db_file_path() }
 
 #[tauri::command]
-fn open_db_folder() -> Result<String, String> {
+async fn open_db_folder() -> Result<String, String> {
     let db_path = PathBuf::from(get_db_file_path());
     let folder = db_path
         .parent()
@@ -257,7 +324,7 @@ fn open_db_folder() -> Result<String, String> {
 }
 
 #[tauri::command]
-fn backup_database() -> Result<String, String> {
+async fn backup_database() -> Result<String, String> {
     let db_path = PathBuf::from(get_db_file_path());
     if !db_path.exists() {
         return Err(format!("数据库文件不存在: {}", db_path.to_string_lossy()));
@@ -285,12 +352,59 @@ fn backup_database() -> Result<String, String> {
 
     Ok(backup_path.to_string_lossy().to_string())
 }
-#[tauri::command] fn check_path(target: String) -> String { json!({"final_path": target, "exists": false, "is_empty": true}).to_string() }
-#[tauri::command] fn apply_new_path(_new_path: String, _mode: String) -> Result<String, String> { Ok("".to_string()) }
-#[tauri::command] fn load_data() -> String { 
+#[tauri::command] async fn check_path(target: String) -> String { json!({"final_path": target, "exists": false, "is_empty": true}).to_string() }
+#[tauri::command] async fn apply_new_path(_new_path: String, _mode: String) -> Result<String, String> { Ok("".to_string()) }
+
+/// 读取随应用一起打包的静态资源（如 themes.json）。
+///
+/// 不要在前端用 fetch('./xxx.json') 读这些文件：Tauri 2 在自定义协议下
+/// 对相对路径的 fetch 行为不可靠，实测会永久挂起且不抛错，
+/// 直接把应用初始化卡死。改由后端读取后回传。
+#[tauri::command]
+async fn read_asset_text(app: tauri::AppHandle, name: String) -> Result<String, String> {
+    // 只允许读前端目录下的普通文件名，避免被拿去读任意路径
+    if name.contains('/') || name.contains('\\') || name.contains("..") {
+        return Err(format!("非法的资源名: {}", name));
+    }
+
+    let resolver = app.asset_resolver();
+    let asset = resolver
+        .get(format!("/{}", name))
+        .ok_or_else(|| format!("找不到内嵌资源: {}", name))?;
+
+    String::from_utf8(asset.bytes).map_err(|e| format!("资源不是合法 UTF-8: {}", e))
+}
+
+/// 把前端日志追加写到数据目录下的 work_recorder_frontend.log。
+///
+/// GUI 应用没有控制台，出问题时前端错误看不到。
+/// 这个命令给前端一个把异常落盘的自证通道，排查线上问题很有用。
+#[tauri::command]
+async fn log_frontend(level: String, message: String) -> Result<(), String> {
+    let mut log_path = PathBuf::from(get_data_file_path());
+    log_path.set_file_name("work_recorder_frontend.log");
+
+    let line = format!(
+        "[{}] [{}] {}\n",
+        Local::now().format("%Y-%m-%d %H:%M:%S"),
+        level,
+        message.replace('\n', " | ")
+    );
+
+    use std::io::Write;
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|e| e.to_string())?;
+    file.write_all(line.as_bytes()).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command] async fn load_data() -> String { 
     fs::read_to_string(&get_data_file_path()).unwrap_or_else(|_| json!({ "todos": [], "logs": {}, "tags": [], "settings": {} }).to_string()) 
 }
-#[tauri::command] fn save_data(data: String) -> Result<(), String> { 
+#[tauri::command] async fn save_data(data: String) -> Result<(), String> { 
     fs::write(&get_data_file_path(), &data).map_err(|e| e.to_string()) 
 }
 
@@ -307,11 +421,26 @@ fn main() {
             }
         }))
         .setup(|_app| {
-            if let Err(e) = init_and_migrate_db() { eprintln!("⚠️ 数据库初始化出错: {}", e); }
+            if let Err(e) = init_and_migrate_db() {
+                eprintln!("⚠️ 数据库初始化出错: {}", e);
+            }
             Ok(())
-        })
-        .invoke_handler(tauri::generate_handler![
-            load_data, save_data, get_current_path, get_current_db_path, open_db_folder, backup_database, check_path, apply_new_path, db_query, db_execute
+        })        .invoke_handler(tauri::generate_handler![
+            load_data, save_data, get_current_path, get_current_db_path, open_db_folder, backup_database, check_path, apply_new_path, db_query, db_execute,
+            read_asset_text,
+            notes_fs::notes_ensure_root,
+            notes_fs::notes_root_path,
+            notes_fs::notes_list,
+            notes_fs::notes_read,
+            notes_fs::notes_write,
+            notes_fs::notes_update_meta,
+            notes_fs::notes_delete,
+            notes_fs::notes_ensure_tag_dir,
+            notes_fs::notes_open_root,
+            notes_fs::notes_migrate_legacy,
+            notes_fs::paths_exist,
+            notes_fs::open_path_with_app,
+            log_frontend
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

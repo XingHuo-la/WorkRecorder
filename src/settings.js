@@ -5,18 +5,85 @@ const relaunch = window.__TAURI__.process?.relaunch;
 const { invoke } = window.__TAURI__.core || window.__TAURI__;
 
 let showAllInactive = false;
+const FREECELL_PREFERENCES = [
+  { settingId: 'setting-freecell-auto-foundation', gameId: 'freecell-auto-foundation', key: 'workRecorder:freecellAutoFoundation', defaultValue: true },
+  { settingId: 'setting-freecell-count-undo', gameId: 'freecell-count-undo', key: 'workRecorder:freecellCountUndo', defaultValue: true },
+  { settingId: 'setting-freecell-timer-on-deal', gameId: 'freecell-timer-on-deal', key: 'workRecorder:freecellTimerOnDeal', defaultValue: false }
+];
+
+function setupFreeCellPreferences() {
+  FREECELL_PREFERENCES.forEach(preference => {
+    const settingInput = document.getElementById(preference.settingId);
+    if (!settingInput || settingInput.dataset.bound === '1') return;
+    const stored = localStorage.getItem(preference.key);
+    settingInput.checked = stored === null ? preference.defaultValue : stored === '1';
+    settingInput.addEventListener('change', () => {
+      localStorage.setItem(preference.key, settingInput.checked ? '1' : '0');
+      const gameInput = document.getElementById(preference.gameId);
+      if (gameInput && gameInput.checked !== settingInput.checked) gameInput.checked = settingInput.checked;
+    });
+    settingInput.dataset.bound = '1';
+  });
+}
 // ==========================================
 // 🛠️ 核心引擎：注入色彩与背景到 DOM
 // ==========================================
 export function applyTheme(themeObj) {
   if (!themeObj) return;
   const rootStyle = document.documentElement.style;
+  const colors = themeObj.colors || {};
 
   if (themeObj.colors) {
-    Object.entries(themeObj.colors).forEach(([variable, val]) => {
+    Object.entries(colors).forEach(([variable, val]) => {
       rootStyle.setProperty(`--${variable}`, val);
     });
   }
+
+  // Keep the newer design tokens in sync with legacy/custom theme JSON files.
+  const aliases = {
+    'color-text': 'text-main',
+    'color-text-secondary': 'text-secondary',
+    'color-text-muted': 'text-muted',
+    'color-bg': 'bg-body',
+    'color-surface': 'bg-card',
+    'color-surface-soft': 'overlay-light',
+    'color-surface-hover': 'overlay-hover',
+    'color-border': 'border-light',
+    'color-border-strong': 'border-medium',
+    'color-focus': 'color-primary',
+    'color-primary-hover': 'color-primary-dark',
+    'color-primary-active': 'color-primary-dark'
+  };
+  Object.entries(aliases).forEach(([modern, legacy]) => {
+    const value = colors[modern] || colors[legacy];
+    if (value) rootStyle.setProperty(`--${modern}`, value);
+  });
+  if (!colors['color-primary-soft'] && colors['color-primary-rgb']) {
+    rootStyle.setProperty('--color-primary-soft', `rgba(${colors['color-primary-rgb']}, 0.10)`);
+  }
+  if (!colors['color-success-soft'] && colors['color-success-rgb']) {
+    rootStyle.setProperty('--color-success-soft', `rgba(${colors['color-success-rgb']}, 0.10)`);
+  }
+  if (!colors['color-warning-soft'] && colors['color-warning-rgb']) {
+    rootStyle.setProperty('--color-warning-soft', `rgba(${colors['color-warning-rgb']}, 0.10)`);
+  }
+  if (!colors['color-danger-soft'] && colors['color-danger-rgb']) {
+    rootStyle.setProperty('--color-danger-soft', `rgba(${colors['color-danger-rgb']}, 0.10)`);
+  }
+  const gameTokenFallbacks = {
+    'game-table': `color-mix(in srgb, ${colors['color-primary'] || 'var(--color-primary)'} 48%, ${colors['text-main'] || 'var(--text-main)'})`,
+    'game-table-deep': `color-mix(in srgb, ${colors['color-primary'] || 'var(--color-primary)'} 28%, ${colors['text-main'] || 'var(--text-main)'})`,
+    'game-card': colors['bg-elevated'] || colors['bg-card'] || 'var(--bg-elevated)',
+    'game-card-border': colors['border-medium'] || 'var(--border-medium)',
+    'game-card-red': colors['color-danger'] || 'var(--color-danger)',
+    'game-card-black': colors['text-main'] || 'var(--text-main)',
+    'game-card-accent': colors['color-warning'] || 'var(--color-warning)'
+  };
+  Object.entries(gameTokenFallbacks).forEach(([token, fallback]) => {
+    rootStyle.setProperty(`--${token}`, colors[token] || fallback);
+  });
+  rootStyle.setProperty('--sidebar-text', colors['sidebar-text'] || colors['text-main'] || 'var(--text-main)');
+  rootStyle.setProperty('--sidebar-text-muted', colors['sidebar-text-muted'] || colors['text-muted'] || 'var(--text-muted)');
 
   if (themeObj.background) {
     const rawUrl = themeObj.background["image-url"] || "none";
@@ -42,10 +109,13 @@ export async function applySavedThemeFromDB() {
     )`);
     
     try {
-        // 2. 🌟 核心魔法：异步读取发版时自带的静态配置（极速且不占 js 代码行数）
-        // 打包后这个 themes.json 会变成同目录下的静态资源，100% 离线可读
-        const response = await fetch('./themes.json?t=' + new Date().getTime());
-        const builtinThemes = await response.json();
+        // 2. 读取随应用打包的内置主题配置。
+        //
+        // 这里不能用 fetch('./themes.json')：Tauri 2 在自定义协议下
+        // 对相对路径 fetch 的行为不可靠，实测会永久挂起且不报错，
+        // 从而把整个应用初始化卡死。改由后端读取内嵌资源。
+        const raw = await invoke('read_asset_text', { name: 'themes.json' });
+        const builtinThemes = JSON.parse(raw);
         
         // 3. 将最新的系统默认主题安全地同步进 SQLite themes 表中
         for (const t of builtinThemes) {
@@ -59,7 +129,7 @@ export async function applySavedThemeFromDB() {
     }
 
     // 4. 读取用户保存在 settings 里的激活主题 ID 并渲染应用 (保持原样)
-    const savedThemeKey = (appData.settings && appData.settings.theme) || 'dark';
+    const savedThemeKey = (appData.settings && appData.settings.theme) || 'lavender-calendar';
     const row = await dbQuery("SELECT theme_data FROM themes WHERE id=?", [savedThemeKey]);
     if (row && row.length > 0) {
         applyTheme(JSON.parse(row[0].theme_data));
@@ -69,6 +139,7 @@ export async function applySavedThemeFromDB() {
 export function initSettingsModule() {
   if (!appData.settings) appData.settings = {};
   if (!appData.settings.active_tags) appData.settings.active_tags = [...appData.tags]; 
+  setupFreeCellPreferences();
 
   // ==========================================
   // 🎨 全新主题与管理中心 (左右并列布局)
@@ -76,7 +147,7 @@ export function initSettingsModule() {
   
   // 渲染外部当前显示的主题名称
   window.renderCurrentThemeName = async () => {
-      const currentId = appData.settings.theme || 'dark';
+      const currentId = appData.settings.theme || 'lavender-calendar';
       const row = await dbQuery("SELECT name FROM themes WHERE id=?", [currentId]);
       const nameEl = document.getElementById('current-theme-name');
       if (nameEl) {
@@ -93,7 +164,7 @@ export function initSettingsModule() {
       const loadAllThemesList = async (listContainer) => {
           const allThemes = await dbQuery("SELECT id, name, is_builtin FROM themes ORDER BY is_builtin DESC, id ASC");
           listContainer.innerHTML = '';
-          const currentId = appData.settings.theme || 'dark';
+          const currentId = appData.settings.theme || 'lavender-calendar';
 
           allThemes.forEach(t => {
               const isBuiltin = t.is_builtin === 1 || t.is_builtin === 'true' || t.is_builtin === true;

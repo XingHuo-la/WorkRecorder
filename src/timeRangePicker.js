@@ -13,18 +13,33 @@ function addDays(date, days) {
 }
 
 function parseDate(value) {
-  const match = String(value || '').trim().match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?/);
+  const match = String(value || '').trim().match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?$/);
   if (!match) return null;
   const [, year, month, day, hour = '00', minute = '00', second = '00'] = match;
-  const date = new Date(Number(year), Number(month) - 1, Number(day));
-  if (Number.isNaN(date.getTime())) return null;
+  const yearNumber = Number(year);
+  const monthNumber = Number(month);
+  const dayNumber = Number(day);
+  const hourNumber = Number(hour);
+  const minuteNumber = Number(minute);
+  const secondNumber = Number(second);
+  const date = new Date(yearNumber, monthNumber - 1, dayNumber);
+  if (
+    Number.isNaN(date.getTime())
+    || date.getFullYear() !== yearNumber
+    || date.getMonth() !== monthNumber - 1
+    || date.getDate() !== dayNumber
+    || hourNumber > 23
+    || minuteNumber > 59
+    || secondNumber > 59
+  ) return null;
   return {
     date,
     dateKey: `${year.padStart(4, '0')}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`,
     hour: pad2(hour),
     minute: pad2(minute),
     second: pad2(second),
-    time: `${pad2(hour)}:${pad2(minute)}:${pad2(second)}`
+    time: `${pad2(hour)}:${pad2(minute)}:${pad2(second)}`,
+    hasTime: match[4] !== undefined
   };
 }
 
@@ -48,7 +63,7 @@ function formatDateLabel(item, options = {}) {
 function formatPart(value, options = {}) {
   const item = parseDate(value);
   if (!item) return '';
-  return `${formatDateLabel(item, options)} ${item.time}`;
+  return item.hasTime ? `${formatDateLabel(item, options)} ${item.time}` : formatDateLabel(item, options);
 }
 
 export function formatTimeRangeSummary(startValue, endValue) {
@@ -56,7 +71,11 @@ export function formatTimeRangeSummary(startValue, endValue) {
   const end = parseDate(endValue);
   if (!start && !end) return '无时间';
   if (start && end) {
-    if (start.dateKey === end.dateKey) return `${formatDateLabel(start)} ${start.time} - ${end.time}`;
+    if (start.dateKey === end.dateKey) {
+      if (!start.hasTime && !end.hasTime) return formatDateLabel(start);
+      if (start.hasTime && end.hasTime) return `${formatDateLabel(start)} ${start.time} - ${end.time}`;
+      return `${formatPart(startValue)} - ${formatPart(endValue)}`;
+    }
     const forceYear = start.date.getFullYear() !== end.date.getFullYear();
     return `${formatPart(startValue, { forceYear })} - ${formatPart(endValue, { forceYear })}`;
   }
@@ -106,30 +125,72 @@ function buildMonthDays(monthDate, startValue, endValue) {
   return cells.join('');
 }
 
-function buildSelectOptions(max, selected) {
+function buildSelectOptions(max, selected, step = 1) {
   const value = Number(selected || 0);
-  return Array.from({ length: max + 1 }, (_, index) => {
+  const values = [];
+  for (let index = 0; index <= max; index += Math.max(1, step)) values.push(index);
+  if (!values.includes(value) && value >= 0 && value <= max) values.push(value);
+  values.sort((a, b) => a - b);
+  return values.map(index => {
     const text = pad2(index);
     return `<option value="${text}"${index === value ? ' selected' : ''}>${text}</option>`;
   }).join('');
 }
 
-const QUICK_TIMES = ['00:00:00', '09:00:00', '12:00:00', '18:00:00', '23:59:59'];
+const QUICK_TIMES = ['00:00:00', '09:00:00', '12:00:00', '18:00:00', '23:00:00'];
 
-function buildPrecisePanel(kind, value, title) {
+function roundedWholeHour(reference = new Date()) {
+  const rounded = new Date(reference);
+  if (rounded.getMinutes() || rounded.getSeconds() || rounded.getMilliseconds()) {
+    rounded.setHours(rounded.getHours() + 1);
+  }
+  rounded.setMinutes(0, 0, 0);
+  return rounded;
+}
+
+function defaultWholeHour(kind = 'start') {
+  if (kind === 'end') return '01:00:00';
+  return `${pad2(roundedWholeHour().getHours())}:00:00`;
+}
+
+function defaultStartDateTime(dateKey = formatDateOnly(new Date())) {
+  const rounded = roundedWholeHour();
+  const today = formatDateOnly(new Date());
+  if (dateKey === today) {
+    return toDateTime(formatDateOnly(rounded), `${pad2(rounded.getHours())}:00:00`);
+  }
+  return toDateTime(dateKey, `${pad2(rounded.getHours())}:00:00`);
+}
+
+function addHours(value, hours = 1) {
+  const related = parseDate(value);
+  if (!related) return '';
+  const dateTime = new Date(
+    related.date.getFullYear(), related.date.getMonth(), related.date.getDate(),
+    Number(related.hour), Number(related.minute), Number(related.second)
+  );
+  dateTime.setHours(dateTime.getHours() + hours);
+  return toDateTime(formatDateOnly(dateTime), `${pad2(dateTime.getHours())}:${pad2(dateTime.getMinutes())}:${pad2(dateTime.getSeconds())}`);
+}
+
+function buildPrecisePanel(kind, value, title, options = {}) {
   const item = parseDate(value);
   const hour = item?.hour || (kind === 'end' ? '23' : '00');
   const minute = item?.minute || (kind === 'end' ? '59' : '00');
   const second = item?.second || (kind === 'end' ? '59' : '00');
+  const dateOnly = Boolean(item && !item.hasTime);
   return `
-    <div class="time-precise-panel" data-precise="${kind}">
-      <div class="time-precise-title">${title}</div>
+    <div class="time-precise-panel${dateOnly ? ' is-date-only' : ''}" data-precise="${kind}">
+      <div class="time-precise-title">
+        <span>${title}</span>
+        ${options.allowDateOnly ? `<button type="button" class="time-date-only-toggle${dateOnly ? ' active' : ''}" data-date-only="${kind}">${dateOnly ? '使用时间' : '仅日期'}</button>` : ''}
+      </div>
       <div class="time-precise-selects">
-        <select data-part="hour">${buildSelectOptions(23, hour)}</select>
+        <select data-part="hour" ${dateOnly ? 'disabled' : ''}>${buildSelectOptions(23, hour)}</select>
         <span>:</span>
-        <select data-part="minute">${buildSelectOptions(59, minute)}</select>
+        <select data-part="minute" ${dateOnly ? 'disabled' : ''}>${buildSelectOptions(59, minute, options.minuteStep || 1)}</select>
         <span>:</span>
-        <select data-part="second">${buildSelectOptions(59, second)}</select>
+        <select data-part="second" ${dateOnly ? 'disabled' : ''}>${buildSelectOptions(59, second, options.secondStep || 1)}</select>
       </div>
       <div class="time-quick-points">
         ${QUICK_TIMES.map(time => `<button type="button" data-quick-time="${time}">${time}</button>`).join('')}
@@ -141,16 +202,21 @@ function buildPrecisePanel(kind, value, title) {
 export function createTimeRangePicker(container, options = {}) {
   if (!container) return null;
   const mode = options.mode || 'range';
+  const allowDateOnly = Boolean(options.allowDateOnly);
   const initial = parseDate(options.valueStart || options.valueEnd || '');
   const state = {
     start: options.valueStart || '',
     end: mode === 'single' ? '' : (options.valueEnd || ''),
+    committedStart: options.valueStart || '',
+    committedEnd: mode === 'single' ? '' : (options.valueEnd || ''),
     phase: options.valueStart && !options.valueEnd ? 'end' : 'start',
     isOpen: Boolean(options.open),
     preciseOpen: false,
     monthDate: initial?.date || new Date(),
-    disabled: Boolean(options.disabled)
+    disabled: Boolean(options.disabled),
+    error: ''
   };
+  let globalListenersBound = false;
 
   const emit = () => {
     if (mode === 'range') {
@@ -160,50 +226,119 @@ export function createTimeRangePicker(container, options = {}) {
     }
   };
 
+  const commit = () => {
+    if (mode === 'range' && state.start && state.end) {
+      const start = parseDate(state.start);
+      const end = parseDate(state.end);
+      const startComparable = start?.hasTime ? state.start : `${state.start} 00:00:00`;
+      const endComparable = end?.hasTime ? state.end : `${state.end} 23:59:59`;
+      if (start && end && new Date(startComparable.replace(' ', 'T')) > new Date(endComparable.replace(' ', 'T'))) {
+        state.error = '结束时间不能早于开始时间。';
+        render();
+        return false;
+      }
+    }
+    state.error = '';
+    state.committedStart = state.start;
+    state.committedEnd = state.end;
+    emit();
+    return true;
+  };
+
+  const cancel = () => {
+    state.start = state.committedStart;
+    state.end = state.committedEnd;
+    state.phase = state.start && !state.end && mode === 'range' ? 'end' : 'start';
+    state.isOpen = false;
+    state.error = '';
+    render();
+  };
+
   const clear = () => {
     state.start = '';
     state.end = '';
     state.phase = 'start';
-    emit();
+    state.error = '';
     render();
   };
 
   const selectDate = (dateKey) => {
     if (mode === 'single') {
       const current = parseDate(state.start);
-      state.start = toDateTime(dateKey, current?.time || '00:00:00');
+      state.start = current && !current.hasTime && allowDateOnly
+        ? dateKey
+        : current?.time ? toDateTime(dateKey, current.time) : defaultStartDateTime(dateKey);
       state.monthDate = parseDate(state.start).date;
-      emit();
       render();
       return;
     }
 
-    if (state.phase === 'start' || (state.start && state.end)) {
-      state.start = toDateTime(dateKey, '00:00:00');
-      state.end = '';
+    if (state.phase === 'start') {
+      const currentStart = parseDate(state.start);
+      state.start = currentStart && !currentStart.hasTime && allowDateOnly
+        ? dateKey
+        : currentStart?.time ? toDateTime(dateKey, currentStart.time) : defaultStartDateTime(dateKey);
+      state.end = addHours(state.start, 1);
       state.phase = 'end';
     } else {
       const currentStart = parseDate(state.start);
       if (currentStart && dateKey < currentStart.dateKey) {
-        const endTime = currentStart.time === '00:00:00' ? '23:59:59' : currentStart.time;
-        state.start = toDateTime(dateKey, '00:00:00');
-        state.end = toDateTime(currentStart.dateKey, endTime);
+        const previousStart = state.start;
+        state.start = currentStart.hasTime ? toDateTime(dateKey, currentStart.time) : dateKey;
+        state.end = previousStart;
       } else {
-        state.end = toDateTime(dateKey, '23:59:59');
+        const suggestedEnd = parseDate(addHours(state.start, 1));
+        const currentEnd = parseDate(state.end);
+        state.end = currentEnd && !currentEnd.hasTime && allowDateOnly
+          ? dateKey
+          : toDateTime(dateKey, currentEnd?.time || suggestedEnd?.time || defaultWholeHour('end'));
       }
       state.phase = 'start';
     }
-    state.monthDate = parseDate(state.start || state.end).date;
-    emit();
+    state.error = '';
+    state.monthDate = parseDate(dateKey)?.date || parseDate(state.start || state.end).date;
     render();
   };
 
   const setTime = (kind, time) => {
+    if (kind === 'end' && mode === 'range' && !state.start) {
+      state.start = defaultStartDateTime();
+    }
     const target = kind === 'end' ? state.end : state.start;
-    const fallbackDate = parseDate(target)?.dateKey || parseDate(state.start)?.dateKey || formatDateOnly(new Date());
+    const suggestedEnd = kind === 'end' ? parseDate(addHours(state.start, 1)) : null;
+    const fallbackDate = parseDate(target)?.dateKey || suggestedEnd?.dateKey || parseDate(state.start)?.dateKey || formatDateOnly(new Date());
     if (kind === 'end' && mode === 'range') state.end = toDateTime(fallbackDate, time);
     else state.start = toDateTime(fallbackDate, time);
-    emit();
+    if (kind === 'start' && mode === 'range' && state.end) {
+      const end = parseDate(state.end);
+      const nextEnd = parseDate(addHours(state.start, 1));
+      if (end && nextEnd && new Date(state.end.replace(' ', 'T')) <= new Date(state.start.replace(' ', 'T'))) state.end = addHours(state.start, 1);
+    }
+    state.error = '';
+    render();
+  };
+
+  const toggleDateOnly = (kind) => {
+    if (!allowDateOnly) return;
+    if (kind === 'end' && mode === 'range' && !state.start) {
+      state.start = defaultStartDateTime();
+    }
+    const target = kind === 'end' ? state.end : state.start;
+    const suggested = kind === 'end' ? addHours(state.start, 1) : '';
+    const item = parseDate(target || suggested);
+    const dateKey = item?.dateKey || formatDateOnly(new Date());
+    if (item && !item.hasTime) {
+      const time = kind === 'end'
+        ? (parseDate(addHours(state.start, 1))?.time || defaultWholeHour('end'))
+        : defaultWholeHour('start');
+      if (kind === 'end' && mode === 'range') state.end = toDateTime(dateKey, time);
+      else state.start = toDateTime(dateKey, time);
+    } else if (kind === 'end' && mode === 'range') {
+      state.end = dateKey;
+    } else {
+      state.start = dateKey;
+    }
+    state.error = '';
     render();
   };
 
@@ -212,6 +347,29 @@ export function createTimeRangePicker(container, options = {}) {
     const minute = panel.querySelector('[data-part="minute"]')?.value || '00';
     const second = panel.querySelector('[data-part="second"]')?.value || '00';
     return `${hour}:${minute}:${second}`;
+  };
+
+  const handleOutsidePointer = (event) => {
+    if (state.isOpen && !container.contains(event.target)) cancel();
+  };
+
+  const handleGlobalKeydown = (event) => {
+    if (state.isOpen && event.key === 'Escape') {
+      event.preventDefault();
+      cancel();
+    }
+  };
+
+  const syncGlobalListeners = () => {
+    if (state.isOpen && !globalListenersBound) {
+      document.addEventListener('pointerdown', handleOutsidePointer);
+      document.addEventListener('keydown', handleGlobalKeydown);
+      globalListenersBound = true;
+    } else if (!state.isOpen && globalListenersBound) {
+      document.removeEventListener('pointerdown', handleOutsidePointer);
+      document.removeEventListener('keydown', handleGlobalKeydown);
+      globalListenersBound = false;
+    }
   };
 
   const render = () => {
@@ -225,38 +383,68 @@ export function createTimeRangePicker(container, options = {}) {
         <span>${summary}</span>
         <span class="time-range-summary-action">${state.isOpen ? '收起' : '选择'}</span>
       </button>
-      <div class="time-range-popover${state.isOpen ? ' open' : ''}" ${state.isOpen ? '' : 'hidden'}>
-        <div class="time-range-calendar-head">
-          <button type="button" class="time-month-btn" data-year="-1" title="上一年">«</button>
-          <button type="button" class="time-month-btn" data-month="-1">‹</button>
-          <strong>${monthLabel(state.monthDate)}</strong>
-          <button type="button" class="time-month-btn" data-month="1">›</button>
-          <button type="button" class="time-month-btn" data-year="1" title="下一年">»</button>
+      <div class="time-range-popover${state.isOpen ? ' open' : ''}" ${state.isOpen ? '' : 'hidden'} role="dialog" aria-label="选择日期和时间">
+        <div class="time-picker-main">
+          <div class="time-calendar-pane">
+            <div class="time-range-calendar-head">
+              <button type="button" class="time-month-btn" data-year="-1" title="上一年">«</button>
+              <button type="button" class="time-month-btn" data-month="-1">‹</button>
+              <strong>${monthLabel(state.monthDate)}</strong>
+              <button type="button" class="time-month-btn" data-month="1">›</button>
+              <button type="button" class="time-month-btn" data-year="1" title="下一年">»</button>
+            </div>
+            <div class="time-range-hint">${hint}</div>
+            <div class="time-weekdays"><span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span></div>
+            <div class="time-range-calendar">${buildMonthDays(state.monthDate, state.start, mode === 'single' ? '' : state.end)}</div>
+          </div>
+          <div class="time-clock-pane">
+            <div class="time-clock-heading">精确时间 <span>时 : 分 : 秒</span></div>
+            <div class="time-precise-wrap open">
+              ${buildPrecisePanel('start', state.start, mode === 'single' ? '时间' : '开始时间', { allowDateOnly, minuteStep: options.minuteStep, secondStep: options.secondStep })}
+              ${mode === 'range' ? buildPrecisePanel('end', state.end, '结束时间', { allowDateOnly, minuteStep: options.minuteStep, secondStep: options.secondStep }) : ''}
+            </div>
+          </div>
         </div>
-        <div class="time-range-hint">${hint}</div>
-        <div class="time-weekdays"><span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span></div>
-        <div class="time-range-calendar">${buildMonthDays(state.monthDate, state.start, mode === 'single' ? '' : state.end)}</div>
         <div class="time-range-toolbar">
           <div class="time-range-mini-actions">
             <button type="button" data-jump="today">今天</button>
             <button type="button" data-jump="tomorrow">明天</button>
-            <button type="button" data-clear>清除</button>
+            <button type="button" data-clear>清空草稿</button>
           </div>
-          <button type="button" class="time-precision-toggle" aria-expanded="${state.preciseOpen}">${state.preciseOpen ? '收起精确时间' : '展开精确时间'}</button>
+          <span class="time-range-selection-preview"><small>待确认</small>${summary}</span>
         </div>
-        <div class="time-precise-wrap${state.preciseOpen ? ' open' : ''}">
-          ${buildPrecisePanel('start', state.start, mode === 'single' ? '时间' : '开始时间')}
-          ${mode === 'range' ? buildPrecisePanel('end', state.end, '结束时间') : ''}
-        </div>
+        ${state.error ? `<div class="time-range-error" role="alert">${state.error}</div>` : ''}
         <div class="time-range-footer">
-          <button type="button" class="btn btn-primary time-range-close">完成</button>
+          <button type="button" class="btn btn-secondary time-range-cancel">取消</button>
+          <button type="button" class="btn btn-primary time-range-confirm">确定</button>
         </div>
       </div>
     `;
 
+    const popover = container.querySelector('.time-range-popover');
+    if (state.isOpen && popover && !container.closest('.custom-modal')) {
+      requestAnimationFrame(() => {
+        if (!state.isOpen || !popover.isConnected) return;
+        popover.classList.toggle('align-end', popover.getBoundingClientRect().right > window.innerWidth - 12);
+      });
+    }
+
     container.querySelector('.time-range-summary')?.addEventListener('click', () => {
       if (state.disabled) return;
-      state.isOpen = !state.isOpen;
+      if (state.isOpen) {
+        cancel();
+        return;
+      }
+      state.start = state.committedStart;
+      state.end = state.committedEnd;
+      if (!state.start && !state.end) {
+        state.start = defaultStartDateTime();
+        if (mode === 'range') state.end = addHours(state.start, 1);
+        state.monthDate = parseDate(state.start)?.date || new Date();
+      }
+      state.phase = state.start && !state.end && mode === 'range' ? 'end' : 'start';
+      state.error = '';
+      state.isOpen = true;
       render();
     });
 
@@ -286,11 +474,9 @@ export function createTimeRangePicker(container, options = {}) {
     });
 
     container.querySelector('[data-clear]')?.addEventListener('click', clear);
-    container.querySelector('.time-precision-toggle')?.addEventListener('click', () => {
-      state.preciseOpen = !state.preciseOpen;
-      render();
+    container.querySelectorAll('[data-date-only]').forEach(button => {
+      button.addEventListener('click', () => toggleDateOnly(button.dataset.dateOnly));
     });
-
     container.querySelectorAll('.time-precise-panel').forEach(panel => {
       const kind = panel.dataset.precise;
       panel.querySelectorAll('select').forEach(select => {
@@ -301,10 +487,13 @@ export function createTimeRangePicker(container, options = {}) {
       });
     });
 
-    container.querySelector('.time-range-close')?.addEventListener('click', () => {
+    container.querySelector('.time-range-cancel')?.addEventListener('click', cancel);
+    container.querySelector('.time-range-confirm')?.addEventListener('click', () => {
+      if (!commit()) return;
       state.isOpen = false;
       render();
     });
+    syncGlobalListeners();
   };
 
   render();
@@ -313,14 +502,31 @@ export function createTimeRangePicker(container, options = {}) {
     setValue(start, end = '') {
       state.start = start || '';
       state.end = mode === 'single' ? '' : (end || '');
+      state.committedStart = state.start;
+      state.committedEnd = state.end;
       state.phase = state.start && !state.end ? 'end' : 'start';
       state.monthDate = parseDate(state.start || state.end)?.date || new Date();
+      state.error = '';
       render();
     },
     getValue() {
-      return { startTime: state.start, endTime: state.end };
+      return { startTime: state.committedStart, endTime: state.committedEnd };
     },
-    clear
+    clear() {
+      state.start = '';
+      state.end = '';
+      state.committedStart = '';
+      state.committedEnd = '';
+      state.phase = 'start';
+      state.error = '';
+      emit();
+      render();
+    },
+    destroy() {
+      state.isOpen = false;
+      syncGlobalListeners();
+      container.innerHTML = '';
+    }
   };
 }
 
@@ -335,6 +541,10 @@ export function attachDateTimePicker(input, options = {}) {
   const picker = createTimeRangePicker(wrapper, {
     mode: 'single',
     valueStart: input.value || options.value || '',
+    allowDateOnly: Boolean(options.allowDateOnly),
+    minuteStep: options.minuteStep,
+    secondStep: options.secondStep,
+    disabled: Boolean(options.disabled),
     onChange: (value) => {
       input.value = value || '';
       input.dispatchEvent(new Event('change', { bubbles: true }));

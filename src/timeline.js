@@ -7,7 +7,8 @@ const subFilter = document.getElementById('timeline-sub-filter');
 const timelineContainer = document.getElementById('timeline-container');
 
 export function initTimelineModule() {
-  mainFilter.innerHTML = '<option value="all">🌐 (全部主分类)</option>';
+  if (!mainFilter || !subFilter || !timelineContainer) return;
+  mainFilter.innerHTML = '<option value="all">全部主分类</option>';
   appData.tags.forEach(tag => {
     const safeTag = escapeHtml(tag);
     mainFilter.innerHTML += `<option value="${safeTag}">${safeTag}</option>`;
@@ -20,7 +21,7 @@ export function initTimelineModule() {
 
 function updateSubFilters() {
   const selectedMain = mainFilter.value;
-  subFilter.innerHTML = '<option value="all">📁 (所有子项目)</option>';
+  subFilter.innerHTML = '<option value="all">所有子项目</option>';
   if (selectedMain === "all") return; 
 
   const subTags = new Set();
@@ -45,6 +46,16 @@ function getDateString(offset = 0) {
 
 function getTodoEnd(todo) {
   return todo.end_at || todo.deadline || "";
+}
+
+function formatTimelineDay(dateStr) {
+  const date = new Date(`${dateStr}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return { date: dateStr, weekday: '', year: '' };
+  return {
+    date: `${date.getMonth() + 1}月${date.getDate()}日`,
+    weekday: new Intl.DateTimeFormat('zh-CN', { weekday: 'long' }).format(date),
+    year: String(date.getFullYear())
+  };
 }
 
 function matchesFilters(item, selectedMain, selectedSub) {
@@ -140,6 +151,7 @@ async function appendLogRemark(id, dateStr, note, entryType = '') {
 }
 
 export function renderTimeline() {
+  if (!timelineContainer || !mainFilter || !subFilter) return;
   timelineContainer.innerHTML = ""; 
   const selectedMain = mainFilter.value; const selectedSub = subFilter.value;
   const sortedDates = Object.keys(appData.logs).sort((a, b) => b.localeCompare(a));
@@ -147,6 +159,7 @@ export function renderTimeline() {
   let totalHtml = `${renderTimelineFocus(selectedMain, selectedSub)}<div class="timeline-container timeline-history">`;
   let hasData = false;
 
+  let renderedDayCount = 0;
   sortedDates.forEach(dateStr => {
     const dayLogs = appData.logs[dateStr];
     const filteredLogs = dayLogs.filter(log => {
@@ -169,22 +182,26 @@ export function renderTimeline() {
       const safeSubTag = escapeHtml(log.sub_tag);
       const safeDeadline = escapeHtml(log.deadline);
       
-      let subTagHtml = log.sub_tag ? `<span style="background: var(--overlay-light); padding: 2px 8px; border-radius: 12px; font-size: 12px; margin-left: 10px;">📁 ${safeSubTag}</span>` : "";
-      let deadlineHtml = log.deadline ? `<span style="margin-left: 10px; font-weight: normal; font-size: 12px; color: var(--color-primary); background: rgba(var(--color-primary-rgb), 0.15); border: 1px solid rgba(var(--color-primary-rgb), 0.5); padding: 2px 6px; border-radius: 4px;">📅 截至 ${safeDeadline}</span>` : "";
-      const detailBadge = log.detail ? `<span style="background: var(--overlay-light); color: var(--text-muted); border: 1px solid var(--border-medium); padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-left: 8px; white-space: nowrap;">📝 详情</span>` : "";
-      const remarkBadge = log.remark ? `<span style="background: rgba(var(--color-warning-rgb), 0.15); color: var(--color-warning); border: 1px solid rgba(var(--color-warning-rgb), 0.3); padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-left: 8px; white-space: nowrap;">💡 有补述</span>` : "";
+      const subTagHtml = log.sub_tag ? `<span class="timeline-meta-chip">${safeSubTag}</span>` : "";
+      const deadlineHtml = log.deadline ? `<span class="timeline-meta-chip deadline">截至 ${safeDeadline}</span>` : "";
+      const detailBadge = log.detail ? `<span class="timeline-meta-chip">有详情</span>` : "";
+      const remarkBadge = log.remark ? `<span class="timeline-meta-chip remark">有补述</span>` : "";
       let displayText = log.text; if (displayText.startsWith("完成待办: ")) displayText = displayText.replace("完成待办: ", "").trim();
       const safeDisplayText = escapeHtml(displayText);
 
       logsHtml += `
-        <details class="glass-accordion ${themeClass}">
+        <details class="glass-accordion timeline-record-card ${themeClass}">
           <summary class="log-summary">
-            <span class="log-time">${safeTime.substring(0, 5)}</span>
-            <span class="log-text"><b>[${safeTag}]</b> ${safeDisplayText} ${subTagHtml} ${deadlineHtml} ${detailBadge} ${remarkBadge}</span>
+            <span class="log-time">${safeTime.substring(0, 8) || '--:--:--'}</span>
+            <span class="timeline-record-node" aria-hidden="true"></span>
+            <span class="log-text">
+              <span class="timeline-record-title"><b>${safeTag}</b>${safeDisplayText}</span>
+              <span class="timeline-record-meta">${isCompletedTodo ? '<span class="timeline-meta-chip completed">已完成</span>' : ''}${subTagHtml}${deadlineHtml}${detailBadge}${remarkBadge}</span>
+            </span>
           </summary>
           <div class="expanded-content">
-            <div style="margin-bottom: 8px; font-size: 12px; color: gray;">⏱️ 记录于: ${safeDate} ${safeTime}</div>
-            <div style="margin-bottom: 15px;">${detailText}</div>
+            <div class="timeline-record-stamp">记录于 ${safeDate} ${safeTime}</div>
+            <div class="timeline-record-detail">${detailText}</div>
             ${log.remark ? `<div class="item-remark">${textWithLineBreaks(log.remark)}</div>` : ""}
             <div class="quick-note" data-kind="timeline-log" data-date="${safeDate}" data-id="${log.id}">
               <select class="quick-note-type">
@@ -199,7 +216,7 @@ export function renderTimeline() {
               <button class="quick-note-btn" type="button">追加</button>
             </div>
             
-            <div style="display: flex; gap: 10px; border-top: 1px dashed rgba(255,255,255,0.1); padding-top: 10px; justify-content: flex-end;">
+            <div class="timeline-record-actions">
               <div class="dropdown-wrapper" onclick="event.preventDefault(); event.stopPropagation();">
                   <button class="dots-btn icon-btn" style="padding: 4px 10px; margin: 0; font-size: 13px;" onclick="
                       const menu = this.nextElementSibling; const isShow = menu.classList.contains('show');
@@ -219,18 +236,21 @@ export function renderTimeline() {
       `;
     });
 
+    const dateLabel = formatTimelineDay(dateStr);
     totalHtml += `
       <div class="timeline-item">
         <div class="timeline-dot"></div>
-        <details style="margin-left: 10px;">
-          <summary class="timeline-date" style="cursor: pointer; list-style: none; outline: none; display: flex; align-items: center; gap: 10px;">
-            <span class="date-arrow" style="font-size: 12px; color: var(--text-muted); opacity: 0.7; display: inline-block;">▶</span>
-            🗓️ ${escapeHtml(dateStr)} <span style="font-size: 13px; font-weight: normal; color: #94A3B8;">(共 ${filteredLogs.length} 项)</span>
+        <details class="timeline-day-group"${renderedDayCount === 0 ? ' open' : ''}>
+          <summary class="timeline-date">
+            <span class="date-arrow" aria-hidden="true">›</span>
+            <span class="timeline-date-copy"><strong>${escapeHtml(dateLabel.date)}</strong><small>${escapeHtml(dateLabel.weekday)} · ${escapeHtml(dateLabel.year)}</small></span>
+            <span class="timeline-date-count">${filteredLogs.length} 项</span>
           </summary>
-          <div style="margin-top: 15px;">${logsHtml}</div>
+          <div class="timeline-day-records">${logsHtml}</div>
         </details>
       </div>
     `;
+    renderedDayCount += 1;
   });
 
   totalHtml += '</div>';
@@ -242,9 +262,7 @@ export function renderTimeline() {
     
     document.querySelectorAll('.timeline-date').forEach(summary => {
       summary.addEventListener('click', function() {
-        const arrow = this.querySelector('.date-arrow');
-        arrow.style.transform = this.parentElement.hasAttribute('open') ? 'rotate(-90deg)' : 'rotate(0deg)';
-        arrow.style.transition = 'transform 0.2s ease';
+        this.closest('.timeline-day-group')?.classList.toggle('is-closing', this.parentElement.hasAttribute('open'));
       });
     });
 

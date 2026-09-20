@@ -1,5 +1,5 @@
 import { appData, dbExecute, dbQuery, getTodayString, loadData, DEFAULT_TAG } from './data.js';
-import { escapeHtml, insertTextareaNewline } from './htmlUtils.js';
+import { escapeHtml } from './htmlUtils.js';
 import { showUndoToast } from './undoToast.js';
 import { attachDateTimePicker, createTimeRangePicker } from './timeRangePicker.js';
 import {
@@ -11,6 +11,9 @@ import {
 } from './taskRelations.js';
 
 let quickToastTimer = null;
+let inboxVisibleLimit = 10;
+let quickCaptureBusy = false;
+const QUICK_DRAFT_KEY = 'workRecorderQuickDraft';
 
 export function deriveRecordTitle(content) {
   const firstLine = (content || "").replace(/\r\n/g, '\n').split('\n').find(line => line.trim()) || content || "";
@@ -36,53 +39,19 @@ function currentTimeString() {
   return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
 }
 
-function getAdvancedValue(id, fallback = '') {
-  const el = document.getElementById(id);
-  if (!el) return fallback;
-  return el.value?.trim() || fallback;
-}
-
-function getAdvancedCheckbox(id) {
-  const el = document.getElementById(id);
-  return Boolean(el?.checked);
-}
-
-function splitDateTime(value) {
-  if (!value) return { date: getTodayString(), time: currentTimeString(), hasValue: false };
-  const [datePart, timePart = ""] = value.split(" ");
-  return {
-    date: datePart || getTodayString(),
-    time: timePart || currentTimeString(),
-    hasValue: true
-  };
-}
-
 function resolveQuickMeta() {
-  const tagSelect = document.getElementById('quick-tag-select');
-  const tagNew = getAdvancedValue('quick-tag-new');
-  const subSelect = document.getElementById('quick-sub-tag-select');
-  const subNew = getAdvancedValue('quick-sub-tag-new');
-
-  const tag = tagSelect?.value === 'NEW' ? tagNew : getAdvancedValue('quick-tag-select', '未分类');
-  const subTag = subSelect?.value === 'NEW' ? subNew : getAdvancedValue('quick-sub-tag-select', '');
-  const manualTime = getAdvancedValue('quick-time-input', '');
-  const dateTime = splitDateTime(manualTime);
-
   return {
-    tag: tag || DEFAULT_TAG,
-    subTag: subTag || "",
-    recordType: getAdvancedValue('quick-type-select', 'quick') || 'quick',
-    parentId: getAdvancedValue('quick-parent-todo-select', ''),
-    relation: window.quickTaskRelationPicker?.getValue?.() || {
-      mode: getAdvancedValue('quick-parent-todo-select', '') ? 'child' : 'independent',
-      targetId: getAdvancedValue('quick-parent-todo-select', '')
-    },
-    plannedTodo: getAdvancedValue('quick-action-input', ''),
-    deadline: getAdvancedValue('quick-deadline-input', ''),
-    isOverdue: getAdvancedCheckbox('quick-is-overdue'),
-    dateStr: dateTime.date,
-    timeStr: dateTime.time,
-    hasManualTime: dateTime.hasValue
+    tag: DEFAULT_TAG,
+    subTag: "",
+    recordType: 'quick',
+    parentId: '',
+    relation: { mode: 'independent', targetId: '' },
+    plannedTodo: '',
+    deadline: '',
+    isOverdue: false,
+    dateStr: getTodayString(),
+    timeStr: currentTimeString(),
+    hasManualTime: false
   };
 }
 
@@ -92,8 +61,8 @@ async function refreshAfterQuickSave() {
   renderInboxRecords();
   if (typeof window.renderTodayTimeline === 'function') window.renderTodayTimeline();
   import('./todo.js').then(m => m.renderTodoList());
-  import('./notes.js').then(m => m.renderNotesList());
-  if (typeof window.renderQuickParentTodos === 'function') window.renderQuickParentTodos();
+  // 笔记列表现已由 notesEditor 管理
+  if (typeof window.__wrRefreshNotes === 'function') window.__wrRefreshNotes();
   if (typeof window.updateWorkspaceSummary === 'function') window.updateWorkspaceSummary();
 }
 
@@ -111,14 +80,14 @@ function showQuickToast(message, tone = 'success') {
 }
 
 async function saveAsQuickLog(content, title, meta) {
-  await dbExecute(
+  return dbExecute(
     "INSERT INTO logs (date, time, text, tag, sub_tag, detail, remark, linked_todo, deadline, is_overdue, status, record_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     [meta.dateStr, meta.timeStr, title, meta.tag, meta.subTag, content, "", "", meta.deadline, meta.isOverdue, "unprocessed", "quick"]
   );
 }
 
 async function saveAsProcessedLog(content, title, meta) {
-  await dbExecute(
+  return dbExecute(
     "INSERT INTO logs (date, time, text, tag, sub_tag, detail, remark, linked_todo, deadline, is_overdue, status, record_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     [meta.dateStr, meta.timeStr, title, meta.tag, meta.subTag, content, "", "", meta.deadline, meta.isOverdue, "processed", "log"]
   );
@@ -142,10 +111,19 @@ async function saveAsTodo(content, title, meta) {
 
 async function saveAsNote(content, title, meta, noteType = 'idea') {
   const now = `${meta.dateStr} ${meta.timeStr}`;
-  await dbExecute(
-    "INSERT INTO notes (title, content, note_type, status, tag, sub_tag, source_type, source_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    [title, content, noteType, "usable", meta.tag, meta.subTag, "quick", "", now, now]
-  );
+  // 笔记改为「文件优先」：写 .md 文件，不再进 notes 表
+  const { writeNote } = await import('./notesStore.js');
+  return writeNote({
+    title,
+    content,
+    note_type: noteType,
+    status: 'usable',
+    tag: meta.tag,
+    sub_tag: meta.subTag,
+    created_at: now,
+    updated_at: now,
+    rel_path: ''
+  });
 }
 
 async function createFollowUpTodo(content, meta) {
@@ -164,35 +142,14 @@ async function createFollowUpTodo(content, meta) {
   await applyCreatedTodoRelation(createdTodoId, relationCheck.relation);
 }
 
-async function syncQuickMetaOptions(meta) {
-  const tagSelect = document.getElementById('quick-tag-select');
-  const subSelect = document.getElementById('quick-sub-tag-select');
-
-  if (tagSelect?.value === 'NEW' && meta.tag) {
-    await dbExecute("INSERT OR IGNORE INTO tags (name, is_active) VALUES (?, ?)", [meta.tag, true]);
-  }
-  if (subSelect?.value === 'NEW' && meta.subTag) {
-    await dbExecute("INSERT INTO sub_tags (main_tag, name) VALUES (?, ?)", [meta.tag, meta.subTag]);
-  }
-}
-
 function clearQuickInputs(input) {
-  input.value = "";
-  const actionInput = document.getElementById('quick-action-input');
-  const timeInput = document.getElementById('quick-time-input');
-  const deadlineInput = document.getElementById('quick-deadline-input');
-  const overdueInput = document.getElementById('quick-is-overdue');
-  const parentInput = document.getElementById('quick-parent-todo-select');
-  if (actionInput) actionInput.value = "";
-  if (timeInput?._timeRangePicker) timeInput._timeRangePicker.clear();
-  else if (timeInput?._flatpickr) timeInput._flatpickr.clear();
-  else if (timeInput) timeInput.value = "";
-  if (deadlineInput?._timeRangePicker) deadlineInput._timeRangePicker.clear();
-  else if (deadlineInput?._flatpickr) deadlineInput._flatpickr.clear();
-  else if (deadlineInput) deadlineInput.value = "";
-  if (overdueInput) overdueInput.checked = false;
-  if (parentInput) parentInput.value = "";
-  window.quickTaskRelationPicker?.reset?.();
+  if (input) {
+    input.value = "";
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+  localStorage.removeItem(QUICK_DRAFT_KEY);
+  const draftStatus = document.getElementById('quick-capture-draft-status');
+  if (draftStatus) draftStatus.textContent = '';
 }
 
 function isInboxRecord(log) {
@@ -218,7 +175,8 @@ async function refreshAfterInboxAction() {
   import('./log.js').then(m => m.renderHistoryList());
   if (typeof window.renderTodayTimeline === 'function') window.renderTodayTimeline();
   import('./todo.js').then(m => m.renderTodoList());
-  import('./notes.js').then(m => m.renderNotesList());
+  // 笔记列表现已由 notesEditor 管理
+  if (typeof window.__wrRefreshNotes === 'function') window.__wrRefreshNotes();
   if (typeof window.updateWorkspaceSummary === 'function') window.updateWorkspaceSummary();
 }
 
@@ -482,7 +440,6 @@ async function refreshAfterTodoCreate() {
   renderInboxRecords();
   import('./todo.js').then(m => m.renderTodoList());
   if (typeof window.renderTodayTimeline === 'function') window.renderTodayTimeline();
-  if (typeof window.renderQuickParentTodos === 'function') window.renderQuickParentTodos();
   if (typeof window.updateWorkspaceSummary === 'function') window.updateWorkspaceSummary();
 }
 
@@ -617,16 +574,39 @@ async function confirmQuickDirectModal(body, targetType, draft) {
     if (!createdTodoId) return false;
   } else if (targetType === 'note') {
     const now = `${getTodayString()} ${currentTimeString()}`;
-    await insertAndReturnId(
-      "INSERT INTO notes (title, content, note_type, status, tag, sub_tag, source_type, source_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      [title, detail, 'idea', 'usable', tag, subTag, 'quick', '', now, now]
-    );
+    // 笔记改为「文件优先」：写 .md 文件，不再进 notes 表
+    const { writeNote } = await import('./notesStore.js');
+    let saved = null;
+    try {
+      saved = await writeNote({
+        title,
+        content: detail,
+        note_type: 'idea',
+        status: 'usable',
+        tag,
+        sub_tag: subTag,
+        created_at: now,
+        updated_at: now,
+        rel_path: ''
+      });
+    } catch (error) {
+      console.error('保存笔记失败:', error);
+      saved = null;
+    }
+    if (!saved) {
+      showQuickToast('保存失败，原内容已保留', 'warning');
+      return false;
+    }
   } else {
     const parts = parseDateTimeParts(body.querySelector('#quick-direct-occurred-at')?.value);
-    await dbExecute(
+    const rowsAffected = await dbExecute(
       "INSERT INTO logs (date, time, text, tag, sub_tag, detail, remark, linked_todo, deadline, is_overdue, status, record_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [parts.dateStr, parts.timeStr, title, tag, subTag, detail, "", "", "", false, "processed", "log"]
     );
+    if (!rowsAffected) {
+      showQuickToast('保存失败，原内容已保留', 'warning');
+      return false;
+    }
   }
 
   clearQuickInputs(draft.input);
@@ -874,6 +854,7 @@ function splitRecordDetail(record) {
 function renderInboxActions(extraClass = '') {
   return `
     <div class="inbox-record-actions${extraClass ? ` ${extraClass}` : ''}">
+      <button type="button" data-action="read" class="inbox-read-action">阅读全文</button>
       <div class="inbox-convert-menu">
         <button type="button" class="inbox-convert-trigger" data-action="convert">类型转换</button>
         <div class="inbox-convert-panel">
@@ -886,6 +867,74 @@ function renderInboxActions(extraClass = '') {
       <button type="button" data-action="edit">编辑</button>
     </div>
   `;
+}
+
+function getRecordHighlights(text) {
+  const labels = [
+    ['重点', 'highlight'],
+    ['下一步', 'next'],
+    ['问题', 'problem'],
+    ['决策', 'decision'],
+    ['结论', 'conclusion']
+  ];
+  return String(text || '')
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean)
+    .map(line => {
+      const match = labels.find(([label]) => line.startsWith(`${label}：`) || line.startsWith(`${label}:`));
+      if (!match) return null;
+      return { type: match[1], label: match[0], text: line.replace(new RegExp(`^${match[0]}[：:]\\s*`), '').trim() };
+    })
+    .filter(item => item?.text);
+}
+
+function openRecordReader(record) {
+  const overlay = document.getElementById('record-reader-overlay');
+  const titleEl = document.getElementById('record-reader-title');
+  const kickerEl = document.getElementById('record-reader-kicker');
+  const metaEl = document.getElementById('record-reader-meta');
+  const highlightsEl = document.getElementById('record-reader-highlights');
+  const contentEl = document.getElementById('record-reader-content');
+  const actionsEl = document.getElementById('record-reader-actions');
+  if (!overlay || !titleEl || !metaEl || !contentEl || !actionsEl || !record) return;
+
+  const title = getRecordTitle(record);
+  const detail = getRecordDetail(record);
+  const highlights = getRecordHighlights(detail);
+  const typeLabel = record.status === 'unprocessed' || record.record_type === 'quick' ? '待整理记录' : '工作记录';
+  const meta = [
+    typeLabel,
+    record.tag || DEFAULT_TAG,
+    record.sub_tag || '',
+    record.date ? `${record.date} ${(record.time || '').substring(0, 5)}` : ''
+  ].filter(Boolean);
+
+  kickerEl.textContent = typeLabel;
+  titleEl.textContent = title || '未命名记录';
+  metaEl.innerHTML = meta.map(item => `<span>${escapeHtml(item)}</span>`).join('');
+  highlightsEl.innerHTML = highlights.length
+    ? highlights.map(item => `<div class="reader-highlight reader-highlight-${item.type}"><strong>${escapeHtml(item.label)}</strong><span>${escapeHtml(item.text)}</span></div>`).join('')
+    : '';
+  contentEl.innerHTML = escapeHtml(detail || '没有更多正文。').replace(/\r?\n/g, '<br>');
+  actionsEl.innerHTML = `
+    <button type="button" class="icon-btn" data-reader-action="todo">转待办</button>
+    <button type="button" class="icon-btn" data-reader-action="note">转笔记</button>
+    <button type="button" class="icon-btn" data-reader-action="project">修改分类</button>
+    <button type="button" class="icon-btn" data-reader-action="edit">编辑</button>
+  `;
+  actionsEl.querySelectorAll('[data-reader-action]').forEach(button => {
+    button.addEventListener('click', () => {
+      const action = button.dataset.readerAction;
+      window.closeRecordReader?.();
+      if (action === 'project') openInboxProjectModal(record);
+      else if (action === 'edit') openInboxEditModal(record);
+      else openQuickConvertModal(record, action);
+    });
+  });
+  overlay.classList.add('show');
+  overlay.setAttribute('aria-hidden', 'false');
+  document.getElementById('record-reader-close')?.focus();
 }
 
 function setupInboxDateTimeInput(body, selector) {
@@ -1114,13 +1163,20 @@ export function renderInboxRecords() {
   const container = document.getElementById('inbox-records-container');
   if (!container || !appData) return;
 
-  const records = loadInboxRecords(10);
+  const allRecords = loadInboxRecords(Number.MAX_SAFE_INTEGER);
+  const records = allRecords.slice(0, inboxVisibleLimit);
   if (records.length === 0) {
     container.innerHTML = "<div class='inbox-empty' title='修改分类不会完成整理，转为待办、笔记或流水后才会离开这里。'>没有待整理内容</div>";
     return;
   }
 
-  const inboxHint = "<div class='inbox-process-hint'>修改分类不会完成整理</div>";
+  const remainingCount = Math.max(0, allRecords.length - records.length);
+  const inboxHint = `
+    <div class="inbox-footer">
+      <span class="inbox-process-hint">修改分类不会完成整理 · 共 ${allRecords.length} 条</span>
+      ${remainingCount > 0 ? `<button type="button" class="text-link-btn inbox-load-more">加载更多（还剩 ${remainingCount} 条）</button>` : ''}
+    </div>
+  `;
   container.innerHTML = records.map(record => {
     const title = getRecordTitle(record);
     const displayTitle = formatInboxTitle(title);
@@ -1158,11 +1214,14 @@ export function renderInboxRecords() {
       const card = button.closest('.inbox-record');
       const id = parseInt(card.dataset.id);
       const date = card.dataset.date;
-      const record = loadInboxRecords(50).find(item => item.id === id && item.date === date);
+       const record = loadInboxRecords(Number.MAX_SAFE_INTEGER).find(item => item.id === id && item.date === date);
       if (!record) return;
 
       const action = button.dataset.action;
-      if (action === 'convert') return;
+       if (action === 'convert' || action === 'read') {
+         if (action === 'read') openRecordReader(record);
+         return;
+       }
       if (action === 'project') {
         openInboxProjectModal(record);
       } else if (action === 'edit') {
@@ -1174,30 +1233,33 @@ export function renderInboxRecords() {
   });
 
   container.querySelectorAll('.inbox-record').forEach(card => {
-    const toggleCard = () => {
-      const isExpanded = card.classList.toggle('expanded');
-      card.setAttribute('aria-expanded', String(isExpanded));
-      card.querySelector('.inbox-record-detail')?.setAttribute('aria-hidden', String(!isExpanded));
-      const detailLabel = card.querySelector('.inbox-detail-toggle-label');
-      if (detailLabel) detailLabel.textContent = isExpanded ? ' · 收起详情' : ' · 点击展开详情';
-    };
+    const id = parseInt(card.dataset.id);
+    const date = card.dataset.date;
+    const record = loadInboxRecords(Number.MAX_SAFE_INTEGER).find(item => item.id === id && item.date === date);
+    if (!record) return;
     card.addEventListener('click', event => {
       if (event.target.closest('button, input, textarea, select, a, .inbox-convert-panel')) return;
-      toggleCard();
+      openRecordReader(record);
     });
     card.addEventListener('keydown', event => {
       if (event.target.closest('button, input, textarea, select, a')) return;
       if (event.key === 'Enter' || event.key === ' ') {
         event.preventDefault();
-        toggleCard();
+        openRecordReader(record);
       }
     });
+  });
+
+  container.querySelector('.inbox-load-more')?.addEventListener('click', () => {
+    inboxVisibleLimit += 10;
+    renderInboxRecords();
   });
 }
 
 export async function saveQuickRecord(inputEl) {
   const input = inputEl || document.getElementById('quick-capture-input');
   if (!input) return;
+  if (quickCaptureBusy) return;
 
   const content = input.value.trim();
   if (!content) {
@@ -1206,27 +1268,46 @@ export async function saveQuickRecord(inputEl) {
     return;
   }
 
-  const meta = resolveQuickMeta();
-  const title = deriveRecordTitle(content);
+  quickCaptureBusy = true;
+  const saveButton = document.getElementById('quick-capture-save');
+  if (saveButton) saveButton.disabled = true;
 
-  await syncQuickMetaOptions(meta);
+  try {
+    const meta = resolveQuickMeta();
+    const title = deriveRecordTitle(content);
+    let saved = false;
 
-  if (meta.recordType === 'todo') {
-    const createdTodoId = await saveAsTodo(content, title, meta);
-    if (!createdTodoId) return;
-  } else if (meta.recordType === 'log') {
-    await saveAsProcessedLog(content, title, meta);
-  } else if (meta.recordType === 'note' || meta.recordType === 'problem' || meta.recordType === 'conclusion') {
-    const noteType = meta.recordType === 'problem' ? 'problem' : meta.recordType === 'conclusion' ? 'review' : 'idea';
-    await saveAsNote(content, title, meta, noteType);
-  } else {
-    await saveAsQuickLog(content, title, meta);
+    if (meta.recordType === 'todo') {
+      const createdTodoId = await saveAsTodo(content, title, meta);
+      if (!createdTodoId) return;
+      saved = true;
+    } else if (meta.recordType === 'log') {
+      saved = Boolean(await saveAsProcessedLog(content, title, meta));
+    } else if (meta.recordType === 'note' || meta.recordType === 'problem' || meta.recordType === 'conclusion') {
+      const noteType = meta.recordType === 'problem' ? 'problem' : meta.recordType === 'conclusion' ? 'review' : 'idea';
+      saved = Boolean(await saveAsNote(content, title, meta, noteType));
+    } else {
+      saved = Boolean(await saveAsQuickLog(content, title, meta));
+    }
+
+    if (!saved) {
+      showQuickToast('保存失败，草稿已保留', 'warning');
+      input.focus();
+      return;
+    }
+
+    await createFollowUpTodo(content, meta);
+    clearQuickInputs(input);
+    await refreshAfterQuickSave();
+    showQuickToast(meta.recordType === 'quick' ? '已保存到待整理' : '已保存');
+  } catch (error) {
+    console.error('快速记录保存失败', error);
+    showQuickToast('保存失败，草稿已保留', 'warning');
+    input.focus();
+  } finally {
+    quickCaptureBusy = false;
+    if (saveButton) saveButton.disabled = false;
   }
-
-  await createFollowUpTodo(content, meta);
-  clearQuickInputs(input);
-  await refreshAfterQuickSave();
-  showQuickToast(meta.recordType === 'quick' ? '已保存到待整理' : '已保存');
 }
 
 function setupInboxCollapseToggle() {
@@ -1261,22 +1342,37 @@ export function initQuickCapture() {
 
   if (!input || !saveBtn) return;
 
-  const timeInput = document.getElementById('quick-time-input');
-  const deadlineInput = document.getElementById('quick-deadline-input');
-  attachDateTimePicker(timeInput);
-  attachDateTimePicker(deadlineInput);
+  const draftStatus = document.getElementById('quick-capture-draft-status');
+  const resizeInput = () => {
+    input.style.height = 'auto';
+    input.style.height = `${Math.min(Math.max(input.scrollHeight, 144), 420)}px`;
+  };
+  const updateDraft = () => {
+    const value = input.value;
+    resizeInput();
+    if (value.trim()) {
+      localStorage.setItem(QUICK_DRAFT_KEY, value);
+      if (draftStatus) draftStatus.textContent = '草稿已保存';
+    } else {
+      localStorage.removeItem(QUICK_DRAFT_KEY);
+      if (draftStatus) draftStatus.textContent = '';
+    }
+  };
+
+  const savedDraft = localStorage.getItem(QUICK_DRAFT_KEY);
+  if (savedDraft && !input.value) {
+    input.value = savedDraft;
+    if (draftStatus) draftStatus.textContent = '已恢复未完成草稿';
+  }
+  input.addEventListener('input', updateDraft);
+  resizeInput();
 
   let isComposing = false;
   input.addEventListener('compositionstart', () => { isComposing = true; });
   input.addEventListener('compositionend', () => { isComposing = false; });
   input.addEventListener('keydown', async (event) => {
     if (isComposing || event.isComposing) return;
-    if (event.key === 'Enter' && event.altKey) {
-      event.preventDefault();
-      insertTextareaNewline(input);
-      return;
-    }
-    if (event.key === 'Enter' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
+    if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
       event.preventDefault();
       await saveQuickRecord(input);
     }
@@ -1316,7 +1412,7 @@ export async function convertQuickRecord(log, targetType, options = {}) {
   const title = options.title || log.text || deriveRecordTitle(log.detail || "");
   const detail = options.detail ?? (log.detail || log.text || "");
   let createdTodoId = null;
-  let createdNoteId = null;
+  let createdNotePath = null;
   let createdFollowUpTodoId = null;
 
   await ensureTagAndSubTag(tag, subTag);
@@ -1344,10 +1440,26 @@ export async function convertQuickRecord(log, targetType, options = {}) {
     const noteType = options.noteType || (targetType === 'problem' ? 'problem' : targetType === 'conclusion' ? 'review' : 'idea');
     const typeName = targetType === 'problem' ? '问题' : targetType === 'conclusion' ? '结论' : '笔记';
     const now = `${getTodayString()} ${currentTimeString()}`;
-    createdNoteId = await insertAndReturnId(
-      "INSERT INTO notes (title, content, note_type, status, tag, sub_tag, source_type, source_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      [title, detail, noteType, "usable", tag, subTag, "log", log.id, now, now]
-    );
+    // 笔记改为「文件优先」：写 .md 文件，不再进 notes 表
+    const { writeNote } = await import('./notesStore.js');
+    try {
+      const saved = await writeNote({
+        title,
+        content: detail,
+        note_type: noteType,
+        status: 'usable',
+        tag,
+        sub_tag: subTag,
+        created_at: now,
+        updated_at: now,
+        rel_path: ''
+      });
+      createdNotePath = saved?.rel_path || null;
+    } catch (error) {
+      console.error('转换笔记失败:', error);
+      alert('转为笔记失败，请检查笔记目录是否可用。');
+      return;
+    }
     if (options.followUpTodo) {
       createdFollowUpTodoId = await insertAndReturnId(
         "INSERT INTO todos (task, done, tag, sub_tag, detail, remark, deadline, start_at, end_at, parent_id, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1370,22 +1482,25 @@ export async function convertQuickRecord(log, targetType, options = {}) {
   import('./log.js').then(m => m.renderHistoryList());
   if (typeof window.renderTodayTimeline === 'function') window.renderTodayTimeline();
   import('./todo.js').then(m => m.renderTodoList());
-  import('./notes.js').then(m => m.renderNotesList());
+  // 笔记列表现已由 notesEditor 管理
+  if (typeof window.__wrRefreshNotes === 'function') window.__wrRefreshNotes();
   if (typeof window.updateWorkspaceSummary === 'function') window.updateWorkspaceSummary();
 
   showUndoToast(getQuickConvertMessage(targetType), async () => {
     if (createdTodoId) await dbExecute("DELETE FROM todos WHERE id=?", [createdTodoId]);
-    if (createdNoteId) await dbExecute("DELETE FROM notes WHERE id=?", [createdNoteId]);
+    if (createdNotePath) {
+      const { deleteNote } = await import('./notesStore.js');
+      await deleteNote(createdNotePath);
+    }
     if (createdFollowUpTodoId) await dbExecute("DELETE FROM todos WHERE id=?", [createdFollowUpTodoId]);
     await dbExecute(
       "UPDATE logs SET date=?, time=?, text=?, detail=?, deadline=?, tag=?, sub_tag=?, status=?, record_type=? WHERE id=?",
       [originalLog.date, originalLog.time, originalLog.text, originalLog.detail, originalLog.deadline, originalLog.tag, originalLog.sub_tag, originalLog.status, originalLog.record_type, log.id]
     );
     await refreshAfterInboxAction();
-    if (typeof window.renderQuickParentTodos === 'function') window.renderQuickParentTodos();
   });
 
-  return { logId: log.id, createdTodoId, createdNoteId, createdFollowUpTodoId, targetType };
+  return { logId: log.id, createdTodoId, createdNotePath, createdFollowUpTodoId, targetType };
 }
 
 export async function updateQuickRecordProject(log, tag, subTag) {

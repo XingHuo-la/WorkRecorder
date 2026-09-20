@@ -34,7 +34,7 @@ export async function dbExecute(sql, params = []) {
 export async function loadData() {
   try {
     console.log("🚀 正在从 SQLite 极速加载数据...");
-    
+
     // 并发向数据库要数据，速度极快
     const tagsRes = await dbQuery("SELECT name FROM tags");
     if (!tagsRes.some(t => t.name === DEFAULT_TAG)) {
@@ -45,7 +45,16 @@ export async function loadData() {
     const settingsRes = await dbQuery("SELECT key, value FROM settings");
     const todosRes = await dbQuery("SELECT * FROM todos");
     const logsRes = await dbQuery("SELECT * FROM logs ORDER BY date DESC, time DESC");
-    const notesRes = await dbQuery("SELECT * FROM notes ORDER BY updated_at DESC, created_at DESC, id DESC");
+
+    // 笔记已改为「文件优先」：正文只存在磁盘 .md 文件里。
+    // 这里读取文件清单作为 appData.notes，保持对旧调用方的兼容。
+    let notesRes = [];
+    try {
+      const { listNotes } = await import('./notesStore.js');
+      notesRes = await listNotes();
+    } catch (error) {
+      console.warn('笔记文件读取失败，降级为空列表:', error);
+    }
 
     // 组装成旧版 UI 认识的 appData 格式（平滑过渡魔法）
     appData = {
@@ -60,10 +69,13 @@ export async function loadData() {
             status: n.status || "usable",
             tag: n.tag || "",
             sub_tag: n.sub_tag || "",
-            source_type: n.source_type || "",
-            source_id: n.source_id || "",
+            source_type: "",
+            source_id: "",
             created_at: n.created_at || "",
-            updated_at: n.updated_at || ""
+            updated_at: n.updated_at || "",
+            // 文件优先后新增的字段
+            rel_path: n.rel_path || "",
+            abs_path: n.abs_path || ""
         })),
         todos: todosRes.map(t => ({
             id: t.id, // ✨ 重点：现在每条数据都有了真实的数据库 ID！

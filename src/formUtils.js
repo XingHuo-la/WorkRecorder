@@ -90,7 +90,21 @@ export function openUniversalEditModal(title, item, options) {
         // --- 撤销按钮绑定 ---
         if (isCompletedTodo && onRestore) {
             const restoreBtn = body.querySelector('#u-restore-btn');
-            if (restoreBtn) restoreBtn.onclick = () => onRestore(cleanText);
+            if (restoreBtn) restoreBtn.onclick = async () => {
+                if (restoreBtn.disabled) return;
+                if (!confirm('确定撤销这次完成吗？对应完成流水会被删除，待办将恢复为未完成。')) return;
+                restoreBtn.disabled = true;
+                const originalText = restoreBtn.textContent;
+                restoreBtn.textContent = '正在恢复…';
+                try {
+                    await onRestore(cleanText);
+                } finally {
+                    if (restoreBtn.isConnected) {
+                        restoreBtn.disabled = false;
+                        restoreBtn.textContent = originalText;
+                    }
+                }
+            };
         }
 
         if (isLog) {

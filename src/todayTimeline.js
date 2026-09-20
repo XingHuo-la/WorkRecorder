@@ -5,6 +5,7 @@ import { openQuickConvertModal, openScheduleTodoModal, renderInboxRecords, updat
 import { showUndoToast } from './undoToast.js';
 
 const expandedMoreActionIds = new Set();
+const completingTodoIds = new Set();
 
 function formatTimelineTitle(text, fallback = '') {
   const clean = (text || fallback || '').trim().replace(/\s+/g, ' ');
@@ -229,29 +230,47 @@ function renderEditTodoModal(todo) {
 }
 
 function renderEditNoteModal(note) {
-  const currentTheme = (appData.settings && appData.settings.theme === 'light') ? 'theme-light-modal' : 'theme-dark-modal';
-  window.showModal('编辑笔记', `
+  // 笔记正文已改为磁盘 .md 文件，编辑统一在笔记页完成，避免两套编辑器产生分歧。
+  // 这里只做「跳转 + 聚焦」。
+  const relPath = note.rel_path || '';
+  if (!relPath) {
+    alert('这条笔记没有对应的文件路径，可能来自旧版本数据。');
+    return;
+  }
+
+  const modal = window.showModal('编辑笔记', `
+    <p class="legacy-muted-text">笔记已改为 Markdown 文件存储，请到「笔记」页面编辑。</p>
     <div class="form-group">
       <label class="field-label">标题</label>
-      <input id="today-note-title" class="hero-input" value="${escapeHtml(note.title || '')}" />
+      <input id="today-note-title" class="hero-input" value="${escapeHtml(note.title || '')}" readonly />
     </div>
     <div class="form-group">
-      <label class="field-label">内容</label>
-      <textarea id="today-note-content" class="hero-textarea">${escapeHtml(note.content || '')}</textarea>
+      <label class="field-label">内容预览</label>
+      <textarea id="today-note-content" class="hero-textarea" readonly>${escapeHtml((note.content || '').substring(0, 400))}</textarea>
     </div>
-  `, null, async (body) => {
-    const title = body.querySelector('#today-note-title').value.trim();
-    const content = body.querySelector('#today-note-content').value.trim();
-    if (!content) {
-      alert('内容不能为空');
-      return false;
-    }
-    await dbExecute("UPDATE notes SET title=?, content=?, updated_at=? WHERE id=?", [title || content.substring(0, 24), content, `${getTodayString()} ${new Date().toLocaleTimeString('en-US', { hour12: false })}`, note.id]);
-    await loadData();
-    renderTodayTimeline();
-    import('./notes.js').then(m => m.renderNotesList());
+  `, null, async () => {
+    closeRecordReaderAndGoToNote(relPath);
     return true;
-  }, { themeClass: currentTheme, btnText: '保存' });
+  }, { btnText: '去笔记页编辑' });
+
+  return modal;
+}
+
+/**
+ * 关掉可能开着的阅读器，切到笔记页并打开指定笔记。
+ */
+async function closeRecordReaderAndGoToNote(relPath) {
+  if (typeof window.closeRecordReader === 'function') window.closeRecordReader();
+
+  const navBtn = document.getElementById('nav-notes');
+  if (navBtn) navBtn.click();
+
+  try {
+    const { openNote } = await import('./notesEditor.js');
+    await openNote(relPath);
+  } catch (error) {
+    console.error('打开笔记失败:', error);
+  }
 }
 
 export function renderTodayTimeline() {
@@ -330,7 +349,6 @@ export function renderTodayTimeline() {
             await loadData();
             renderTodayTimeline();
             import('./todo.js').then(m => m.renderTodoList());
-            if (typeof window.renderQuickParentTodos === 'function') window.renderQuickParentTodos();
             return;
           }
           if (action === 'delete') {
@@ -350,28 +368,36 @@ export function renderTodayTimeline() {
           const todo = appData.todos.find(item => item.id === id);
           if (!todo) return;
           if (action === 'done') {
+            if (completingTodoIds.has(todo.id)) return;
             if (hasPendingDescendant(todo.id) && !confirm('该任务还有未完成的下级任务，仍要完成吗？')) return;
-            await dbExecute("UPDATE todos SET done=?, completed_at=? WHERE id=?", [true, today, todo.id]);
-            const completedLogId = await insertAndReturnId(
-              "INSERT INTO logs (date, time, text, tag, sub_tag, detail, remark, linked_todo, deadline, is_overdue, status, record_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-              [today, new Date().toLocaleTimeString('en-US', { hour12: false }), `完成待办: ${todo.task}`, todo.tag, todo.sub_tag || '', todo.detail || '', todo.remark || '', todo.task, getTodoEnd(todo), false, 'processed', 'log']
-            );
-            await loadData();
-            renderInboxRecords();
-            renderTodayTimeline();
-            import('./todo.js').then(m => m.renderTodoList());
-            import('./log.js').then(m => m.renderHistoryList());
-            if (typeof window.updateWorkspaceSummary === 'function') window.updateWorkspaceSummary();
-            showUndoToast('已完成待办，并生成完成流水。', async () => {
-              await dbExecute("UPDATE todos SET done=?, completed_at=? WHERE id=?", [false, '', todo.id]);
-              if (completedLogId) await dbExecute("DELETE FROM logs WHERE id=?", [completedLogId]);
+            completingTodoIds.add(todo.id);
+            btn.disabled = true;
+            try {
+              await dbExecute("UPDATE todos SET done=?, completed_at=? WHERE id=?", [true, today, todo.id]);
+              const completedLogId = await insertAndReturnId(
+                "INSERT INTO logs (date, time, text, tag, sub_tag, detail, remark, linked_todo, deadline, is_overdue, status, record_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [today, new Date().toLocaleTimeString('en-US', { hour12: false }), `完成待办: ${todo.task}`, todo.tag, todo.sub_tag || '', todo.detail || '', todo.remark || '', todo.task, getTodoEnd(todo), false, 'processed', 'log']
+              );
               await loadData();
               renderInboxRecords();
               renderTodayTimeline();
               import('./todo.js').then(m => m.renderTodoList());
               import('./log.js').then(m => m.renderHistoryList());
               if (typeof window.updateWorkspaceSummary === 'function') window.updateWorkspaceSummary();
-            });
+              showUndoToast('已完成待办，并生成完成流水。', async () => {
+                await dbExecute("UPDATE todos SET done=?, completed_at=? WHERE id=?", [false, '', todo.id]);
+                if (completedLogId) await dbExecute("DELETE FROM logs WHERE id=?", [completedLogId]);
+                await loadData();
+                renderInboxRecords();
+                renderTodayTimeline();
+                import('./todo.js').then(m => m.renderTodoList());
+                import('./log.js').then(m => m.renderHistoryList());
+                if (typeof window.updateWorkspaceSummary === 'function') window.updateWorkspaceSummary();
+              });
+            } finally {
+              completingTodoIds.delete(todo.id);
+              if (btn.isConnected) btn.disabled = false;
+            }
             return;
           }
           if (action === 'edit') {
@@ -388,7 +414,6 @@ export function renderTodayTimeline() {
             await loadData();
             renderTodayTimeline();
             import('./todo.js').then(m => m.renderTodoList());
-            if (typeof window.renderQuickParentTodos === 'function') window.renderQuickParentTodos();
             return;
           }
           if (action === 'childFull') {
@@ -437,11 +462,16 @@ export function renderTodayTimeline() {
             return;
           }
           if (action === 'delete') {
-            if (!confirm('确定删除这条笔记吗？')) return;
-            await dbExecute("DELETE FROM notes WHERE id=?", [note.id]);
+            if (!confirm('确定删除这条笔记吗？文件会一并从磁盘删除。')) return;
+            const { deleteNote } = await import('./notesStore.js');
+            const ok = await deleteNote(note.rel_path);
+            if (!ok) {
+              alert('删除失败，请检查笔记目录。');
+              return;
+            }
             await loadData();
             renderTodayTimeline();
-            import('./notes.js').then(m => m.renderNotesList());
+            if (typeof window.__wrRefreshNotes === 'function') window.__wrRefreshNotes();
             return;
           }
         }

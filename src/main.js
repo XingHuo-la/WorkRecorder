@@ -1,15 +1,24 @@
-import { loadData, appData, DEFAULT_TAG } from './data.js';
+import { loadData, appData } from './data.js';
+import { logToFile, markLogReady } from './logger.js';
 import { initTodoModule } from './todo.js';
 import { initLogModule, renderHistoryList } from './log.js';
 import { initTimelineModule, renderTimeline } from './timeline.js';
 import { initSettingsModule } from './settings.js';
-import { initNotesModule, renderNotesList } from './notes.js';
 import { initQuickCapture } from './quickCapture.js';
 import { renderTodayTimeline } from './todayTimeline.js';
 import { initSearchModule } from './search.js';
-import { renderTaskRelationPickerHtml, setupTaskRelationPicker } from './taskRelations.js';
+import { initFreeCellModule } from './freecell.js';
+import { initNotesEditor, flushBeforeLeave, refreshNotesCache } from './notesEditor.js';
+import { initNotesModule } from './notes.js';
+import { setNotesDataPathProvider } from './notesStore.js';
 
-const { getCurrentWindow } = window.__TAURI__.window;
+// Tauri 全局对象由 withGlobalTauri 同步注入，正常情况可直接取用。
+// 这里做一次防御：万一注入时序异常，也不要让整个模块崩溃。
+const tauriWindowApi = window.__TAURI__?.window;
+const getCurrentWindow = tauriWindowApi?.getCurrentWindow;
+if (!getCurrentWindow) {
+  console.error('window.__TAURI__.window 不可用，窗口控制按钮将失效');
+}
 
 // ==========================================
 // 🚀 终极修复：直接在本地注入极简中文包，永不超时！
@@ -39,33 +48,72 @@ if (window.flatpickr) {
 }
 
 async function initApp() {
-  await loadData();
-  await import('./settings.js').then(async (m) => {
-      await m.applySavedThemeFromDB();
+  logToFile('info', '=== 应用启动 ===');
+
+  // 让笔记模块复用同一套 appData，并提供数据路径给文件层
+  setNotesDataPathProvider(async () => {    try {
+      return await window.__TAURI__.core.invoke('get_current_path');
+    } catch (error) {
+      logToFile('error', `获取数据路径失败: ${error}`);
+      return '';
+    }
   });
 
+  // 一次性把旧笔记从 SQLite 迁到磁盘 .md（已迁移则直接跳过）
+  // 迁移整体在后端完成：前端逐条 invoke 一旦中断，恢复逻辑复杂且难排查。
+  try {
+    const dataPath = await window.__TAURI__.core.invoke('get_current_path');
+    const outcome = await window.__TAURI__.core.invoke('notes_migrate_legacy', {
+      dataFilePath: dataPath
+    });
+    logToFile('info', `笔记迁移结果: ${JSON.stringify(outcome)}`);
+  } catch (error) {
+    logToFile('error', `笔记迁移失败: ${error?.stack || error}`);
+  }
+
+  // 日志通道已可用
+  markLogReady();
+
+  await loadData();
+
+  await import('./settings.js').then(async (m) => {
+      await m.applySavedThemeFromDB();
+  }).catch(error => {
+      logToFile('error', `主题加载失败: ${error?.stack || error}`);
+  });
+
+  // 依次初始化各模块。任一个失败都不阻断后续模块，只打印日志。
+  // async 模块返回的 Promise 也要接管 rejection，否则会变成未捕获错误。
   const safeRun = (label, fn) => {
     try {
-      return fn();
+      const result = fn();
+      if (result && typeof result.catch === 'function') {
+        return result.catch(error => {
+          logToFile('error', `[${label}] 初始化失败: ${error?.stack || error}`);
+          return null;
+        });
+      }
+      return result;
     } catch (error) {
-      console.error(`[${label}] 初始化失败`, error);
+      logToFile('error', `[${label}] 初始化失败: ${error?.stack || error}`);
       return null;
     }
   };
 
   safeRun('routing', setupRouting);
   safeRun('legacy-tabs', setupTabs);
-  safeRun('quick-advanced-options', setupQuickAdvancedOptions);
   safeRun('todo', initTodoModule);
   safeRun('log', initLogModule);
-  safeRun('notes', initNotesModule);
   safeRun('history-render', renderHistoryList);
-  safeRun('notes-render', renderNotesList);
+  safeRun('notes-form', initNotesModule);
+  safeRun('notes-editor', initNotesEditor);
   safeRun('today-timeline', renderTodayTimeline);
   safeRun('timeline', initTimelineModule);
   safeRun('settings', initSettingsModule);
   safeRun('quick-capture', initQuickCapture);
+  safeRun('record-reader', setupRecordReader);
   safeRun('search', initSearchModule);
+  safeRun('freecell', initFreeCellModule);
   safeRun('legacy-tools-toggle', setupLegacyToolsToggle);
 
   // 全局事件 1：点击空白处收起所有三点菜单
@@ -97,97 +145,12 @@ async function initApp() {
   updateWorkspaceSummary();
 }
 
-function setupQuickAdvancedOptions() {
-  const typeSelect = document.getElementById('quick-type-select');
-  const tagSelect = document.getElementById('quick-tag-select');
-  const subSelect = document.getElementById('quick-sub-tag-select');
-  const tagNewInput = document.getElementById('quick-tag-new');
-  const subNewInput = document.getElementById('quick-sub-tag-new');
-  const parentSelect = document.getElementById('quick-parent-todo-select');
-  const parentField = document.querySelector('.quick-parent-field');
-
-  if (!typeSelect || !tagSelect || !subSelect) return;
-
-  if (parentField && parentSelect && !parentField.querySelector('.task-relation-picker')) {
-    parentSelect.style.display = 'none';
-    parentSelect.insertAdjacentHTML('afterend', renderTaskRelationPickerHtml('quick-task-relation', {
-      label: '任务关系',
-      defaultMode: 'independent'
-    }));
-    window.quickTaskRelationPicker = setupTaskRelationPicker(parentField, 'quick-task-relation');
-  }
-
-  const buildTodoPath = (todo, byId) => {
-    const names = [todo.task];
-    let current = todo;
-    const seen = new Set([todo.id]);
-    while (current.parent_id && byId.has(current.parent_id) && !seen.has(current.parent_id)) {
-      current = byId.get(current.parent_id);
-      seen.add(current.id);
-      names.unshift(current.task);
-    }
-    return names.join(' / ');
-  };
-
-  const renderQuickParentTodos = () => {
-    if (!parentSelect) return;
-    const currentValue = parentSelect.value;
-    const byId = new Map((appData.todos || []).map(todo => [todo.id, todo]));
-    parentSelect.innerHTML = '<option value="">无上级任务</option>';
-    (appData.todos || [])
-      .filter(todo => !todo.done)
-      .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0) || a.id - b.id)
-      .forEach(todo => {
-        parentSelect.innerHTML += `<option value="${todo.id}">${buildTodoPath(todo, byId)}</option>`;
-      });
-    if ([...parentSelect.options].some(option => option.value === currentValue)) parentSelect.value = currentValue;
-    window.quickTaskRelationPicker?.refresh?.();
-  };
-
-  const renderQuickSubTags = () => {
-    const mainTag = tagSelect.value === 'NEW' ? tagNewInput.value.trim() : tagSelect.value;
-    subSelect.innerHTML = '<option value="">无项目</option>';
-    if (mainTag && appData.sub_tags?.[mainTag]) {
-      appData.sub_tags[mainTag].forEach(sub => {
-        subSelect.innerHTML += `<option value="${sub}">${sub}</option>`;
-      });
-    }
-    subSelect.innerHTML += '<option value="NEW">新建子项目...</option>';
-  };
-
-  tagSelect.innerHTML = `<option value="${DEFAULT_TAG}">${DEFAULT_TAG}</option>`;
-  (appData.settings?.active_tags || appData.tags || []).filter(tag => tag !== DEFAULT_TAG).forEach(tag => {
-    tagSelect.innerHTML += `<option value="${tag}">${tag}</option>`;
-  });
-  tagSelect.innerHTML += '<option value="NEW">新建主分类...</option>';
-  renderQuickSubTags();
-  renderQuickParentTodos();
-  window.renderQuickParentTodos = renderQuickParentTodos;
-
-  tagSelect.addEventListener('change', () => {
-    tagNewInput.style.display = tagSelect.value === 'NEW' ? 'block' : 'none';
-    if (tagSelect.value === 'NEW') tagNewInput.focus();
-    subNewInput.style.display = 'none';
-    renderQuickSubTags();
-  });
-  tagNewInput.addEventListener('input', renderQuickSubTags);
-  subSelect.addEventListener('change', () => {
-    subNewInput.style.display = subSelect.value === 'NEW' ? 'block' : 'none';
-    if (subSelect.value === 'NEW') subNewInput.focus();
-  });
-}
-
 function setupLegacyToolsToggle() {
   const toggle = document.getElementById('legacy-tools-toggle');
   const collapse = document.getElementById('legacy-tools-collapse');
   const area = document.getElementById('legacy-capture-area');
   const strip = document.querySelector('.advanced-tools-strip');
-  const hiddenListAnchor = document.getElementById('history-list-container');
   if (!toggle || !area) return;
-  if (strip && hiddenListAnchor && hiddenListAnchor.parentNode) {
-    hiddenListAnchor.parentNode.insertBefore(strip, hiddenListAnchor);
-    hiddenListAnchor.parentNode.insertBefore(area, hiddenListAnchor);
-  }
 
   const setOpen = (isOpen, shouldScroll = false) => {
     area.classList.toggle('show', isOpen);
@@ -218,6 +181,7 @@ function setupLegacyToolsToggle() {
 }
 
 function setupTitlebar() {
+  if (!getCurrentWindow) return;
   const appWindow = getCurrentWindow();
 
   document.getElementById('titlebar-minimize')?.addEventListener('click', () => {
@@ -231,6 +195,27 @@ function setupTitlebar() {
   document.getElementById('titlebar-close')?.addEventListener('click', () => {
     appWindow.close();
   });
+}
+
+function setupRecordReader() {
+  const overlay = document.getElementById('record-reader-overlay');
+  const closeButton = document.getElementById('record-reader-close');
+  if (!overlay || !closeButton || overlay.dataset.bound === '1') return;
+
+  const close = () => {
+    overlay.classList.remove('show');
+    overlay.setAttribute('aria-hidden', 'true');
+  };
+
+  closeButton.addEventListener('click', close);
+  overlay.addEventListener('click', event => {
+    if (event.target === overlay) close();
+  });
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && overlay.classList.contains('show')) close();
+  });
+  overlay.dataset.bound = '1';
+  window.closeRecordReader = close;
 }
 
 // 🌟 全局高级自定义表单弹窗生成器 
@@ -249,7 +234,13 @@ window.showModal = function(title, htmlContent, onReady, onConfirm, options = {}
         </div>
       </div>`;
     document.body.appendChild(overlay);
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.style.display = 'none'; });
+    overlay.addEventListener('click', (e) => {
+      if (e.target !== overlay) return;
+      overlay.style.display = 'none';
+      const onCancel = overlay._onCancel;
+      overlay._onCancel = null;
+      if (onCancel) onCancel();
+    });
 
     const modal = overlay.querySelector('.custom-modal');
     modal.addEventListener('scroll', () => {
@@ -268,6 +259,7 @@ window.showModal = function(title, htmlContent, onReady, onConfirm, options = {}
   document.getElementById('global-modal-title').innerHTML = title;
   document.getElementById('global-modal-body').innerHTML = htmlContent;
   overlay.style.display = 'flex';
+  overlay._onCancel = typeof options.onCancel === 'function' ? options.onCancel : null;
 
   const cancelBtn = document.getElementById('global-modal-cancel');
   const confirmBtn = document.getElementById('global-modal-confirm');
@@ -283,12 +275,29 @@ window.showModal = function(title, htmlContent, onReady, onConfirm, options = {}
   const newCancel = cancelBtn.cloneNode(true); cancelBtn.parentNode.replaceChild(newCancel, cancelBtn);
   const newConfirm = confirmBtn.cloneNode(true); confirmBtn.parentNode.replaceChild(newConfirm, confirmBtn);
 
-  newCancel.onclick = () => overlay.style.display = 'none';
+  newCancel.onclick = () => {
+    overlay.style.display = 'none';
+    const onCancel = overlay._onCancel;
+    overlay._onCancel = null;
+    if (onCancel) onCancel();
+  };
   const bodyEl = document.getElementById('global-modal-body');
   if (onReady) onReady(bodyEl);
   newConfirm.onclick = async () => {
-    const success = await onConfirm(bodyEl);
-    if (success !== false) overlay.style.display = 'none';
+    if (newConfirm.disabled) return;
+    newConfirm.disabled = true;
+    newConfirm.dataset.originalText = newConfirm.innerText;
+    newConfirm.innerText = '处理中…';
+    try {
+      const success = await onConfirm(bodyEl);
+      if (success !== false) {
+        overlay.style.display = 'none';
+        overlay._onCancel = null;
+      }
+    } finally {
+      newConfirm.disabled = false;
+      newConfirm.innerText = newConfirm.dataset.originalText || '确认';
+    }
   };
 };
 
@@ -301,14 +310,25 @@ function setupRouting() {
   document.getElementById('back-btn')?.addEventListener('click', () => { workspaceView.style.display = 'none'; landingView.style.display = 'flex'; });
   const navBtns = [
     { btn: document.getElementById('nav-dashboard'), view: document.getElementById('subview-dashboard') },
+    { btn: document.getElementById('nav-notes'), view: document.getElementById('subview-notes') },
     { btn: document.getElementById('nav-timeline'), view: document.getElementById('subview-timeline') },
+    { btn: document.getElementById('nav-freecell'), view: document.getElementById('subview-freecell') },
     { btn: document.getElementById('nav-search'), view: document.getElementById('subview-search') },
     { btn: document.getElementById('nav-settings'), view: document.getElementById('subview-settings') }
   ].filter(item => item.btn && item.view);
   navBtns.forEach(item => {
-    item.btn.addEventListener('click', () => {
-      navBtns.forEach(nav => { nav.view.style.display = 'none'; nav.btn.classList.remove('active'); });
-      item.view.style.display = 'block'; item.btn.classList.add('active');
+    item.btn.addEventListener('click', async () => {
+    // 离开笔记页前先把未保存的草稿刷到磁盘
+    const leavingNotes = document.getElementById('subview-notes')?.style.display !== 'none'
+      && item.btn.id !== 'nav-notes';
+    if (leavingNotes && typeof window.__wrFlushNotes === 'function') {
+      try { await window.__wrFlushNotes(); } catch (error) { console.warn('笔记刷盘失败', error); }
+    }
+
+    navBtns.forEach(nav => { nav.view.style.display = 'none'; nav.btn.classList.remove('active'); });
+       item.view.style.display = item.btn.id === 'nav-dashboard' ? '' : 'block'; item.btn.classList.add('active');
+       navBtns.forEach(nav => nav.btn.removeAttribute('aria-current'));
+       item.btn.setAttribute('aria-current', 'page');
       localStorage.setItem('workRecorder:lastSubview', item.btn.id);
       if (item.btn.id === 'nav-timeline') renderTimeline();
       if (item.btn.id === 'nav-search') document.getElementById('global-search-input')?.focus();
@@ -370,4 +390,18 @@ export function updateWorkspaceSummary() {
 }
 window.updateWorkspaceSummary = updateWorkspaceSummary;
 window.renderTodayTimeline = renderTodayTimeline;
-window.addEventListener("DOMContentLoaded", initApp);
+
+// 笔记模块需要读取标签树等共享数据，这里开一个只读访问口
+window.__wrAppData = () => appData;
+// 其他模块写入笔记后需要刷新笔记列表
+window.__wrRefreshNotes = () => refreshNotesCache();
+// 路由切走笔记页时把草稿刷盘
+window.__wrFlushNotes = () => flushBeforeLeave();
+
+if (document.readyState === 'loading') {
+  // 文档还在解析，等 DOM 就绪
+  window.addEventListener('DOMContentLoaded', initApp, { once: true });
+} else {
+  // 文档已就绪（module 脚本求值可能晚于 DOMContentLoaded），直接启动
+  initApp();
+}

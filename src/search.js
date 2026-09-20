@@ -95,31 +95,48 @@ async function searchTodos(keyword) {
 }
 
 async function searchNotes(keyword) {
-  const like = makeLikeParam(keyword);
-  const rows = await dbQuery(
-    `SELECT id, title, content, note_type, tag, sub_tag,
-            COALESCE(NULLIF(updated_at, ''), NULLIF(created_at, ''), '') AS time
-       FROM notes
-      WHERE COALESCE(title, '') LIKE ?
-         OR COALESCE(content, '') LIKE ?
-         OR COALESCE(note_type, '') LIKE ?
-         OR COALESCE(tag, '') LIKE ?
-         OR COALESCE(sub_tag, '') LIKE ?
-      ORDER BY updated_at DESC, created_at DESC, id DESC
-      LIMIT ?`,
-    [like, like, like, like, like, SEARCH_LIMIT_PER_TYPE]
-  );
+  // 笔记已改为「文件优先」：正文不在数据库里，改为在内存中扫描笔记缓存。
+  // 个人笔记量级下这是可接受的，且避免为文件内容维护全文索引。
+  const lowerKeyword = keyword.toLowerCase();
+  let notes = [];
 
-  return rows.map(row => ({
+  try {
+    const { getNotesCache, refreshNotesCache } = await import('./notesEditor.js');
+    notes = getNotesCache();
+    if (!notes.length) {
+      notes = await refreshNotesCache();
+    }
+  } catch (error) {
+    console.warn('读取笔记缓存失败，降级为空:', error);
+    return [];
+  }
+
+  const matched = notes.filter(note => {
+    const haystack = [
+      note.title,
+      note.content,
+      note.note_type,
+      note.tag,
+      note.sub_tag
+    ].filter(Boolean).join(' ').toLowerCase();
+    return haystack.includes(lowerKeyword);
+  }).slice(0, SEARCH_LIMIT_PER_TYPE);
+
+  return matched.map(note => ({
     type: 'note',
-    id: row.id,
-    title: row.title || '笔记',
-    snippet: pickSnippet(row, ['title', 'content', 'note_type', 'tag', 'sub_tag'], keyword),
-    detail: row.content || '',
-    tag: row.tag || '',
-    sub_tag: row.sub_tag || '',
-    time: row.time || '',
-    meta: row.note_type || 'note'
+    id: note.rel_path,          // 改用文件相对路径作为标识
+    relPath: note.rel_path,
+    title: note.title || '笔记',
+    snippet: pickSnippet(
+      { title: note.title, content: note.content, note_type: note.note_type, tag: note.tag, sub_tag: note.sub_tag },
+      ['title', 'content', 'note_type', 'tag', 'sub_tag'],
+      keyword
+    ),
+    detail: note.content || '',
+    tag: note.tag || '',
+    sub_tag: note.sub_tag || '',
+    time: note.updated_at || note.created_at || '',
+    meta: note.note_type || 'note'
   }));
 }
 
@@ -149,9 +166,12 @@ function renderSearchGroup(title, records) {
 function renderSearchItem(record) {
   const meta = [record.tag, record.sub_tag].filter(Boolean).join(' / ') || '未分类';
   const detail = record.detail || record.snippet || '暂无详情';
+  // 笔记改为可点击跳转，其余类型保持原样
+  const isNote = record.type === 'note' && record.relPath;
+  const dataAttrs = isNote ? ` data-note-rel="${escapeHtml(record.relPath)}" role="button" tabindex="0"` : '';
 
   return `
-    <article class="search-result-item">
+    <article class="search-result-item${isNote ? ' is-clickable' : ''}"${dataAttrs}>
       <div class="search-result-head">
         <span class="search-type-badge">${formatTypeLabel(record.type)}</span>
         <strong>${escapeHtml(record.title)}</strong>
@@ -160,6 +180,7 @@ function renderSearchItem(record) {
         <span>${escapeHtml(record.time || '无时间')}</span>
         <span>${escapeHtml(meta)}</span>
         <span>${escapeHtml(record.meta || '')}</span>
+        ${isNote ? '<span class="search-note-hint">点击打开笔记</span>' : ''}
       </div>
       <p class="search-result-snippet">${escapeHtml(record.snippet || '暂无摘要')}</p>
       <details class="search-result-detail">
@@ -214,5 +235,31 @@ export function initSearchModule() {
 
     const groups = await searchAll(keyword);
     renderSearchResults(groups, keyword);
+  });
+
+  // 点击笔记结果 → 跳到笔记页打开
+  container.addEventListener('click', async event => {
+    if (event.target.closest('.search-result-detail')) return; // 展开详情不跳转
+    const item = event.target.closest('[data-note-rel]');
+    if (!item) return;
+
+    const relPath = item.dataset.noteRel;
+    if (!relPath) return;
+
+    document.getElementById('nav-notes')?.click();
+    try {
+      const { openNote } = await import('./notesEditor.js');
+      await openNote(relPath);
+    } catch (error) {
+      console.error('打开笔记失败:', error);
+    }
+  });
+
+  container.addEventListener('keydown', event => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    const item = event.target.closest('[data-note-rel]');
+    if (!item) return;
+    event.preventDefault();
+    item.click();
   });
 }

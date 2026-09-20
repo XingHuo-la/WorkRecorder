@@ -14,9 +14,10 @@ import {
   validateTaskRelation
 } from './taskRelations.js';
 
+const completingTodoIds = new Set();
+
 function refreshTaskRelatedViews() {
   if (window.renderTodoParents) window.renderTodoParents();
-  if (window.renderQuickParentTodos) window.renderQuickParentTodos();
   if (typeof window.renderTodayTimeline === 'function') window.renderTodayTimeline();
   if (typeof window.updateWorkspaceSummary === 'function') window.updateWorkspaceSummary();
 }
@@ -411,31 +412,42 @@ export async function renderTodoList() {
       cb.addEventListener('change', async (e) => {
         const id = parseInt(e.target.getAttribute('data-id')); 
         const todo = appData.todos.find(t => t.id === id);
+        if (!todo) return;
+        if (!e.target.checked) {
+          e.target.checked = true;
+          return;
+        }
+        if (completingTodoIds.has(id)) return;
         if (hasPendingDescendant(id) && !confirm('该任务还有未完成的下级任务，仍要完成吗？')) {
           e.target.checked = false;
           return;
         }
-        
-        const todayStr = getTodayString();
-        const timeStr = new Date().toLocaleTimeString('en-US', {hour12: false});
-        
-        // 1. 改变待办状态
-        await dbExecute("UPDATE todos SET done = ?, completed_at = ? WHERE id = ?", [true, todayStr, id]);
-        const completedLogId = await insertAndReturnId(
-            "INSERT INTO logs (date, time, text, tag, sub_tag, detail, remark, linked_todo, deadline, is_overdue) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            [todayStr, timeStr, todo.task, todo.tag, todo.sub_tag || "", todo.detail || "", todo.remark || "", todo.task, getTodoEnd(todo), false]
-        );
-        
-        await loadData(); renderTodoList(); renderHistoryList(); 
-        refreshTaskRelatedViews();
-        showUndoToast('已完成待办，并生成完成流水。', async () => {
-          await dbExecute("UPDATE todos SET done = ?, completed_at = ? WHERE id = ?", [false, "", id]);
-          if (completedLogId) await dbExecute("DELETE FROM logs WHERE id=?", [completedLogId]);
-          await loadData();
-          renderTodoList();
-          renderHistoryList();
+
+        completingTodoIds.add(id);
+        e.target.disabled = true;
+        try {
+          const todayStr = getTodayString();
+          const timeStr = new Date().toLocaleTimeString('en-US', {hour12: false});
+          await dbExecute("UPDATE todos SET done = ?, completed_at = ? WHERE id = ?", [true, todayStr, id]);
+          const completedLogId = await insertAndReturnId(
+              "INSERT INTO logs (date, time, text, tag, sub_tag, detail, remark, linked_todo, deadline, is_overdue) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              [todayStr, timeStr, todo.task, todo.tag, todo.sub_tag || "", todo.detail || "", todo.remark || "", todo.task, getTodoEnd(todo), false]
+          );
+
+          await loadData(); renderTodoList(); renderHistoryList();
           refreshTaskRelatedViews();
-        });
+          showUndoToast('已完成待办，并生成完成流水。', async () => {
+            await dbExecute("UPDATE todos SET done = ?, completed_at = ? WHERE id = ?", [false, "", id]);
+            if (completedLogId) await dbExecute("DELETE FROM logs WHERE id=?", [completedLogId]);
+            await loadData();
+            renderTodoList();
+            renderHistoryList();
+            refreshTaskRelatedViews();
+          });
+        } finally {
+          completingTodoIds.delete(id);
+          if (e.target.isConnected) e.target.disabled = false;
+        }
       });
     });
 
