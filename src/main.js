@@ -1,4 +1,4 @@
-import { loadData, appData } from './data.js';
+import { loadData, appData, dbQuery, dbExecute } from './data.js';
 import { logToFile, markLogReady } from './logger.js';
 import { initTodoModule } from './todo.js';
 import { initLogModule, renderHistoryList } from './log.js';
@@ -11,6 +11,7 @@ import { initFreeCellModule } from './freecell.js';
 import { initNotesEditor, flushBeforeLeave, refreshNotesCache } from './notesEditor.js';
 import { initNotesModule } from './notes.js';
 import { setNotesDataPathProvider } from './notesStore.js';
+import { initTablePage, setTableAdapter } from './tablePage.js';
 
 // Tauri 全局对象由 withGlobalTauri 同步注入，正常情况可直接取用。
 // 这里做一次防御：万一注入时序异常，也不要让整个模块崩溃。
@@ -75,6 +76,10 @@ async function initApp() {
   markLogReady();
 
   await loadData();
+
+  // 表格页的数据访问走注入：tablePage.js 本身零顶层依赖，
+  // 调试壳（_debug/ui-review.html）可绕过 Tauri 直接复用其渲染函数。
+  setTableAdapter({ dbQuery, dbExecute });
 
   await import('./settings.js').then(async (m) => {
       await m.applySavedThemeFromDB();
@@ -311,6 +316,7 @@ function setupRouting() {
   const navBtns = [
     { btn: document.getElementById('nav-dashboard'), view: document.getElementById('subview-dashboard') },
     { btn: document.getElementById('nav-notes'), view: document.getElementById('subview-notes') },
+    { btn: document.getElementById('nav-table'), view: document.getElementById('subview-table') },
     { btn: document.getElementById('nav-timeline'), view: document.getElementById('subview-timeline') },
     { btn: document.getElementById('nav-freecell'), view: document.getElementById('subview-freecell') },
     { btn: document.getElementById('nav-search'), view: document.getElementById('subview-search') },
@@ -331,6 +337,9 @@ function setupRouting() {
        item.btn.setAttribute('aria-current', 'page');
       localStorage.setItem('workRecorder:lastSubview', item.btn.id);
       if (item.btn.id === 'nav-timeline') renderTimeline();
+      if (item.btn.id === 'nav-table') {
+        try { await initTablePage(); } catch (error) { logToFile('error', `表格页初始化失败: ${error?.stack || error}`); }
+      }
       if (item.btn.id === 'nav-search') document.getElementById('global-search-input')?.focus();
     });
   });

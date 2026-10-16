@@ -9053,3 +9053,1640 @@ textarea:focus,
     grid-template-rows: minmax(0, 1fr);
   }
 }
+
+/* =============================================================================
+   🎯 设计系统收敛层（Design Convergence Layer）
+   =============================================================================
+
+   背景：本文件已累积 9000+ 行、1100+ 处 !important，同一组件最多被覆盖 14 次
+   （例：`.sidebar` 在 199/363/2076/5604/6707 等多处重复定义）。层叠结果不可预测，
+   改动一处经常被后面某条 !important 反杀，这是界面显得杂乱的根本原因。
+
+   因此不再往上面继续叠规则，而是在文件末尾建立**唯一的一层收敛**：
+   - 所有尺寸、间距、圆角、字重在这里统一为有序令牌；
+   - 每个组件只在此处定义一次，取代此前散落的重复定义；
+   - 需要压过历史 !important 时，仅在本层内部使用 !important，
+     并集中放在文末，便于将来整体替换。
+
+   将来要改视觉，只需改这一层。上方历史规则可以逐步删除。
+   ============================================================================= */
+
+/* --- 收敛层令牌：间距采用 4px 基准的有序刻度，圆角收敛为 3 档 --- */
+:root {
+  --ui-radius-sm: 8px;
+  --ui-radius-md: 12px;
+  --ui-radius-lg: 16px;
+  --ui-gap-xs: 6px;
+  --ui-gap-sm: 10px;
+  --ui-gap-md: 16px;
+  --ui-gap-lg: 24px;
+  --ui-gap-xl: 32px;
+  --ui-title-font: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --ui-mono-font: "Cascadia Mono", Consolas, "JetBrains Mono", ui-monospace, monospace;
+}
+
+/* --- 1. 标题体系：统一为无衬线，去掉 Georgia 衬线混搭 ---
+   原状：页面标题在 8053 行用 Georgia 衬线，同一页正文用系统无衬线，
+   kicker 又是全大写小字 —— 三套语言并存，是"界面不像一个整体"的主要来源。
+   注意必须匹配到 8051 行那条真实来源（`> .subview:not(#subview-dashboard) > h1`），
+   只写 `.subview-page-head h1` 是压不住的。
+   牌桌上的扑克牌面（.freecell-card-*）保留 Georgia，那是牌面语义，不属于 UI 字体。 */
+.subview-page-head h1,
+#workspace-view .main-content > .subview:not(#subview-dashboard) > h1,
+#subview-dashboard .dashboard-title-copy h1,
+.dashboard-side-head h2,
+.freecell-game-title h1 {
+  font-family: var(--ui-title-font) !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.02em !important;
+}
+
+/* kicker：统一字距与字重，充当稳定的"类别标签" */
+.subview-kicker,
+.dashboard-kicker {
+  color: var(--color-primary) !important;
+  font-size: 10px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.14em !important;
+  text-transform: uppercase;
+}
+
+/* --- 2. 侧边栏：原为整块高饱和紫色，与右侧内容区割裂 ---
+   改为「低饱和底 + 主题色指示条」：选中项左侧出现 3px 主色竖条，
+   底色只做极轻微区分。这样侧边栏不再靠色块抢注意力。 */
+#workspace-view .sidebar {
+  width: 216px !important;
+  padding: 24px 14px 16px !important;
+  background: color-mix(in srgb, var(--color-primary) 7%, var(--color-surface)) !important;
+  border-right: 1px solid var(--border-light) !important;
+  color: var(--text-secondary) !important;
+}
+
+/* 品牌区：标记改为主色描边，标题用正文色而非反白色 */
+#workspace-view .sidebar-brand {
+  gap: 10px !important;
+  margin-bottom: var(--ui-gap-xl) !important;
+  padding: 0 6px !important;
+}
+
+#workspace-view .sidebar-brand-mark {
+  width: 38px !important;
+  height: 38px !important;
+  flex-basis: 38px !important;
+  border: 1px solid color-mix(in srgb, var(--color-primary) 32%, transparent) !important;
+  border-radius: var(--ui-radius-md) !important;
+  background: color-mix(in srgb, var(--color-primary) 14%, transparent) !important;
+  color: var(--color-primary) !important;
+  font-family: var(--ui-title-font) !important;
+  font-size: 16px !important;
+  font-weight: 800 !important;
+}
+
+#workspace-view .sidebar-brand h2 {
+  color: var(--text-main) !important;
+  font-size: 14px !important;
+  font-weight: 700 !important;
+}
+
+#workspace-view .sidebar-brand p {
+  /* 用 text-secondary 而非 text-muted：在 lavender-calendar 主题下
+     text-muted(#9a94a8) 对该底色只有 2.70:1，低于 3:1 的可读下限；
+     text-secondary(#6f687d) 是 4.91:1。 */
+  color: var(--text-secondary) !important;
+  font-size: 10px !important;
+  letter-spacing: 0 !important;
+}
+
+/* 导航项：默认透明，悬停浅底，选中态用左侧主色竖条 + 主色文字 */
+#workspace-view .nav-menu {
+  gap: 2px !important;
+  margin-top: 0 !important;
+}
+
+#workspace-view .nav-item {
+  position: relative !important;
+  min-height: 38px !important;
+  margin: 0 !important;
+  padding: 0 10px 0 13px !important;
+  border: 0 !important;
+  border-radius: var(--ui-radius-sm) !important;
+  background: transparent !important;
+  color: var(--text-secondary) !important;
+  font-size: 13px !important;
+  font-weight: 600 !important;
+  text-align: left !important;
+}
+
+#workspace-view .nav-item-icon {
+  width: 18px !important;
+  font-size: 15px !important;
+  opacity: 0.7 !important;
+}
+
+#workspace-view .nav-item:hover {
+  background: color-mix(in srgb, var(--color-primary) 8%, transparent) !important;
+  color: var(--text-main) !important;
+}
+
+#workspace-view .nav-item.active {
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent) !important;
+  color: var(--color-primary) !important;
+  box-shadow: none !important;
+}
+
+/* 选中态的左侧指示条：仅 active 时出现，避免与底色叠加成色块 */
+#workspace-view .nav-item.active::before {
+  content: "" !important;
+  position: absolute !important;
+  top: 50% !important;
+  left: 0 !important;
+  width: 3px !important;
+  height: 18px !important;
+  border-radius: 0 3px 3px 0 !important;
+  background: var(--color-primary) !important;
+  transform: translateY(-50%) !important;
+}
+
+/* "返回"按钮：原为浮在紫底上的浅色描边，改为低调的行内按钮 */
+#workspace-view #back-btn {
+  min-height: 34px !important;
+  margin: 0 !important;
+  border: 1px solid var(--border-light) !important;
+  border-radius: var(--ui-radius-sm) !important;
+  background: transparent !important;
+  /* 同品牌副标题：此处底色偏浅，text-muted 对比度不足，改用 text-secondary */
+  color: var(--text-secondary) !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+}
+
+#workspace-view #back-btn:hover {
+  background: color-mix(in srgb, var(--color-primary) 8%, transparent) !important;
+  border-color: color-mix(in srgb, var(--color-primary) 28%, transparent) !important;
+  color: var(--color-primary) !important;
+}
+
+/* --- 3. 内容区与卡片：圆角/边框/阴影收敛为同一套值 ---
+   原状：卡片圆角 12/14/15/16/9px 混用，阴影深浅不一。 */
+#workspace-view .main-content {
+  padding: 0 !important;
+  background: var(--color-bg) !important;
+}
+
+/* 次级页面统一留白，避免各页 padding 不同导致"跳动感" */
+#workspace-view .main-content > .subview:not(#subview-dashboard) {
+  padding: var(--ui-gap-xl) var(--ui-gap-xl) 72px !important;
+}
+
+/* 统一卡片外观：时间轴筛选卡、搜索面板、设置卡、笔记面板共用一套 */
+.timeline-filter-card,
+.search-panel,
+.settings-card,
+.notes-list-pane,
+.note-editor-pane {
+  border: 1px solid var(--border-light) !important;
+  border-radius: var(--ui-radius-lg) !important;
+  background: var(--bg-card) !important;
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--text-main) 5%, transparent) !important;
+}
+
+/* --- 4. 搜索页：此前几乎未被重做，输入框与按钮比例失衡 --- */
+.search-panel {
+  margin: 0 0 var(--ui-gap-md) !important;
+  padding: var(--ui-gap-md) !important;
+}
+
+.global-search-form {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) auto !important;
+  gap: var(--ui-gap-sm) !important;
+  align-items: center !important;
+}
+
+.global-search-form .hero-input {
+  width: 100% !important;
+  height: 44px !important;
+  margin: 0 !important;
+  padding: 0 15px !important;
+  border: 1px solid var(--border-light) !important;
+  border-radius: var(--ui-radius-md) !important;
+  background: var(--bg-input) !important;
+  color: var(--text-main) !important;
+  font-size: 14px !important;
+}
+
+.global-search-form .hero-input:focus {
+  border-color: var(--color-primary) !important;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 14%, transparent) !important;
+}
+
+/* 搜索按钮与外层卡片同高，不再悬挂在右侧 */
+.global-search-form .primary-btn {
+  width: auto !important;
+  min-width: 92px !important;
+  height: 44px !important;
+  margin: 0 !important;
+  padding: 0 20px !important;
+  border-radius: var(--ui-radius-md) !important;
+  font-size: 14px !important;
+}
+
+/* 空态：原为虚线框贴在左上角，改为居中的安静提示 */
+.search-empty {
+  padding: 44px 20px !important;
+  border: 1px dashed var(--border-light) !important;
+  border-radius: var(--ui-radius-md) !important;
+  background: transparent !important;
+  color: var(--text-muted) !important;
+  font-size: 13px !important;
+  text-align: center !important;
+}
+
+/* --- 5. 笔记页：列表项与编辑器对齐到同一套节奏 --- */
+.notes-list-pane,
+.note-editor-pane {
+  box-shadow: none !important;
+}
+
+.notes-list-head {
+  padding: var(--ui-gap-sm) !important;
+  border-bottom: 1px solid var(--border-light) !important;
+}
+
+.notes-list-scroll {
+  padding: var(--ui-gap-xs) !important;
+  gap: 2px !important;
+}
+
+.note-list-item {
+  padding: 10px 11px !important;
+  border-radius: var(--ui-radius-sm) !important;
+}
+
+.note-list-item.is-active {
+  background: color-mix(in srgb, var(--color-primary) 10%, transparent) !important;
+  border-color: transparent !important;
+  box-shadow: inset 3px 0 0 var(--color-primary) !important;
+}
+
+.note-list-title {
+  font-size: 13px !important;
+  font-weight: 650 !important;
+}
+
+.note-list-excerpt {
+  font-size: 12px !important;
+  color: var(--text-muted) !important;
+}
+
+/* 编辑器工具栏与操作条：统一内边距与分隔线 */
+.note-editor-toolbar {
+  padding: var(--ui-gap-sm) !important;
+  border-bottom: 1px solid var(--border-light) !important;
+}
+
+.note-editor-actions {
+  padding: 8px var(--ui-gap-sm) !important;
+  background: var(--color-surface-soft) !important;
+  border-bottom: 1px solid var(--border-light) !important;
+}
+
+.note-split-label {
+  padding: 7px var(--ui-gap-sm) !important;
+  font-size: 10px !important;
+  letter-spacing: 0.1em !important;
+  background: var(--color-surface-soft) !important;
+  border-bottom: 1px solid var(--border-light) !important;
+}
+
+/* 分栏改为细描边而非 1px 实底，减少视觉噪音 */
+.note-split {
+  gap: 0 !important;
+  background: transparent !important;
+}
+
+.note-split-source {
+  border-right: 1px solid var(--border-light) !important;
+}
+
+#subview-notes.is-single-pane .note-split-source {
+  border-right: 0 !important;
+}
+
+/* --- 6. 空态与占位统一：居中、安静、不抢注意力 --- */
+.inbox-empty,
+.notes-pane-empty,
+.freecell-history-empty {
+  border: 1px dashed var(--border-light) !important;
+  border-radius: var(--ui-radius-md) !important;
+  background: transparent !important;
+  color: var(--text-muted) !important;
+  text-align: center !important;
+}
+
+/* --- 7. 响应式：收敛断点为 940 / 760 两档 ---
+   原文件同时存在 640/700/720/760/860/900/940/980/1024/1180/1440 共 11 个断点。 */
+@media screen and (max-width: 940px) {
+  #workspace-view .sidebar {
+    width: 186px !important;
+    padding: 20px 10px 14px !important;
+  }
+
+  #workspace-view .main-content > .subview:not(#subview-dashboard) {
+    padding: var(--ui-gap-lg) var(--ui-gap-lg) 64px !important;
+  }
+
+  .settings-layout {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+}
+
+@media screen and (max-width: 760px) {
+  #workspace-view .main-content > .subview:not(#subview-dashboard) {
+    padding: var(--ui-gap-md) var(--ui-gap-md) 56px !important;
+  }
+
+  .global-search-form {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  .global-search-form .primary-btn {
+    width: 100% !important;
+  }
+}
+
+/* =============================================================================
+   设计层 2：空状态 · 控件修正 · 排版刻度（2026-10-06）
+   -----------------------------------------------------------------------------
+   第一层（9062 行起）解决"同一个东西被定义十几次"，这一层解决"没被定义的地方"。
+
+   参照的通行做法（Linear / Notion / Vercel Dashboard 这一档桌面工具的共性）：
+     · 强调色只用在少数"要你点"的地方，其余一律中性
+     · 卡片靠 1px 细描边 + 极浅阴影分层，不靠重底色
+     · 空容器必须给出文案，否则用户分不清"空"和"坏了"
+     · 图标统一线宽与网格，混排字符图标是廉价感的主要来源
+     · 间距走 4/8 刻度，字号层级不超过四级
+
+   全部颜色走主题令牌派生（color-mix），不硬编码，保证 5 个内置主题都不跑偏。
+   ============================================================================= */
+
+/* --- 0. 补充令牌：字号刻度与控件尺寸 --- */
+:root {
+  --ui-fs-kicker: 10.5px;
+  --ui-fs-hint: 11.5px;
+  --ui-fs-body: 13px;
+  --ui-fs-lead: 13.5px;
+  --ui-fs-page-title: 26px;
+
+  --ui-control-h: 32px;
+
+  --ui-ring: color-mix(in srgb, var(--color-primary) 55%, transparent);
+  --ui-card-shadow: 0 1px 2px color-mix(in srgb, var(--text-main) 5%, transparent);
+
+  /* 空状态用的线性图标（做 mask，颜色由 background 决定，随主题走） */
+  --wr-empty-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 8.5 12 3l8.5 5.5v11a1.5 1.5 0 0 1-1.5 1.5H5a1.5 1.5 0 0 1-1.5-1.5v-11Z'/%3E%3Cpath d='M3.5 13.5h4.8l1.5 2.6h4.4l1.5-2.6h4.8'/%3E%3C/svg%3E");
+}
+
+/* --- 1. 图标 sprite 与线性图标 ---
+   侧边栏原先用 ⌂ ✎ ◷ ♠ ⌕ ⚙ —— 分属不同 Unicode 区块，字面大小与笔画粗细天生不齐
+   （♠ 明显比 ⌕ 大且重），这是"界面不整齐"最直接的来源。改为统一 1.5px 描边图标。 */
+.icon-sprite {
+  display: none !important;
+}
+
+.wr-icon {
+  display: block;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.nav-item-icon {
+  font-size: 0 !important;
+  display: inline-grid !important;
+  place-items: center !important;
+  width: 20px !important;
+  height: 20px !important;
+  flex: 0 0 20px !important;
+}
+
+.nav-item-icon .wr-icon {
+  width: 17px;
+  height: 17px;
+  stroke-width: 1.7;
+}
+
+.settings-card-icon {
+  font-size: 0 !important;
+}
+
+.settings-card-icon .wr-icon {
+  width: 17px;
+  height: 17px;
+  stroke-width: 1.7;
+}
+
+/* --- 2. 空状态体系 ---
+   用 :empty 让容器自己在"空"的时候说话，不需要动任何 JS。
+   容器一旦被渲染进内容，:empty 自动失效，不会干扰正常列表。 */
+.inbox-records-container:empty,
+.task-tree-container:empty,
+#today-timeline-container:empty,
+#timeline-container:empty,
+.completed-todos-container:empty,
+.notes-list-scroll:empty,
+.settings-tag-library:empty {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 5px !important;
+  min-height: 120px !important;
+  margin: 0 !important;
+  padding: 26px 20px !important;
+  border: 0 !important;
+  background: transparent !important;
+  text-align: center !important;
+}
+
+.inbox-records-container:empty::before,
+.task-tree-container:empty::before,
+#today-timeline-container:empty::before,
+#timeline-container:empty::before,
+.completed-todos-container:empty::before,
+.notes-list-scroll:empty::before,
+.settings-tag-library:empty::before {
+  content: "";
+  display: block;
+  width: 26px;
+  height: 26px;
+  margin-bottom: 8px;
+  background: color-mix(in srgb, var(--color-primary) 45%, var(--text-muted));
+  -webkit-mask-image: var(--wr-empty-icon);
+  mask-image: var(--wr-empty-icon);
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+}
+
+.inbox-records-container:empty::after,
+.task-tree-container:empty::after,
+#today-timeline-container:empty::after,
+#timeline-container:empty::after,
+.completed-todos-container:empty::after,
+.notes-list-scroll:empty::after,
+.settings-tag-library:empty::after {
+  color: var(--text-secondary) !important;
+  font-size: var(--ui-fs-body) !important;
+  font-weight: 600 !important;
+  line-height: 1.6 !important;
+}
+
+/* 逐容器的文案与高度 */
+.inbox-records-container:empty { min-height: 96px !important; }
+.inbox-records-container:empty::after { content: "待整理是空的"; }
+
+.task-tree-container:empty { min-height: 96px !important; }
+.task-tree-container:empty::after { content: "今天还没有待办"; }
+
+#today-timeline-container:empty { min-height: 96px !important; }
+#today-timeline-container:empty::after { content: "今天还没有记录 · 记下的流水会按时间排在这里"; }
+
+#timeline-container:empty { min-height: 300px !important; }
+#timeline-container:empty::after { content: "还没有历史记录 · 有内容后会按日期分组显示"; }
+
+.completed-todos-container:empty { min-height: 84px !important; }
+.completed-todos-container:empty::after { content: "还没有完成的待办"; }
+
+.notes-list-scroll:empty { min-height: 180px !important; }
+.notes-list-scroll:empty::after { content: "还没有笔记 · 点右上角「新建笔记」开始"; }
+
+.settings-tag-library:empty { min-height: 110px !important; }
+.settings-tag-library:empty::after { content: "还没有标签 · 用上面的输入框创建第一个主分类"; }
+
+/* --- 3. 开关：修正 off 态几乎看不见的问题 ---
+   紫雾主题里 --overlay-hover 是 rgba(135,115,193,0.13)，落在白卡上几乎等于白，
+   加上白色滑块 → off 态渲染成一个"空白灰块"。这里给轨道足够的对比度。 */
+.settings-switch {
+  box-sizing: border-box !important;
+  width: 42px !important;
+  height: 24px !important;
+  flex: 0 0 42px !important;
+  border: 1px solid color-mix(in srgb, var(--text-main) 16%, transparent) !important;
+  border-radius: 999px !important;
+  background: color-mix(in srgb, var(--text-main) 15%, transparent) !important;
+  transition: background 160ms ease, border-color 160ms ease !important;
+}
+
+.settings-switch::after {
+  top: 2px !important;
+  left: 2px !important;
+  width: 18px !important;
+  height: 18px !important;
+  background: var(--bg-elevated) !important;
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--text-main) 28%, transparent) !important;
+}
+
+.settings-switch:checked {
+  border-color: color-mix(in srgb, var(--color-primary) 88%, transparent) !important;
+  background: var(--color-primary) !important;
+}
+
+.settings-switch:checked::after {
+  transform: translateX(18px) !important;
+}
+
+.settings-toggle-row .settings-switch {
+  align-self: center !important;
+}
+
+/* --- 4. 搜索页空态：去掉虚线框，改成安静的居中文案 --- */
+.search-results .search-empty {
+  padding: 64px 20px !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  color: var(--text-muted) !important;
+  font-size: var(--ui-fs-body) !important;
+  text-align: center !important;
+}
+
+/* --- 5. 笔记页：Markdown / 预览 由"悬空表格行"改成规范分区头 --- */
+.note-split {
+  gap: 0 !important;
+  border: 1px solid var(--border-light) !important;
+  border-radius: var(--ui-radius-md) !important;
+  background: var(--bg-card) !important;
+  overflow: hidden !important;
+}
+
+.note-split-label {
+  display: flex !important;
+  align-items: center !important;
+  height: 34px !important;
+  margin: 0 !important;
+  padding: 0 14px !important;
+  border-bottom: 1px solid var(--border-light) !important;
+  background: var(--overlay-light) !important;
+  color: var(--text-muted) !important;
+  font-size: var(--ui-fs-hint) !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.06em !important;
+  text-transform: uppercase !important;
+}
+
+/* --- 6. 工作台统计：由一串裸文本改成等距 chips --- */
+#subview-dashboard .workspace-summary.compact-summary {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  flex-wrap: wrap !important;
+}
+
+#subview-dashboard .workspace-summary .summary-stat {
+  display: inline-flex !important;
+  align-items: baseline !important;
+  gap: 5px !important;
+  min-height: 28px !important;
+  padding: 4px 11px !important;
+  border: 1px solid var(--border-light) !important;
+  border-radius: 999px !important;
+  background: var(--bg-card) !important;
+  box-shadow: var(--ui-card-shadow) !important;
+}
+
+#subview-dashboard .workspace-summary .summary-stat strong {
+  color: var(--text-main) !important;
+  font-size: 15px !important;
+  font-weight: 700 !important;
+  font-variant-numeric: tabular-nums !important;
+  line-height: 1 !important;
+}
+
+#subview-dashboard .workspace-summary .summary-stat small {
+  color: var(--text-muted) !important;
+  font-size: var(--ui-fs-hint) !important;
+}
+
+/* 第 1 个子元素是"今天的工作节奏"，所以待办 / 完成分别是第 2、3 个 */
+#subview-dashboard .workspace-summary .summary-stat:nth-child(2) strong { color: var(--color-warning) !important; }
+#subview-dashboard .workspace-summary .summary-stat:nth-child(3) strong { color: var(--color-success) !important; }
+
+/* --- 7. 工作台页头：补齐 kicker 与说明，和其他 5 页对齐 --- */
+#subview-dashboard .dashboard-hero {
+  display: flex !important;
+  align-items: flex-end !important;
+  justify-content: space-between !important;
+  gap: var(--ui-gap-md) !important;
+  flex-wrap: wrap !important;
+  margin: 0 0 var(--ui-gap-md) !important;
+}
+
+#subview-dashboard .dashboard-title-copy h1 {
+  margin: 4px 0 0 !important;
+  font-size: var(--ui-fs-page-title) !important;
+  line-height: 1.2 !important;
+  color: var(--text-main) !important;
+}
+
+#subview-dashboard .dashboard-title-copy p {
+  margin: 6px 0 0 !important;
+  color: var(--text-secondary) !important;
+  font-size: var(--ui-fs-body) !important;
+}
+
+/* --- 8. 页头排版刻度 --- */
+.subview-kicker {
+  display: inline-block !important;
+  margin: 0 0 6px !important;
+  color: var(--color-primary) !important;
+  font-size: var(--ui-fs-kicker) !important;
+  font-weight: 750 !important;
+  letter-spacing: 0.11em !important;
+  text-transform: uppercase !important;
+}
+
+.subview-page-head {
+  margin: 0 0 var(--ui-gap-md) !important;
+  padding: 0 !important;
+  border: 0 !important;
+}
+
+.subview-page-head h1 {
+  margin: 0 !important;
+  font-size: var(--ui-fs-page-title) !important;
+  line-height: 1.2 !important;
+}
+
+.subview-page-head p {
+  margin: 6px 0 0 !important;
+  color: var(--text-secondary) !important;
+  font-size: var(--ui-fs-body) !important;
+}
+
+/* --- 9. 时间轴：清掉深色主题遗留的阴影与发光 --- */
+.timeline-date {
+  text-shadow: none !important;
+  font-size: 15px !important;
+  font-weight: 700 !important;
+}
+
+.timeline-dot {
+  box-shadow: none !important;
+  border-width: 2px !important;
+}
+
+/* --- 10. 设置页：中性化"加载中…"药丸与路径框 --- */
+.settings-value-pill {
+  border-color: var(--border-light) !important;
+  background: var(--overlay-light) !important;
+  color: var(--text-secondary) !important;
+  font-weight: 600 !important;
+}
+
+.settings-data-panel {
+  border-style: solid !important;
+  border-color: var(--border-light) !important;
+  border-radius: var(--ui-radius-md) !important;
+  background: var(--overlay-light) !important;
+}
+
+.settings-data-panel code {
+  color: var(--text-secondary) !important;
+  font-family: var(--ui-mono-font) !important;
+  font-size: 12px !important;
+  word-break: break-all !important;
+}
+
+/* --- 11. 控件尺寸统一：按钮走同一档高度 --- */
+.icon-btn {
+  min-height: var(--ui-control-h) !important;
+  padding: 0 12px !important;
+  border: 1px solid var(--border-light) !important;
+  border-radius: var(--ui-radius-sm) !important;
+  background: var(--bg-card) !important;
+  color: var(--text-secondary) !important;
+  font-size: var(--ui-fs-body) !important;
+  font-weight: 600 !important;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease !important;
+}
+
+.icon-btn:hover {
+  border-color: color-mix(in srgb, var(--color-primary) 30%, var(--border-light)) !important;
+  background: color-mix(in srgb, var(--color-primary) 6%, var(--bg-card)) !important;
+  color: var(--text-main) !important;
+}
+
+.primary-btn {
+  min-height: var(--ui-control-h) !important;
+  padding: 0 16px !important;
+  border: 1px solid transparent !important;
+  border-radius: var(--ui-radius-sm) !important;
+  font-size: var(--ui-fs-body) !important;
+  font-weight: 650 !important;
+  box-shadow: var(--ui-card-shadow) !important;
+}
+
+/* --- 12. 笔记列表头部：筛选框与计数各归其位 --- */
+.notes-list-head {
+  gap: 8px !important;
+  padding: 12px 12px 10px !important;
+  border-bottom: 1px solid var(--border-light) !important;
+}
+
+.notes-filter-input {
+  min-height: var(--ui-control-h) !important;
+  font-size: var(--ui-fs-body) !important;
+}
+
+.notes-list-meta {
+  color: var(--text-muted) !important;
+  font-size: var(--ui-fs-hint) !important;
+  font-variant-numeric: tabular-nums !important;
+  white-space: nowrap !important;
+}
+
+.note-editor-empty {
+  gap: 6px !important;
+  color: var(--text-muted) !important;
+}
+
+.note-editor-empty strong {
+  color: var(--text-secondary) !important;
+  font-size: var(--ui-fs-lead) !important;
+  font-weight: 650 !important;
+}
+
+.note-editor-empty span {
+  font-size: var(--ui-fs-body) !important;
+}
+
+/* --- 13. 焦点环：键盘可见、鼠标不打断 --- */
+:focus-visible {
+  outline: 2px solid var(--ui-ring) !important;
+  outline-offset: 2px !important;
+}
+
+/* --- 14. 细滚动条：避免 Windows 默认宽滚动条切碎布局 --- */
+.notes-list-scroll,
+.note-preview,
+.record-reader-scroll,
+.settings-layout,
+textarea {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--text-main) 18%, transparent) transparent;
+}
+
+.notes-list-scroll::-webkit-scrollbar,
+.note-preview::-webkit-scrollbar,
+textarea::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.notes-list-scroll::-webkit-scrollbar-thumb,
+.note-preview::-webkit-scrollbar-thumb,
+textarea::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-main) 18%, transparent);
+  background-clip: content-box;
+}
+
+.notes-list-scroll::-webkit-scrollbar-track,
+.note-preview::-webkit-scrollbar-track,
+textarea::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* --- 15. 自定义标题栏：换符号后的尺寸与悬停色 --- */
+.custom-titlebar {
+  border-bottom: 1px solid var(--border-light) !important;
+  background: color-mix(in srgb, var(--color-primary) 5%, var(--bg-body)) !important;
+}
+
+.titlebar-left span {
+  color: var(--text-secondary) !important;
+  font-size: var(--ui-fs-body) !important;
+}
+
+.titlebar-btn {
+  width: 34px !important;
+  height: 26px !important;
+  border-radius: 6px !important;
+  color: var(--text-muted) !important;
+  font-size: 12px !important;
+  line-height: 1 !important;
+  transition: background 140ms ease, color 140ms ease !important;
+}
+
+.titlebar-btn:hover {
+  background: var(--overlay-hover) !important;
+  color: var(--text-main) !important;
+}
+
+.titlebar-btn.close-btn:hover {
+  background: var(--color-danger) !important;
+  color: #ffffff !important;
+}
+
+/* --- 16. 落地页也纳入同一套语言 --- */
+#landing-view {
+  gap: 10px !important;
+  background:
+    radial-gradient(120% 90% at 50% -10%,
+      color-mix(in srgb, var(--color-primary) 10%, transparent) 0%,
+      transparent 60%),
+    var(--bg-body) !important;
+}
+
+#landing-view h1 {
+  margin: 0 !important;
+  font-size: 30px !important;
+  letter-spacing: -0.02em !important;
+  color: var(--text-main) !important;
+}
+
+#landing-view p {
+  margin: 0 0 8px !important;
+  color: var(--text-secondary) !important;
+  font-size: var(--ui-fs-lead) !important;
+}
+
+/* --- 17. 修正：`hidden` 属性被 !important 的 display 规则压掉（真实 bug）——
+   笔记页在"没选中任何笔记"时，本该隐藏的编辑器（标题行 / 操作行 / Markdown 分栏）
+   仍然渲染出来，和空态叠在一起。截图里能看到，属于既有缺陷，不是这次改出来的。 */
+#note-editor-pane[hidden],
+.note-editor-pane-inner[hidden] {
+  display: none !important;
+}
+
+/* 编辑器空态：在右侧面板里真正居中，而不是贴着顶部 */
+.note-editor-empty {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  justify-content: center !important;
+  min-height: 300px !important;
+  text-align: center !important;
+}
+
+/* --- 18. 设置页两栏等高：卡片底边对齐，扫读时不被参差的边界打断 --- */
+.settings-layout {
+  align-items: stretch !important;
+}
+
+/* --- 19. 长列表页的空态给足高度，避免"上面一句提示 + 下面一片虚白" --- */
+#timeline-container:empty {
+  border-radius: var(--ui-radius-lg) !important;
+  background: color-mix(in srgb, var(--color-primary) 3%, transparent) !important;
+}
+
+/* =============================================================================
+   设计层 3：记录表格视图（2026-10-15）
+   -----------------------------------------------------------------------------
+   对照设计稿三块画板：表格默认视图 / 就地编辑·单选下拉 / 列头字段菜单。
+   与设计层 2 同一套原则：颜色全部走主题令牌与 color-mix，不硬编码；
+   卡片靠细描边分层；间距走 4/8 刻度；强调色只用于"要你点"的地方。
+   ============================================================================= */
+
+/* --- 0. 工具行：视图 tab + 字段/筛选/排序 --- */
+.table-toolbar {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 12px !important;
+  margin: 0 0 14px !important;
+  flex-wrap: wrap !important;
+}
+
+.table-view-tabs {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 2px !important;
+  padding: 3px !important;
+  border-radius: 9px !important;
+  background: var(--overlay-light) !important;
+}
+
+.table-view-tab {
+  appearance: none !important;
+  border: 0 !important;
+  background: transparent !important;
+  padding: 5px 16px !important;
+  font-size: 13px !important;
+  font-family: inherit !important;
+  color: var(--text-muted) !important;
+  border-radius: 7px !important;
+  cursor: pointer !important;
+  transition: color .15s ease, background .15s ease !important;
+}
+
+.table-view-tab:hover {
+  color: var(--text-secondary) !important;
+}
+
+.table-view-tab.is-active {
+  color: var(--text-main) !important;
+  background: var(--bg-elevated) !important;
+  box-shadow: var(--ui-card-shadow) !important;
+}
+
+.table-toolbar-actions {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+}
+
+.table-tool-wrap {
+  position: relative !important;
+}
+
+.table-tool-btn {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  height: 31px !important;
+  padding: 0 12px !important;
+  border-radius: 8px !important;
+  border: 1px solid var(--border-light) !important;
+  background: transparent !important;
+  color: var(--text-secondary) !important;
+  font-size: 13px !important;
+  font-family: inherit !important;
+  cursor: pointer !important;
+  transition: background .15s ease, color .15s ease, border-color .15s ease !important;
+}
+
+.table-tool-btn:hover {
+  background: var(--overlay-light) !important;
+  border-color: var(--border-medium) !important;
+  color: var(--text-main) !important;
+}
+
+.table-tool-btn .wr-icon {
+  width: 14px !important;
+  height: 14px !important;
+}
+
+.table-tool-caret {
+  width: 12px !important;
+  height: 12px !important;
+  margin-left: -2px !important;
+}
+
+.table-head-actions {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+}
+
+/* --- 1. 表格骨架 --- */
+.table-view-root {
+  min-height: 200px !important;
+}
+
+.wr-table-shell {
+  display: flex !important;
+  flex-direction: column !important;
+  border: 1px solid var(--border-light) !important;
+  border-radius: var(--ui-radius-lg) !important;
+  background: linear-gradient(var(--bg-card), var(--bg-card)), var(--bg-body) !important;
+  overflow: hidden !important;
+}
+
+.wr-table-scroll {
+  overflow: auto !important;
+  max-height: calc(100vh - 312px) !important;
+  overscroll-behavior: contain !important;
+}
+
+/* 表格宽度策略：colgroup 的 px 宽度作为「比例基准」。
+   容器较宽时表格撑满并按比例放大列；容器不足时固定布局按比例压缩列；
+   窄到 900px 以下才出现横向滚动（保证单元格仍有可读宽度）。 */
+.wr-table {
+  border-collapse: separate !important;
+  border-spacing: 0 !important;
+  table-layout: fixed !important;
+  width: 100% !important;
+  min-width: 900px !important;
+  margin: 0 !important;
+}
+
+/* 表头：sticky + 双层背景（半透明卡片色叠不透明底，滚动时不透底） */
+.wr-table thead th {
+  position: sticky !important;
+  top: 0 !important;
+  z-index: 5 !important;
+  padding: 0 !important;
+  text-align: left !important;
+  font-weight: 500 !important;
+  border-bottom: 1px solid var(--border-light) !important;
+  background: linear-gradient(var(--bg-card), var(--bg-card)), var(--bg-body) !important;
+}
+
+.wr-th-btn {
+  display: flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  width: 100% !important;
+  padding: 9px 12px !important;
+  border: 0 !important;
+  background: transparent !important;
+  color: var(--text-muted) !important;
+  font-size: 12px !important;
+  font-weight: 550 !important;
+  font-family: inherit !important;
+  cursor: pointer !important;
+  text-align: left !important;
+  transition: color .15s ease, background .15s ease !important;
+}
+
+.wr-th-btn:hover {
+  background: var(--overlay-light) !important;
+  color: var(--text-secondary) !important;
+}
+
+.wr-table-th.is-menu-open .wr-th-btn {
+  color: var(--color-primary) !important;
+  background: color-mix(in srgb, var(--color-primary) 9%, transparent) !important;
+}
+
+.wr-th-label {
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+.ft-type-icon {
+  width: 14px !important;
+  height: 14px !important;
+  opacity: .85 !important;
+  flex: none !important;
+}
+
+.wr-table-th-add {
+  width: 44px !important;
+}
+
+.wr-th-add-btn {
+  width: 100% !important;
+  padding: 9px 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  color: var(--text-muted) !important;
+  font-size: 14px !important;
+  font-family: inherit !important;
+  cursor: pointer !important;
+  transition: color .15s ease, background .15s ease !important;
+}
+
+.wr-th-add-btn:hover {
+  color: var(--color-primary) !important;
+  background: var(--overlay-light) !important;
+}
+
+/* 行与单元格 */
+.wr-table-td {
+  padding: 3px 6px !important;
+  border-bottom: 1px solid var(--border-light) !important;
+  vertical-align: middle !important;
+  transition: background .12s ease !important;
+}
+
+.wr-table-row:last-child .wr-table-td {
+  border-bottom: 0 !important;
+}
+
+.wr-table-row:hover .wr-table-td {
+  background: var(--overlay-light) !important;
+}
+
+.wr-cell {
+  display: block !important;
+  padding: 6px 7px !important;
+  border-radius: 7px !important;
+  border: 1px solid transparent !important;
+  min-height: 30px !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+  cursor: default !important;
+}
+
+.wr-cell:hover {
+  border-color: var(--border-light) !important;
+}
+
+/* 空态行与底部「新建记录」 */
+.wr-table-empty-row td {
+  border-bottom: 0 !important;
+}
+
+.wr-table-empty {
+  padding: 46px 16px !important;
+  text-align: center !important;
+  color: var(--text-muted) !important;
+  font-size: var(--ui-fs-body) !important;
+}
+
+.wr-table-footer {
+  border-top: 1px solid var(--border-light) !important;
+  padding: 5px 6px !important;
+}
+
+.wr-table-addrow {
+  width: 100% !important;
+  padding: 9px 12px !important;
+  border: 0 !important;
+  border-radius: 7px !important;
+  background: transparent !important;
+  color: var(--text-muted) !important;
+  font-size: 13px !important;
+  font-family: inherit !important;
+  text-align: left !important;
+  cursor: pointer !important;
+  transition: background .15s ease, color .15s ease !important;
+}
+
+.wr-table-addrow:hover {
+  background: var(--overlay-light) !important;
+  color: var(--text-main) !important;
+}
+
+/* --- 2. 单元格内容 --- */
+.ft-cell-empty {
+  color: var(--text-muted) !important;
+  opacity: .75 !important;
+}
+
+.ft-text {
+  display: block !important;
+  color: var(--text-main) !important;
+  font-size: 13px !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+.ft-pill-group {
+  display: inline-flex !important;
+  flex-wrap: wrap !important;
+  gap: 4px !important;
+  vertical-align: middle !important;
+}
+
+.ft-pill {
+  display: inline-flex !important;
+  align-items: center !important;
+  max-width: 100% !important;
+  padding: 2px 9px !important;
+  border-radius: 999px !important;
+  font-size: 12px !important;
+  line-height: 17px !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  color: color-mix(in srgb, var(--pill) 74%, var(--text-main)) !important;
+  background: color-mix(in srgb, var(--pill) 15%, transparent) !important;
+  border: 1px solid color-mix(in srgb, var(--pill) 26%, transparent) !important;
+}
+
+.ft-status {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  font-size: 12.5px !important;
+  white-space: nowrap !important;
+  color: color-mix(in srgb, var(--pill) 80%, var(--text-main)) !important;
+}
+
+.ft-status-dot {
+  width: 7px !important;
+  height: 7px !important;
+  border-radius: 50% !important;
+  background: var(--pill) !important;
+  flex: none !important;
+}
+
+.ft-date {
+  color: var(--text-secondary) !important;
+  font-size: 12.5px !important;
+  white-space: nowrap !important;
+}
+
+.ft-checkbox {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 17px !important;
+  height: 17px !important;
+  border-radius: 5px !important;
+  border: 1px solid var(--border-medium) !important;
+  color: var(--color-primary) !important;
+}
+
+.ft-checkbox.is-checked {
+  background: color-mix(in srgb, var(--color-primary) 18%, transparent) !important;
+  border-color: color-mix(in srgb, var(--color-primary) 45%, transparent) !important;
+}
+
+.ft-checkbox .wr-icon {
+  width: 12px !important;
+  height: 12px !important;
+}
+
+.ft-att-group {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 4px !important;
+}
+
+.ft-att-thumb {
+  width: 26px !important;
+  height: 26px !important;
+  border-radius: 6px !important;
+  object-fit: cover !important;
+  border: 1px solid var(--border-light) !important;
+  background: var(--overlay-light) !important;
+}
+
+.ft-att-more {
+  font-size: 11px !important;
+  color: var(--text-muted) !important;
+}
+
+/* --- 3. 就地编辑 --- */
+.ft-cell-editing {
+  border-color: var(--color-primary) !important;
+  background: linear-gradient(var(--bg-input), var(--bg-input)), var(--bg-body) !important;
+  box-shadow: 0 0 0 3px var(--ui-ring) !important;
+}
+
+.ft-inline-input {
+  width: 100% !important;
+  padding: 4px 6px !important;
+  border: 0 !important;
+  border-radius: 5px !important;
+  background: transparent !important;
+  color: var(--text-main) !important;
+  font-size: 13px !important;
+  font-family: inherit !important;
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+/* 单选 / 多选下拉面板（设计稿②） */
+.ft-dropdown {
+  position: fixed !important;
+  z-index: 2400 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  padding: 6px !important;
+  border-radius: 10px !important;
+  border: 1px solid var(--border-medium) !important;
+  background: linear-gradient(var(--bg-elevated), var(--bg-elevated)), var(--bg-body) !important;
+  box-shadow: 0 14px 34px -14px rgba(0, 0, 0, .5) !important;
+}
+
+.ft-dropdown-search {
+  padding: 2px 2px 6px !important;
+  border-bottom: 1px solid var(--border-light) !important;
+}
+
+.ft-dropdown-search input {
+  width: 100% !important;
+  padding: 6px 8px !important;
+  border: 1px solid var(--border-light) !important;
+  border-radius: 7px !important;
+  background: var(--bg-input) !important;
+  color: var(--text-main) !important;
+  font-size: 13px !important;
+  font-family: inherit !important;
+  outline: none !important;
+}
+
+.ft-dropdown-search input:focus {
+  border-color: var(--color-primary) !important;
+}
+
+.ft-dropdown-list {
+  overflow-y: auto !important;
+  padding: 4px 0 !important;
+  max-height: 216px !important;
+}
+
+.ft-option {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  width: 100% !important;
+  padding: 6px 8px !important;
+  border: 0 !important;
+  border-radius: 6px !important;
+  background: transparent !important;
+  color: var(--text-secondary) !important;
+  font-size: 13px !important;
+  font-family: inherit !important;
+  cursor: pointer !important;
+  text-align: left !important;
+  transition: background .12s ease, color .12s ease !important;
+}
+
+.ft-option:hover {
+  background: var(--overlay-hover) !important;
+  color: var(--text-main) !important;
+}
+
+.ft-option.is-active {
+  color: var(--text-main) !important;
+}
+
+.ft-option-dot {
+  width: 8px !important;
+  height: 8px !important;
+  border-radius: 50% !important;
+  background: var(--pill) !important;
+  flex: none !important;
+}
+
+.ft-option-label {
+  flex: 1 !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+.ft-option-check {
+  width: 13px !important;
+  height: 13px !important;
+  color: var(--color-primary) !important;
+  flex: none !important;
+}
+
+.ft-dropdown-empty {
+  padding: 12px 10px !important;
+  color: var(--text-muted) !important;
+  font-size: 12.5px !important;
+  text-align: center !important;
+}
+
+.ft-dropdown-create {
+  margin-top: 4px !important;
+  padding: 7px 8px !important;
+  border: 0 !important;
+  border-top: 1px solid var(--border-light) !important;
+  background: transparent !important;
+  color: var(--color-primary) !important;
+  font-size: 13px !important;
+  font-family: inherit !important;
+  cursor: pointer !important;
+  text-align: left !important;
+  border-radius: 0 0 6px 6px !important;
+}
+
+.ft-dropdown-create:hover {
+  background: var(--overlay-light) !important;
+}
+
+/* --- 4. 列头字段菜单（设计稿③）与「字段」显隐面板 --- */
+.wr-colmenu {
+  position: fixed !important;
+  z-index: 2400 !important;
+  display: flex !important;
+  align-items: flex-start !important;
+  gap: 8px !important;
+}
+
+.wr-colmenu-main,
+.wr-colmenu-types {
+  width: 176px !important;
+  padding: 6px !important;
+  border-radius: 10px !important;
+  border: 1px solid var(--border-medium) !important;
+  background: linear-gradient(var(--bg-elevated), var(--bg-elevated)), var(--bg-body) !important;
+  box-shadow: 0 14px 34px -14px rgba(0, 0, 0, .5) !important;
+}
+
+.wr-colmenu-item {
+  display: flex !important;
+  align-items: center !important;
+  gap: 9px !important;
+  width: 100% !important;
+  padding: 7px 9px !important;
+  border: 0 !important;
+  border-radius: 7px !important;
+  background: transparent !important;
+  color: var(--text-secondary) !important;
+  font-size: 13px !important;
+  font-family: inherit !important;
+  cursor: pointer !important;
+  text-align: left !important;
+  transition: background .12s ease, color .12s ease !important;
+}
+
+.wr-colmenu-item:hover {
+  background: var(--overlay-hover) !important;
+  color: var(--text-main) !important;
+}
+
+.wr-colmenu-item .wr-icon {
+  width: 14px !important;
+  height: 14px !important;
+  opacity: .8 !important;
+  flex: none !important;
+}
+
+.wr-colmenu-item.is-danger {
+  color: var(--color-danger) !important;
+}
+
+.wr-colmenu-item.is-danger:hover {
+  background: color-mix(in srgb, var(--color-danger) 12%, transparent) !important;
+}
+
+.wr-colmenu-sep {
+  height: 1px !important;
+  margin: 5px 6px !important;
+  background: var(--border-light) !important;
+}
+
+.wr-colmenu-types-title {
+  padding: 4px 9px 6px !important;
+  font-size: 11px !important;
+  color: var(--text-muted) !important;
+  letter-spacing: .06em !important;
+}
+
+.wr-type-option {
+  display: flex !important;
+  align-items: center !important;
+  gap: 9px !important;
+  width: 100% !important;
+  padding: 7px 9px !important;
+  border: 0 !important;
+  border-radius: 7px !important;
+  background: transparent !important;
+  color: var(--text-secondary) !important;
+  font-size: 13px !important;
+  font-family: inherit !important;
+  cursor: pointer !important;
+  text-align: left !important;
+  transition: background .12s ease, color .12s ease !important;
+}
+
+.wr-type-option:hover {
+  background: var(--overlay-hover) !important;
+  color: var(--text-main) !important;
+}
+
+.wr-type-option.is-active {
+  color: var(--color-primary) !important;
+}
+
+.wr-type-option .wr-icon {
+  width: 14px !important;
+  height: 14px !important;
+  flex: none !important;
+}
+
+.wr-type-option span {
+  flex: 1 !important;
+}
+
+.wr-type-check {
+  color: var(--color-primary) !important;
+}
+
+.wr-fieldspanel {
+  position: fixed !important;
+  z-index: 2400 !important;
+  width: 208px !important;
+  padding: 8px !important;
+  border-radius: 10px !important;
+  border: 1px solid var(--border-medium) !important;
+  background: linear-gradient(var(--bg-elevated), var(--bg-elevated)), var(--bg-body) !important;
+  box-shadow: 0 14px 34px -14px rgba(0, 0, 0, .5) !important;
+}
+
+.wr-fieldspanel-title {
+  padding: 2px 8px 8px !important;
+  font-size: 11px !important;
+  color: var(--text-muted) !important;
+  letter-spacing: .06em !important;
+}
+
+.wr-fieldspanel-list {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 1px !important;
+}
+
+.wr-fieldspanel-row {
+  display: flex !important;
+  align-items: center !important;
+  gap: 9px !important;
+  padding: 6px 8px !important;
+  border-radius: 7px !important;
+  color: var(--text-secondary) !important;
+  font-size: 13px !important;
+  cursor: pointer !important;
+}
+
+.wr-fieldspanel-row:hover {
+  background: var(--overlay-light) !important;
+}
+
+.wr-fieldspanel-row input {
+  accent-color: var(--color-primary) !important;
+  flex: none !important;
+}
+
+.wr-fieldspanel-row .wr-icon {
+  width: 14px !important;
+  height: 14px !important;
+  opacity: .8 !important;
+  flex: none !important;
+}
+
+.wr-fieldspanel-row span {
+  flex: 1 !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+/* --- 5. 轻提示 --- */
+.wr-table-toast {
+  position: fixed !important;
+  left: 50% !important;
+  bottom: 30px !important;
+  transform: translate(-50%, 10px) !important;
+  z-index: 3000 !important;
+  padding: 9px 16px !important;
+  border-radius: 9px !important;
+  border: 1px solid var(--border-medium) !important;
+  background: linear-gradient(var(--bg-elevated), var(--bg-elevated)), var(--bg-body) !important;
+  color: var(--text-main) !important;
+  font-size: 13px !important;
+  box-shadow: 0 12px 30px -12px rgba(0, 0, 0, .45) !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+  transition: opacity .18s ease, transform .18s ease !important;
+}
+
+.wr-table-toast.show {
+  opacity: 1 !important;
+  transform: translate(-50%, 0) !important;
+}
+
+.wr-table-toast.tone-danger {
+  border-color: color-mix(in srgb, var(--color-danger) 55%, transparent) !important;
+}
+
+.wr-table-toast.tone-info {
+  border-color: color-mix(in srgb, var(--color-primary) 55%, transparent) !important;
+}
+
+/* 滚动区滚动条与主题协调（系统默认滚动条在深色主题里过于扎眼） */
+.wr-table-scroll {
+  scrollbar-width: thin !important;
+  scrollbar-color: var(--border-medium) transparent !important;
+}
+
+.wr-table-scroll::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.wr-table-scroll::-webkit-scrollbar-thumb {
+  background: var(--border-medium);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+.wr-table-scroll::-webkit-scrollbar-track,
+.wr-table-scroll::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* --- 6. 小窗口兜底 --- */
+@media screen and (max-width: 940px) {
+  .wr-table-scroll {
+    max-height: calc(100vh - 280px) !important;
+  }
+
+  .table-toolbar {
+    align-items: flex-start !important;
+  }
+}
+
+

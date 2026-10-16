@@ -143,6 +143,50 @@ fn init_and_migrate_db() -> Result<(), String> {
         ).map_err(|e| format!("数据库升级到 v6 失败: {}", e))?;
     }
 
+    // v7：字段 Schema 化（「表格视图」改造的数据地基）。
+    // field_def 描述实体的每个字段（列）：类型 / 选项 / 排序 / 显隐；
+    // todos / logs / notes 预留 custom 列，存 JSON 扩展值（附件等）。
+    // 纯增量：不动任何现有列与数据，删掉新表新列即可回滚。
+    if schema_version < 7 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS field_def (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                entity TEXT NOT NULL,
+                key TEXT NOT NULL,
+                label TEXT NOT NULL,
+                type TEXT NOT NULL,
+                options TEXT,
+                sort INTEGER DEFAULT 0,
+                visible INTEGER DEFAULT 1,
+                builtin INTEGER DEFAULT 0,
+                UNIQUE(entity, key)
+            );"
+        ).map_err(|e| format!("创建 field_def 失败: {}", e))?;
+        add_column_if_missing(&conn, "todos", "custom", "custom TEXT")?;
+        add_column_if_missing(&conn, "logs", "custom", "custom TEXT")?;
+        add_column_if_missing(&conn, "notes", "custom", "custom TEXT")?;
+
+        // 内置字段种子（当前只建 log 实体）。幂等：UNIQUE(entity, key) + INSERT OR IGNORE。
+        let seeds: [(&str, &str, &str, &str, Option<&str>, i64, i64); 7] = [
+            ("log", "text", "内容", "text", None, 0, 1),
+            ("log", "tag", "主分类", "select", Some(r#"{"source":"tags"}"#), 1, 1),
+            ("log", "sub_tag", "标签", "multi_select", Some(r#"{"source":"sub_tags"}"#), 2, 1),
+            ("log", "date", "时间", "date", None, 3, 1),
+            ("log", "attachments", "附件", "attachment", None, 4, 1),
+            ("log", "status", "状态", "select", Some(r#"{"source":"custom","options":[{"value":"pending","label":"待开始","tone":"muted"},{"value":"doing","label":"进行中","tone":"doing"},{"value":"done","label":"已完成","tone":"done"},{"value":"unprocessed","label":"待整理","tone":"inbox"}]}"#), 5, 1),
+            ("log", "detail", "说明", "text", None, 6, 1),
+        ];
+        for (entity, key, label, ftype, options, sort, builtin) in seeds {
+            conn.execute(
+                "INSERT OR IGNORE INTO field_def (entity, key, label, type, options, sort, visible, builtin) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7)",
+                rusqlite::params![entity, key, label, ftype, options, sort, builtin],
+            ).map_err(|e| format!("写入内置字段定义失败: {}", e))?;
+        }
+
+        conn.execute_batch("PRAGMA user_version = 7;")
+            .map_err(|e| format!("数据库升级到 v7 失败: {}", e))?;
+    }
+
     let json_exists = Path::new(&json_path).exists();
     // ✅ 修复了之前的借用检查器报错，一步到位！
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM tags", [], |row| row.get(0)).unwrap_or(0);

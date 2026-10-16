@@ -28,15 +28,52 @@
     </script>
   </head>
   <body>
+    <!-- 线性图标 sprite：统一 1.5px 描边、24 网格，替代原先混排的字符图标（⌂ ✎ ◷ ♠ ⌕ ⚙）。
+         这些字符来自不同 Unicode 区块，光学校准天然不一致（♠ 明显比 ⌕ 大且重），
+         是"界面不像一个整体"的隐性来源。 -->
+    <svg class="icon-sprite" aria-hidden="true" focusable="false">
+      <symbol id="ic-home" viewBox="0 0 24 24"><path d="M3 10.6 12 3.2l9 7.4"/><path d="M5.6 9.6V20a1 1 0 0 0 1 1h10.8a1 1 0 0 0 1-1V9.6"/><path d="M9.6 21v-5.6h4.8V21"/></symbol>
+      <symbol id="ic-notebook" viewBox="0 0 24 24"><path d="M5.5 3.5h9.2L19 7.8v12.7a1 1 0 0 1-1 1H5.5a1 1 0 0 1-1-1v-16a1 1 0 0 1 1-1Z"/><path d="M14.3 3.5v4.6H19"/><path d="M8 13h7.5M8 16.8h5"/></symbol>
+      <symbol id="ic-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.4"/><path d="M12 7.4V12l3.1 2"/></symbol>
+      <symbol id="ic-cards" viewBox="0 0 24 24"><rect x="8.6" y="3" width="11" height="14.6" rx="2"/><path d="M15.6 21.2H6.4a2.4 2.4 0 0 1-2.4-2.4V7.2"/></symbol>
+      <symbol id="ic-search" viewBox="0 0 24 24"><circle cx="10.6" cy="10.6" r="6.4"/><path d="m15.5 15.5 4.6 4.6"/></symbol>
+      <symbol id="ic-sliders" viewBox="0 0 24 24"><path d="M3.6 7.6h9.2M19.2 7.6h1.2M3.6 16.4h1.2M11.2 16.4h9.2"/><circle cx="16" cy="7.6" r="2.2"/><circle cx="8" cy="16.4" r="2.2"/></symbol>
+      <symbol id="ic-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.6"/><path d="M12 2.6v2.2M12 19.2v2.2M2.6 12h2.2M19.2 12h2.2M5.5 5.5l1.6 1.6M16.9 16.9l1.6 1.6M18.5 5.5l-1.6 1.6M7.1 16.9l-1.6 1.6"/></symbol>
+      <symbol id="ic-timer" viewBox="0 0 24 24"><circle cx="12" cy="13.4" r="7"/><path d="M12 9.8v3.6l2.6 1.6M9.6 2.6h4.8"/></symbol>
+      <symbol id="ic-database" viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="7.2" ry="3"/><path d="M4.8 6v12c0 1.66 3.22 3 7.2 3s7.2-1.34 7.2-3V6"/><path d="M4.8 12c0 1.66 3.22 3 7.2 3s7.2-1.34 7.2-3"/></symbol>
+      <symbol id="ic-tag" viewBox="0 0 24 24"><path d="M3.5 11.2V4.6a1.1 1.1 0 0 1 1.1-1.1h6.6l9.3 9.3-7.7 7.7-9.3-9.3Z"/><path d="M7.4 8.1h.02"/></symbol>
+      <symbol id="ic-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.4"/><path d="M12 11.2v5.4"/><path d="M12 7.9v.02"/></symbol>
+      <symbol id="ic-inbox" viewBox="0 0 24 24"><path d="M4 4.5h16l2.4 8.6V19a1 1 0 0 1-1 1H2.6a1 1 0 0 1-1-1v-5.9L4 4.5Z"/><path d="M1.6 13.1h5.1l1.5 2.5h7.6l1.5-2.5h5.1"/></symbol>
+      <!-- 表格视图：导航与字段类型图标。与上述 12 个图标同一套线性语言。 -->
+      <symbol id="ic-table" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M3.5 9.8h17"/><path d="M9.6 9.8v9.7"/><path d="M14.9 9.8v9.7"/></symbol>
+      <symbol id="ic-type-text" viewBox="0 0 24 24"><path d="M5.4 19.2 11.1 5.4h1.8l5.7 13.8"/><path d="M7.5 14.2h9"/></symbol>
+      <symbol id="ic-type-select" viewBox="0 0 24 24"><circle cx="12" cy="12" r="7.6"/><circle cx="12" cy="12" r="2.4" style="fill:currentColor;stroke:none"/></symbol>
+      <symbol id="ic-type-multi" viewBox="0 0 24 24"><circle cx="9.2" cy="12" r="4.7"/><circle cx="14.8" cy="12" r="4.7"/></symbol>
+      <symbol id="ic-type-date" viewBox="0 0 24 24"><rect x="4" y="5.5" width="16" height="14" rx="2"/><path d="M4 10.2h16"/><path d="M8.4 3.6v3.4"/><path d="M15.6 3.6v3.4"/></symbol>
+      <symbol id="ic-type-checkbox" viewBox="0 0 24 24"><rect x="4.5" y="4.5" width="15" height="15" rx="3.2"/><path d="m8.4 12.3 2.6 2.6 4.9-5.6"/></symbol>
+      <symbol id="ic-type-attachment" viewBox="0 0 24 24"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></symbol>
+      <symbol id="ic-check" viewBox="0 0 24 24"><path d="m6.2 12.6 3.7 3.7 7.9-8.6"/></symbol>
+      <symbol id="ic-caret" viewBox="0 0 24 24"><path d="m8.5 10.2 3.5 3.6 3.5-3.6"/></symbol>
+      <symbol id="ic-filter" viewBox="0 0 24 24"><path d="M4.2 6.4h15.6M7.2 12h9.6M10.2 17.6h3.6"/></symbol>
+      <symbol id="ic-sort" viewBox="0 0 24 24"><path d="M8.2 5.8v12.4m0 0-3.2-3.2m3.2 3.2 3.2-3.2"/><path d="M15.8 18.2V5.8m0 0-3.2 3.2m3.2-3.2 3.2 3.2"/></symbol>
+      <!-- 列头菜单图标 -->
+      <symbol id="ic-swap" viewBox="0 0 24 24"><path d="M6.5 9h11m0 0-3-3m3 3-3 3"/><path d="M17.5 15h-11m0 0 3 3m-3-3 3-3"/></symbol>
+      <symbol id="ic-pencil" viewBox="0 0 24 24"><path d="m14.6 5.4 4 4L9 19H5v-4L14.6 5.4Z"/><path d="m12.6 7.4 4 4"/></symbol>
+      <symbol id="ic-copy" viewBox="0 0 24 24"><rect x="8.6" y="8.6" width="11" height="11" rx="2"/><path d="M5.4 15.4H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h9.4a1 1 0 0 1 1 1v.4"/></symbol>
+      <symbol id="ic-insert-left" viewBox="0 0 24 24"><path d="M10.5 5v14"/><path d="M19 12H6.5m0 0 3.2-3.2M6.5 12l3.2 3.2"/></symbol>
+      <symbol id="ic-insert-right" viewBox="0 0 24 24"><path d="M13.5 5v14"/><path d="M5 12h12.5m0 0-3.2-3.2M17.5 12l-3.2 3.2"/></symbol>
+      <symbol id="ic-eye-off" viewBox="0 0 24 24"><path d="M3.5 12S6.8 5.8 12 5.8 20.5 12 20.5 12 17.2 18.2 12 18.2 3.5 12 3.5 12Z"/><circle cx="12" cy="12" r="2.6"/><path d="m5.5 5.5 13 13"/></symbol>
+      <symbol id="ic-trash" viewBox="0 0 24 24"><path d="M4.8 7h14.4"/><path d="M9.6 7V4.6h4.8V7"/><path d="m6.6 7 .9 12.4h9L17.4 7"/></symbol>
+    </svg>
     <div data-tauri-drag-region class="custom-titlebar">
       <div class="titlebar-left" data-tauri-drag-region>
         <span style="font-size: 14px; pointer-events: none;">工作台</span>
       </div>
       
       <div class="titlebar-right">
-        <div class="titlebar-btn" id="titlebar-minimize">一</div>
-        <div class="titlebar-btn" id="titlebar-maximize">◻</div>
-        <div class="titlebar-btn close-btn" id="titlebar-close">✕</div>
+        <div class="titlebar-btn" id="titlebar-minimize">&#8722;</div>
+        <div class="titlebar-btn" id="titlebar-maximize">&#9633;</div>
+        <div class="titlebar-btn close-btn" id="titlebar-close">&#10005;</div>
       </div>
     </div>
     <div id="landing-view" class="view-container">
@@ -57,12 +94,13 @@
         </div>
         
         <div class="nav-menu">
-          <button id="nav-dashboard" class="nav-item active" aria-current="page"><span class="nav-item-icon">⌂</span><span>我的工作台</span></button>
-          <button id="nav-notes" class="nav-item"><span class="nav-item-icon">✎</span><span>笔记</span></button>
-          <button id="nav-timeline" class="nav-item"><span class="nav-item-icon">◷</span><span>时间轴</span></button>
-          <button id="nav-freecell" class="nav-item"><span class="nav-item-icon">♠</span><span>空当接龙</span></button>
-          <button id="nav-search" class="nav-item"><span class="nav-item-icon">⌕</span><span>搜索</span></button>
-          <button id="nav-settings" class="nav-item"><span class="nav-item-icon">⚙</span><span>系统设置</span></button>
+          <button id="nav-dashboard" class="nav-item active" aria-current="page"><span class="nav-item-icon"><svg class="wr-icon" aria-hidden="true"><use href="#ic-home"/></svg></span><span>我的工作台</span></button>
+          <button id="nav-notes" class="nav-item"><span class="nav-item-icon"><svg class="wr-icon" aria-hidden="true"><use href="#ic-notebook"/></svg></span><span>笔记</span></button>
+          <button id="nav-table" class="nav-item"><span class="nav-item-icon"><svg class="wr-icon" aria-hidden="true"><use href="#ic-table"/></svg></span><span>表格</span></button>
+          <button id="nav-timeline" class="nav-item"><span class="nav-item-icon"><svg class="wr-icon" aria-hidden="true"><use href="#ic-clock"/></svg></span><span>时间轴</span></button>
+          <button id="nav-freecell" class="nav-item"><span class="nav-item-icon"><svg class="wr-icon" aria-hidden="true"><use href="#ic-cards"/></svg></span><span>空当接龙</span></button>
+          <button id="nav-search" class="nav-item"><span class="nav-item-icon"><svg class="wr-icon" aria-hidden="true"><use href="#ic-search"/></svg></span><span>搜索</span></button>
+          <button id="nav-settings" class="nav-item"><span class="nav-item-icon"><svg class="wr-icon" aria-hidden="true"><use href="#ic-sliders"/></svg></span><span>系统设置</span></button>
         </div>
 
         <div style="flex: 1;"></div> <button id="back-btn" style="width: 100%;">返回</button>
@@ -72,7 +110,11 @@
         
         <div id="subview-dashboard" class="subview">
           <div class="dashboard-hero">
-            <h1>今日工作台</h1>
+            <div class="dashboard-title-copy">
+              <span class="subview-kicker">TODAY</span>
+              <h1>今日工作台</h1>
+              <p>先把今天要做的事、发生的事丢进来，整理可以往后放。</p>
+            </div>
             <div class="workspace-summary compact-summary" id="workspace-summary" aria-live="polite">
               <span class="summary-label">今天的工作节奏</span>
               <span class="summary-stat"><strong id="summary-pending-count">0</strong><small>待办</small></span>
@@ -398,6 +440,36 @@
           </div>
         </div>
 
+        <div id="subview-table" class="subview" style="display: none;">
+          <header class="subview-page-head table-page-head">
+            <div>
+              <span class="subview-kicker">TABLE</span>
+              <h1>记录表格</h1>
+              <p>把工作记录当数据来管：字段有类型，视图随时切换。</p>
+            </div>
+            <div class="table-head-actions">
+              <button id="table-new-record-btn" type="button" class="primary-btn">＋ 新建记录</button>
+            </div>
+          </header>
+
+          <div class="table-toolbar">
+            <div class="table-view-tabs" role="tablist" aria-label="视图切换">
+              <button type="button" class="table-view-tab is-active" data-view-mode="table" role="tab" aria-selected="true">表格</button>
+              <button type="button" class="table-view-tab" data-view-mode="kanban" role="tab" aria-selected="false">看板</button>
+              <button type="button" class="table-view-tab" data-view-mode="calendar" role="tab" aria-selected="false">日历</button>
+            </div>
+            <div class="table-toolbar-actions">
+              <div class="table-tool-wrap">
+                <button id="table-fields-btn" type="button" class="table-tool-btn" aria-haspopup="true" aria-expanded="false">字段<svg class="wr-icon table-tool-caret" aria-hidden="true"><use href="#ic-caret"/></svg></button>
+              </div>
+              <button id="table-filter-btn" type="button" class="table-tool-btn"><svg class="wr-icon" aria-hidden="true"><use href="#ic-filter"/></svg>筛选</button>
+              <button id="table-sort-btn" type="button" class="table-tool-btn"><svg class="wr-icon" aria-hidden="true"><use href="#ic-sort"/></svg>排序</button>
+            </div>
+          </div>
+
+          <div id="table-view-root" class="table-view-root"></div>
+        </div>
+
         <div id="subview-timeline" class="subview" style="display: none;">
           <header class="subview-page-head timeline-page-head">
             <div>
@@ -472,8 +544,13 @@
         </div>
 
         <div id="subview-search" class="subview" style="display: none;">
-          <h1>搜索</h1>
-          <p style="color: #94A3B8;">输入关键词，查找历史流水、待办和笔记。</p>
+          <header class="subview-page-head search-page-head">
+            <div>
+              <span class="subview-kicker">SEARCH</span>
+              <h1>搜索</h1>
+              <p>输入关键词，查找历史流水、待办和笔记。</p>
+            </div>
+          </header>
 
           <div class="input-card search-panel">
             <form id="global-search-form" class="global-search-form">
@@ -500,7 +577,7 @@
           <div class="settings-layout">
             <section class="settings-card" aria-labelledby="settings-appearance-title">
               <div class="settings-card-head">
-                <span class="settings-card-icon" aria-hidden="true">◐</span>
+                <span class="settings-card-icon" aria-hidden="true"><svg class="wr-icon" aria-hidden="true"><use href="#ic-sun"/></svg></span>
                 <div><h2 id="settings-appearance-title">外观和主题</h2><p>主题颜色由 themes.json 统一驱动，并在重启后恢复。</p></div>
               </div>
               <div class="settings-list">
@@ -513,7 +590,7 @@
 
             <section class="settings-card" aria-labelledby="settings-record-title">
               <div class="settings-card-head">
-                <span class="settings-card-icon" aria-hidden="true">◷</span>
+                <span class="settings-card-icon" aria-hidden="true"><svg class="wr-icon" aria-hidden="true"><use href="#ic-timer"/></svg></span>
                 <div><h2 id="settings-record-title">记录与时间</h2><p>控制已完成内容的保留周期。</p></div>
               </div>
               <div class="settings-list">
@@ -527,7 +604,7 @@
 
             <section class="settings-card" aria-labelledby="settings-freecell-title">
               <div class="settings-card-head">
-                <span class="settings-card-icon" aria-hidden="true">♠</span>
+                <span class="settings-card-icon" aria-hidden="true"><svg class="wr-icon" aria-hidden="true"><use href="#ic-cards"/></svg></span>
                 <div><h2 id="settings-freecell-title">空当接龙</h2><p>这些偏好与游戏页面的“选项”菜单保持同步。</p></div>
               </div>
               <div class="settings-list">
@@ -539,7 +616,7 @@
 
             <section class="settings-card settings-card-wide" aria-labelledby="settings-data-title">
               <div class="settings-card-head">
-                <span class="settings-card-icon" aria-hidden="true">▣</span>
+                <span class="settings-card-icon" aria-hidden="true"><svg class="wr-icon" aria-hidden="true"><use href="#ic-database"/></svg></span>
                 <div><h2 id="settings-data-title">数据和存储</h2><p>查看、备份或迁移本地 SQLite 数据库。</p></div>
               </div>
               <div class="settings-data-panel">
@@ -550,7 +627,7 @@
 
             <section class="settings-card settings-card-wide" aria-labelledby="settings-tags-title">
               <div class="settings-card-head settings-card-head-actions">
-                <div class="settings-card-title-wrap"><span class="settings-card-icon" aria-hidden="true">⌗</span><div><h2 id="settings-tags-title">标签库管理</h2><p>活跃标签会出现在录入和筛选控件中。</p></div></div>
+                <div class="settings-card-title-wrap"><span class="settings-card-icon" aria-hidden="true"><svg class="wr-icon" aria-hidden="true"><use href="#ic-tag"/></svg></span><div><h2 id="settings-tags-title">标签库管理</h2><p>活跃标签会出现在录入和筛选控件中。</p></div></div>
                 <input type="text" id="search-tag-input" class="hero-input settings-search-input" placeholder="搜索主分类或子项目" />
               </div>
               <div class="settings-tag-create"><label for="new-tag-input">添加主标签</label><input type="text" id="new-tag-input" class="hero-input" placeholder="输入新主标签..."><button id="add-tag-btn" class="primary-btn">创建标签</button></div>
@@ -559,7 +636,7 @@
 
             <section class="settings-card settings-card-wide" aria-labelledby="settings-about-title">
               <div class="settings-card-head">
-                <span class="settings-card-icon" aria-hidden="true">i</span>
+                <span class="settings-card-icon" aria-hidden="true"><svg class="wr-icon" aria-hidden="true"><use href="#ic-info"/></svg></span>
                 <div><h2 id="settings-about-title">关于与更新</h2><p>当前版本 v1.1.2，更新过程不会覆盖本地数据库。</p></div>
                 <button id="check-update-btn" class="primary-btn settings-head-action">检查更新</button>
               </div>
