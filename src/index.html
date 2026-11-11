@@ -64,6 +64,13 @@
       <symbol id="ic-insert-right" viewBox="0 0 24 24"><path d="M13.5 5v14"/><path d="M5 12h12.5m0 0-3.2-3.2M17.5 12l-3.2 3.2"/></symbol>
       <symbol id="ic-eye-off" viewBox="0 0 24 24"><path d="M3.5 12S6.8 5.8 12 5.8 20.5 12 20.5 12 17.2 18.2 12 18.2 3.5 12 3.5 12Z"/><circle cx="12" cy="12" r="2.6"/><path d="m5.5 5.5 13 13"/></symbol>
       <symbol id="ic-trash" viewBox="0 0 24 24"><path d="M4.8 7h14.4"/><path d="M9.6 7V4.6h4.8V7"/><path d="m6.6 7 .9 12.4h9L17.4 7"/></symbol>
+      <!-- 表格 v2 用到：数字字段 / 关闭 / 更多 / 图片 / 列表箭头。
+           HEAD 版本的雪碧图里没有 ic-plus，所以这批必须自己带全。 -->
+      <symbol id="ic-type-number" viewBox="0 0 24 24"><path d="M9.2 4.6 7.3 19.4"/><path d="M16.7 4.6l-1.9 14.8"/><path d="M4.9 9.7h14.3"/><path d="M4 14.5h14.3"/></symbol>
+      <symbol id="ic-close" viewBox="0 0 24 24"><path d="m6.4 6.4 11.2 11.2"/><path d="M17.6 6.4 6.4 17.6"/></symbol>
+      <symbol id="ic-dots" viewBox="0 0 24 24"><circle cx="5.4" cy="12" r="1.5" style="fill:currentColor;stroke:none"/><circle cx="12" cy="12" r="1.5" style="fill:currentColor;stroke:none"/><circle cx="18.6" cy="12" r="1.5" style="fill:currentColor;stroke:none"/></symbol>
+      <symbol id="ic-image" viewBox="0 0 24 24"><rect x="3.6" y="4.6" width="16.8" height="14.8" rx="2.4"/><circle cx="9" cy="9.8" r="1.5"/><path d="m4.6 17.4 4.3-4.1 3.3 3.1 3-2.7 4.2 3.9"/></symbol>
+      <symbol id="ic-chevron-right" viewBox="0 0 24 24"><path d="m9.6 5.6 6.4 6.4-6.4 6.4"/></symbol>
     </svg>
     <div data-tauri-drag-region class="custom-titlebar">
       <div class="titlebar-left" data-tauri-drag-region>
@@ -441,33 +448,9 @@
         </div>
 
         <div id="subview-table" class="subview" style="display: none;">
-          <header class="subview-page-head table-page-head">
-            <div>
-              <span class="subview-kicker">TABLE</span>
-              <h1>记录表格</h1>
-              <p>把工作记录当数据来管：字段有类型，视图随时切换。</p>
-            </div>
-            <div class="table-head-actions">
-              <button id="table-new-record-btn" type="button" class="primary-btn">＋ 新建记录</button>
-            </div>
-          </header>
-
-          <div class="table-toolbar">
-            <div class="table-view-tabs" role="tablist" aria-label="视图切换">
-              <button type="button" class="table-view-tab is-active" data-view-mode="table" role="tab" aria-selected="true">表格</button>
-              <button type="button" class="table-view-tab" data-view-mode="kanban" role="tab" aria-selected="false">看板</button>
-              <button type="button" class="table-view-tab" data-view-mode="calendar" role="tab" aria-selected="false">日历</button>
-            </div>
-            <div class="table-toolbar-actions">
-              <div class="table-tool-wrap">
-                <button id="table-fields-btn" type="button" class="table-tool-btn" aria-haspopup="true" aria-expanded="false">字段<svg class="wr-icon table-tool-caret" aria-hidden="true"><use href="#ic-caret"/></svg></button>
-              </div>
-              <button id="table-filter-btn" type="button" class="table-tool-btn"><svg class="wr-icon" aria-hidden="true"><use href="#ic-filter"/></svg>筛选</button>
-              <button id="table-sort-btn" type="button" class="table-tool-btn"><svg class="wr-icon" aria-hidden="true"><use href="#ic-sort"/></svg>排序</button>
-            </div>
-          </div>
-
-          <div id="table-view-root" class="table-view-root"></div>
+          <!-- 表格页整体由 src/sheetPage.js 渲染（库视图 / 表视图共用这个容器），
+               这里只留挂载点，避免静态表头和动态表头打架。 -->
+          <div id="sheet-app" class="sheet-app"></div>
         </div>
 
         <div id="subview-timeline" class="subview" style="display: none;">
@@ -637,7 +620,7 @@
             <section class="settings-card settings-card-wide" aria-labelledby="settings-about-title">
               <div class="settings-card-head">
                 <span class="settings-card-icon" aria-hidden="true"><svg class="wr-icon" aria-hidden="true"><use href="#ic-info"/></svg></span>
-                <div><h2 id="settings-about-title">关于与更新</h2><p>当前版本 v1.1.3，更新过程不会覆盖本地数据库。</p></div>
+                <div><h2 id="settings-about-title">关于与更新</h2><p>当前版本 v1.1.4，更新过程不会覆盖本地数据库。</p></div>
                 <button id="check-update-btn" class="primary-btn settings-head-action">检查更新</button>
               </div>
             </section>

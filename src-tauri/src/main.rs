@@ -187,6 +187,55 @@ fn init_and_migrate_db() -> Result<(), String> {
             .map_err(|e| format!("数据库升级到 v7 失败: {}", e))?;
     }
 
+    // v8：多表（sheet）。一个任务下可以有多张表，每张表有自己的字段与记录。
+    //
+    // 关键决策：行数据整条存 JSON（sheet_row.data），不按字段拆列。
+    // 加列 / 改类型 / 换选项都不需要迁移表结构，这是「加一列就卡」的根因解法。
+    // 代价是无法用 SQL 直接按字段筛选，但单人本地数据量下，前端过滤足够快。
+    if schema_version < 8 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS sheet (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                task_id INTEGER,
+                created_at TEXT,
+                updated_at TEXT,
+                sort INTEGER DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS sheet_field (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sheet_id INTEGER NOT NULL,
+                key TEXT NOT NULL,
+                label TEXT NOT NULL,
+                type TEXT NOT NULL DEFAULT 'text',
+                options TEXT,
+                width INTEGER DEFAULT 160,
+                sort INTEGER DEFAULT 0,
+                visible INTEGER DEFAULT 1,
+                UNIQUE(sheet_id, key)
+            );
+            CREATE TABLE IF NOT EXISTS sheet_row (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sheet_id INTEGER NOT NULL,
+                data TEXT NOT NULL DEFAULT '{}',
+                sort INTEGER DEFAULT 0,
+                created_at TEXT,
+                updated_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_sheet_row_sheet ON sheet_row(sheet_id, sort, id);
+            PRAGMA user_version = 8;"
+        ).map_err(|e| format!("数据库升级到 v8 失败: {}", e))?;
+    }
+
+    // v9：行高。NULL / 0 表示「自动」，由内容或用户手动设置决定。
+    // 单独一列而不是塞进 data JSON，是因为行高影响渲染顺序与虚拟滚动，
+    // 放在 SQL 层能直接参与排序和分页查询。
+    if schema_version < 9 {
+        add_column_if_missing(&conn, "sheet_row", "height", "height INTEGER")?;
+        conn.execute_batch("PRAGMA user_version = 9;")
+            .map_err(|e| format!("数据库升级到 v9 失败: {}", e))?;
+    }
+
     let json_exists = Path::new(&json_path).exists();
     // ✅ 修复了之前的借用检查器报错，一步到位！
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM tags", [], |row| row.get(0)).unwrap_or(0);
@@ -445,7 +494,214 @@ async fn log_frontend(level: String, message: String) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command] async fn load_data() -> String { 
+// 手写 base64 解码：只服务于「把粘贴的截图落盘」这一件事。
+// 为它引入 base64 crate 会让 Cargo 多解析一层依赖，风险大于收益。
+fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
+    let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut table = [255u8; 256];
+    for (i, ch) in alphabet.iter().enumerate() {
+        table[*ch as usize] = i as u8;
+    }
+
+    let mut out = Vec::with_capacity(input.len() / 4 * 3);
+    let mut buffer: u32 = 0;
+    let mut bits: u8 = 0;
+    for &byte in input.as_bytes() {
+        if byte == b'=' || byte == b'\n' || byte == b'\r' || byte == b' ' {
+            continue;
+        }
+        let value = table[byte as usize];
+        if value == 255 {
+            return Err(format!("非法的 base64 字符: {}", byte as char));
+        }
+        buffer = (buffer << 6) | value as u32;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buffer >> bits) as u8);
+        }
+    }
+    Ok(out)
+}
+
+/// 把前端粘贴/选择的图片写进数据目录，返回绝对路径。
+///
+/// 图片不进数据库：单元格只存路径，DB 体积不会随截图膨胀，
+/// 备份数据库时也不会把几十 MB 图片塞进 .db 里。
+#[tauri::command]
+async fn save_sheet_asset(data: String, ext: String) -> Result<String, String> {
+    const MAX_BYTES: usize = 12 * 1024 * 1024;
+
+    // 允许直接传 data:image/png;base64,xxxx 形式的整串
+    let payload = data.split_once(',').map(|(_, rest)| rest).unwrap_or(data.as_str());
+    let bytes = base64_decode(payload)?;
+    if bytes.is_empty() {
+        return Err("图片内容为空".to_string());
+    }
+    if bytes.len() > MAX_BYTES {
+        return Err(format!("图片过大（{} MB），上限 12 MB", bytes.len() / 1024 / 1024));
+    }
+
+    let safe_ext = match ext.to_ascii_lowercase().as_str() {
+        "png" => "png",
+        "jpg" | "jpeg" => "jpg",
+        "webp" => "webp",
+        "gif" => "gif",
+        _ => "png",
+    };
+
+    let db_path = PathBuf::from(get_db_file_path());
+    let base_dir = db_path
+        .parent()
+        .ok_or_else(|| "无法识别数据目录".to_string())?
+        .to_path_buf();
+    let dir = base_dir
+        .join("assets")
+        .join("sheets")
+        .join(Local::now().format("%Y%m").to_string());
+    fs::create_dir_all(&dir).map_err(|e| format!("创建图片目录失败: {}", e))?;
+
+    let file_name = format!(
+        "{}-{}.{}",
+        Local::now().format("%Y%m%d%H%M%S%3f"),
+        std::process::id(),
+        safe_ext
+    );
+    let path = dir.join(file_name);
+    fs::write(&path, &bytes).map_err(|e| format!("写入图片失败: {}", e))?;
+
+    Ok(path.to_string_lossy().to_string())
+}
+
+/// 用户从系统对话框选了图片：按路径把图片复制进资源目录（用于「自动识别」的图片分支）。
+/// 非图片格式一律拒绝——调用方会把它当链接文件处理。
+#[tauri::command]
+async fn save_sheet_asset_from_path(source: String) -> Result<serde_json::Value, String> {
+    const MAX_BYTES: u64 = 12 * 1024 * 1024;
+    let src = PathBuf::from(&source);
+    if !src.is_file() {
+        return Err(format!("文件不存在: {}", source));
+    }
+    let ext = src
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let safe_ext = match ext.as_str() {
+        "png" => "png",
+        "jpg" | "jpeg" => "jpg",
+        "webp" => "webp",
+        "gif" => "gif",
+        "bmp" => "bmp",
+        _ => return Err("不是图片格式".to_string()),
+    };
+    let meta = fs::metadata(&src).map_err(|e| e.to_string())?;
+    if meta.len() > MAX_BYTES {
+        return Err(format!("图片过大（{} MB），上限 12 MB", meta.len() / 1024 / 1024));
+    }
+
+    let db_path = PathBuf::from(get_db_file_path());
+    let base_dir = db_path
+        .parent()
+        .ok_or_else(|| "无法识别数据目录".to_string())?
+        .to_path_buf();
+    let dir = base_dir
+        .join("assets")
+        .join("sheets")
+        .join(Local::now().format("%Y%m").to_string());
+    fs::create_dir_all(&dir).map_err(|e| format!("创建图片目录失败: {}", e))?;
+
+    let file_name = format!(
+        "{}-{}.{}",
+        Local::now().format("%Y%m%d%H%M%S%3f"),
+        std::process::id(),
+        safe_ext
+    );
+    let dest = dir.join(file_name);
+    fs::copy(&src, &dest).map_err(|e| format!("复制图片失败: {}", e))?;
+
+    let name = src
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("图片")
+        .to_string();
+    Ok(json!({
+        "path": dest.to_string_lossy(),
+        "name": name,
+        "size": meta.len(),
+    }))
+}
+
+/// 在资源管理器里定位文件（选中该文件，而不是只打开目录）
+#[tauri::command]
+async fn reveal_path(path: String) -> Result<(), String> {
+    let target = PathBuf::from(&path);
+    if !target.exists() {
+        return Err(format!("文件不存在: {}", path));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command;
+        Command::new("explorer")
+            .arg(format!("/select,{}", path))
+            .spawn()
+            .map_err(|e| format!("定位文件失败: {}", e))?;
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::Command;
+        Command::new("open")
+            .args(["-R", &path])
+            .spawn()
+            .map_err(|e| format!("定位文件失败: {}", e))?;
+        return Ok(());
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        use std::process::Command;
+        let dir = target.parent().map(|p| p.to_path_buf()).unwrap_or(target.clone());
+        Command::new("xdg-open")
+            .arg(dir)
+            .spawn()
+            .map_err(|e| format!("定位文件失败: {}", e))?;
+        return Ok(());
+    }
+    #[allow(unreachable_code)]
+    Err("当前系统不支持定位文件".to_string())
+}
+
+/// 「打开方式」：弹出 Windows 的程序选择框（本质是 ShellExecute 的 openas）
+#[tauri::command]
+async fn open_path_with_dialog(path: String) -> Result<(), String> {
+    let target = PathBuf::from(&path);
+    if !target.exists() {
+        return Err(format!("文件不存在: {}", path));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command;
+        Command::new("rundll32")
+            .args(["shell32.dll,OpenAs_RunDLL", &path])
+            .spawn()
+            .map_err(|e| format!("打开方式失败: {}", e))?;
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::Command;
+        Command::new("open")
+            .args(["-a", "Finder", &path])
+            .spawn()
+            .map_err(|e| format!("打开方式失败: {}", e))?;
+        return Ok(());
+    }
+    #[allow(unreachable_code)]
+    Err("当前系统不支持「打开方式」".to_string())
+}
+
+#[tauri::command]
+async fn load_data() -> String { 
     fs::read_to_string(&get_data_file_path()).unwrap_or_else(|_| json!({ "todos": [], "logs": {}, "tags": [], "settings": {} }).to_string()) 
 }
 #[tauri::command] async fn save_data(data: String) -> Result<(), String> { 
@@ -472,6 +728,10 @@ fn main() {
         })        .invoke_handler(tauri::generate_handler![
             load_data, save_data, get_current_path, get_current_db_path, open_db_folder, backup_database, check_path, apply_new_path, db_query, db_execute,
             read_asset_text,
+            save_sheet_asset,
+            save_sheet_asset_from_path,
+            reveal_path,
+            open_path_with_dialog,
             notes_fs::notes_ensure_root,
             notes_fs::notes_root_path,
             notes_fs::notes_list,

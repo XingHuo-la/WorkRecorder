@@ -10689,4 +10689,2828 @@ textarea::-webkit-scrollbar-track {
   }
 }
 
+/* ==========================================================================
+   表格 v2（多表 / 任务归属 / 就地编辑）
+   设计稿：WorkRecorder 任务智能表格设计稿（Ardot 745558837638107）
+   本层只服务 #sheet-app 内部，前缀 .sh-，不覆盖既有 .wr-table / .ft-* 单元格样式。
+   ========================================================================== */
 
+.sheet-app {
+  height: 100% !important;
+  min-height: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+.sh-page {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 14px !important;
+  height: 100% !important;
+  min-height: 0 !important;
+  padding: 22px 26px 16px !important;
+  box-sizing: border-box !important;
+}
+
+/* --- 库视图头部 --- */
+.sh-page-head {
+  display: flex !important;
+  align-items: flex-start !important;
+  justify-content: space-between !important;
+  gap: 18px !important;
+  flex: none !important;
+}
+
+.sh-page-titles { display: flex !important; flex-direction: column !important; gap: 5px !important; }
+
+.sh-kicker {
+  font-size: 10.5px !important;
+  letter-spacing: .14em !important;
+  color: var(--text-muted) !important;
+  font-weight: 600 !important;
+}
+
+.sh-page-titles h1 {
+  margin: 0 !important;
+  font-size: 21px !important;
+  line-height: 1.25 !important;
+  color: var(--text-main) !important;
+}
+
+.sh-page-titles p {
+  margin: 0 !important;
+  font-size: 12.5px !important;
+  color: var(--text-muted) !important;
+}
+
+.sh-page-actions { display: flex !important; gap: 8px !important; flex: none !important; }
+
+/* --- 按钮 --- */
+.sh-btn {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 6px !important;
+  height: 30px !important;
+  padding: 0 13px !important;
+  border-radius: var(--ui-radius-sm, 7px) !important;
+  border: 1px solid var(--border-light) !important;
+  background: transparent !important;
+  color: var(--text-secondary) !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  font-family: inherit !important;
+  cursor: pointer !important;
+  transition: background .14s ease, border-color .14s ease, color .14s ease !important;
+  white-space: nowrap !important;
+}
+
+.sh-btn:hover { background: var(--overlay-light) !important; color: var(--text-main) !important; }
+
+.sh-btn.is-primary {
+  background: var(--color-primary) !important;
+  border-color: transparent !important;
+  color: var(--color-text-inverse, #fff) !important;
+  font-weight: 600 !important;
+}
+
+.sh-btn.is-primary:hover { background: var(--color-primary-hover) !important; }
+
+.sh-btn.is-danger-ghost { color: var(--color-danger) !important; border-color: transparent !important; padding-left: 6px !important; }
+.sh-btn.is-danger-ghost:hover { background: color-mix(in srgb, var(--color-danger) 12%, transparent) !important; }
+
+.sh-btn[disabled] { opacity: .45 !important; cursor: default !important; }
+
+.sh-icon-btn {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 26px !important;
+  height: 26px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 6px !important;
+  background: transparent !important;
+  color: var(--text-muted) !important;
+  cursor: pointer !important;
+}
+
+.sh-icon-btn:hover { background: var(--overlay-light) !important; color: var(--text-main) !important; }
+.sh-icon-btn .wr-icon { width: 15px !important; height: 15px !important; }
+
+.sh-foot-gap { flex: 1 1 auto !important; }
+
+/* --- 库：分组与卡片 --- */
+.sh-groups {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 18px !important;
+  overflow: auto !important;
+  padding-bottom: 8px !important;
+  min-height: 0 !important;
+}
+
+.sh-group { display: flex !important; flex-direction: column !important; gap: 8px !important; }
+
+.sh-group-head { display: flex !important; align-items: center !important; gap: 8px !important; }
+
+.sh-group-name { font-size: 12px !important; font-weight: 600 !important; color: var(--text-secondary) !important; }
+
+.sh-group-count {
+  min-width: 17px !important;
+  height: 17px !important;
+  padding: 0 5px !important;
+  border-radius: 9px !important;
+  background: var(--overlay-light) !important;
+  color: var(--text-muted) !important;
+  font-size: 10.5px !important;
+  line-height: 17px !important;
+  text-align: center !important;
+}
+
+.sh-group-list { display: flex !important; flex-direction: column !important; gap: 8px !important; }
+
+.sh-sheet-card {
+  display: flex !important;
+  align-items: center !important;
+  gap: 13px !important;
+  width: 100% !important;
+  padding: 13px 15px !important;
+  border-radius: var(--ui-radius-md, 10px) !important;
+  border: 1px solid var(--border-light) !important;
+  background: var(--bg-card) !important;
+  text-align: left !important;
+  cursor: pointer !important;
+  font-family: inherit !important;
+  transition: border-color .15s ease, transform .15s ease, box-shadow .15s ease !important;
+}
+
+.sh-sheet-card:hover {
+  border-color: color-mix(in srgb, var(--color-primary) 42%, var(--border-light)) !important;
+  box-shadow: var(--shadow-sm, 0 1px 2px rgba(0,0,0,.06)) !important;
+}
+
+.sh-card-icon {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 34px !important;
+  height: 34px !important;
+  border-radius: 9px !important;
+  background: color-mix(in srgb, var(--color-primary) 14%, transparent) !important;
+  color: var(--color-primary) !important;
+  flex: none !important;
+}
+
+.sh-card-icon .wr-icon { width: 16px !important; height: 16px !important; }
+
+.sh-card-body { display: flex !important; flex-direction: column !important; gap: 3px !important; min-width: 0 !important; flex: 1 1 auto !important; }
+
+.sh-card-name {
+  font-size: 14px !important;
+  font-weight: 600 !important;
+  color: var(--text-main) !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+.sh-card-meta { font-size: 11.5px !important; color: var(--text-muted) !important; }
+
+.sh-card-go { width: 15px !important; height: 15px !important; color: var(--text-muted) !important; flex: none !important; }
+
+/* --- 空态 --- */
+.sh-empty {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 11px !important;
+  padding: 24px !important;
+  /* 空态不要套虚线大框：一整片虚线框在深色底上像「没加载出来」。
+     改成内容居中 + 无边框，靠模板卡自己撑起结构。 */
+  border: 0 !important;
+  text-align: center !important;
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+}
+
+.sh-empty-title { font-size: 15px !important; font-weight: 600 !important; color: var(--text-main) !important; }
+.sh-empty-desc { font-size: 12.5px !important; color: var(--text-muted) !important; max-width: 460px !important; line-height: 1.65 !important; }
+.sh-empty-note { font-size: 11px !important; color: var(--text-muted) !important; opacity: .8 !important; }
+
+.sh-template-grid {
+  display: grid !important;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)) !important;
+  gap: 10px !important;
+  width: 100% !important;
+  max-width: 760px !important;
+  margin: 6px 0 4px !important;
+}
+
+.sh-template-card,
+.sh-template {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 5px !important;
+  padding: 12px !important;
+  border-radius: var(--ui-radius-md, 10px) !important;
+  border: 1px solid var(--border-light) !important;
+  background: var(--bg-card) !important;
+  text-align: left !important;
+  cursor: pointer !important;
+  font-family: inherit !important;
+  transition: border-color .15s ease, background .15s ease !important;
+}
+
+.sh-template-card:hover,
+.sh-template:hover { border-color: color-mix(in srgb, var(--color-primary) 50%, var(--border-light)) !important; }
+
+.sh-template.is-active {
+  border-color: var(--color-primary) !important;
+  background: color-mix(in srgb, var(--color-primary) 9%, var(--bg-card)) !important;
+}
+
+.sh-template-name { font-size: 12.5px !important; font-weight: 600 !important; color: var(--text-main) !important; }
+.sh-template-desc { font-size: 11px !important; color: var(--text-muted) !important; line-height: 1.55 !important; }
+
+/* --- 表视图：面包屑 / 标题 --- */
+.sh-crumbs {
+  display: flex !important;
+  align-items: center !important;
+  gap: 7px !important;
+  flex: none !important;
+  font-size: 11.5px !important;
+  color: var(--text-muted) !important;
+}
+
+.sh-crumb {
+  border: 0 !important;
+  background: transparent !important;
+  padding: 0 !important;
+  color: var(--text-muted) !important;
+  font-size: 11.5px !important;
+  font-family: inherit !important;
+  cursor: pointer !important;
+}
+
+.sh-crumb:hover { color: var(--color-primary) !important; }
+.sh-crumb.is-current { color: var(--text-secondary) !important; cursor: default !important; }
+.sh-crumb.is-muted { color: var(--text-muted) !important; cursor: default !important; }
+.sh-crumb-sep { opacity: .5 !important; }
+.sh-crumb-gap { flex: 1 1 auto !important; }
+
+.sh-sheet-head {
+  display: flex !important;
+  align-items: baseline !important;
+  gap: 10px !important;
+  flex: none !important;
+}
+
+.sh-sheet-title {
+  margin: 0 !important;
+  font-size: 20px !important;
+  line-height: 1.25 !important;
+  color: var(--text-main) !important;
+  cursor: text !important;
+  border-radius: 6px !important;
+  padding: 1px 4px !important;
+  margin-left: -4px !important;
+}
+
+.sh-sheet-title:hover { background: var(--overlay-light) !important; }
+
+.sh-sheet-meta { font-size: 11.5px !important; color: var(--text-muted) !important; }
+
+.sh-save {
+  margin-left: auto !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 5px !important;
+  font-size: 11px !important;
+  color: var(--text-muted) !important;
+}
+
+.sh-save::before {
+  content: '' !important;
+  width: 5px !important;
+  height: 5px !important;
+  border-radius: 50% !important;
+  background: var(--color-success) !important;
+}
+
+.sh-save.is-saving::before { background: var(--color-warning) !important; }
+
+/* --- 工具条 --- */
+.sh-toolbar {
+  display: flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  flex: none !important;
+}
+
+.sh-views {
+  display: inline-flex !important;
+  gap: 2px !important;
+  padding: 3px !important;
+  border-radius: 8px !important;
+  background: var(--overlay-light) !important;
+}
+
+.sh-view {
+  height: 24px !important;
+  padding: 0 11px !important;
+  border: 0 !important;
+  border-radius: 6px !important;
+  background: transparent !important;
+  color: var(--text-muted) !important;
+  font-size: 11.5px !important;
+  font-family: inherit !important;
+  cursor: pointer !important;
+}
+
+.sh-view.is-active {
+  background: var(--bg-card) !important;
+  color: var(--text-main) !important;
+  font-weight: 600 !important;
+  box-shadow: var(--shadow-sm, 0 1px 2px rgba(0,0,0,.08)) !important;
+}
+
+.sh-tool-sep { width: 1px !important; height: 15px !important; background: var(--border-light) !important; margin: 0 2px !important; }
+.sh-tool-gap { flex: 1 1 auto !important; }
+
+.sh-tool {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 5px !important;
+  height: 28px !important;
+  padding: 0 8px !important;
+  border: 0 !important;
+  border-radius: 7px !important;
+  background: transparent !important;
+  color: var(--text-muted) !important;
+  font-size: 11.5px !important;
+  font-family: inherit !important;
+  cursor: pointer !important;
+}
+
+.sh-tool:hover { background: var(--overlay-light) !important; color: var(--text-main) !important; }
+.sh-tool.is-on { color: var(--color-primary) !important; background: color-mix(in srgb, var(--color-primary) 10%, transparent) !important; }
+.sh-tool .wr-icon { width: 13px !important; height: 13px !important; }
+
+.sh-search {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  height: 28px !important;
+  padding: 0 9px !important;
+  border-radius: 7px !important;
+  border: 1px solid var(--border-light) !important;
+  background: var(--bg-card) !important;
+  color: var(--text-muted) !important;
+}
+
+.sh-search .wr-icon { width: 13px !important; height: 13px !important; flex: none !important; }
+
+.sh-search:focus-within {
+  border-color: var(--color-primary) !important;
+  box-shadow: 0 0 0 3px var(--ui-ring) !important;
+}
+
+.sh-search input::placeholder { color: var(--text-muted) !important; opacity: .8 !important; }
+
+.sh-search input {
+  width: 118px !important;
+  border: 0 !important;
+  background: transparent !important;
+  outline: none !important;
+  color: var(--text-main) !important;
+  font-size: 11.5px !important;
+  font-family: inherit !important;
+  padding: 0 !important;
+}
+
+.sh-chips { display: flex !important; flex-wrap: wrap !important; gap: 6px !important; flex: none !important; }
+
+.sh-chip {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 5px !important;
+  height: 22px !important;
+  padding: 0 4px 0 9px !important;
+  border-radius: 11px !important;
+  background: color-mix(in srgb, var(--color-primary) 10%, transparent) !important;
+  color: color-mix(in srgb, var(--color-primary) 78%, var(--text-main)) !important;
+  font-size: 11px !important;
+}
+
+.sh-chip.is-sort { background: var(--overlay-light) !important; color: var(--text-secondary) !important; }
+
+.sh-chip-x {
+  width: 16px !important;
+  height: 16px !important;
+  border: 0 !important;
+  border-radius: 50% !important;
+  background: transparent !important;
+  color: inherit !important;
+  font-size: 12px !important;
+  line-height: 1 !important;
+  cursor: pointer !important;
+  opacity: .7 !important;
+}
+
+.sh-chip-x:hover { opacity: 1 !important; background: color-mix(in srgb, currentColor 18%, transparent) !important; }
+
+/* --- 表格主体 --- */
+.sh-table-wrap {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  display: flex !important;
+  border: 1px solid var(--border-light) !important;
+  border-radius: var(--ui-radius-lg, 12px) !important;
+  background: var(--bg-card) !important;
+  overflow: hidden !important;
+}
+
+.sh-table-scroll {
+  flex: 1 1 auto !important;
+  overflow: auto !important;
+  overscroll-behavior: contain !important;
+  min-width: 0 !important;
+}
+
+.sh-table {
+  border-collapse: separate !important;
+  border-spacing: 0 !important;
+  table-layout: fixed !important;
+  width: 100% !important;
+  margin: 0 !important;
+}
+
+.sh-table thead th {
+  position: sticky !important;
+  top: 0 !important;
+  z-index: 5 !important;
+  height: 36px !important;
+  padding: 0 !important;
+  text-align: left !important;
+  font-weight: 500 !important;
+  border-bottom: 1px solid var(--border-medium) !important;
+  /* 表头比表体深一档，滚动时下面再垫一层内阴影，边界一眼可见 */
+  background: linear-gradient(var(--bg-body), var(--bg-body)), var(--bg-card) !important;
+  box-shadow: inset 0 -8px 10px -12px rgba(0, 0, 0, .55) !important;
+}
+
+.sh-th-btn {
+  display: flex !important;
+  align-items: center !important;
+  gap: 5px !important;
+  width: 100% !important;
+  height: 35px !important;
+  padding: 0 11px !important;
+  border: 0 !important;
+  background: transparent !important;
+  color: var(--text-muted) !important;
+  font-size: 11px !important;
+  letter-spacing: .01em !important;
+  font-weight: 600 !important;
+  font-family: inherit !important;
+  cursor: pointer !important;
+  text-align: left !important;
+}
+
+.sh-th-btn:hover { background: var(--overlay-light) !important; color: var(--text-secondary) !important; }
+
+.sh-th.is-open .sh-th-btn {
+  color: var(--color-primary) !important;
+  background: color-mix(in srgb, var(--color-primary) 8%, transparent) !important;
+}
+
+.sh-th-label { overflow: hidden !important; text-overflow: ellipsis !important; white-space: nowrap !important; }
+.sh-th-caret { width: 11px !important; height: 11px !important; opacity: 0 !important; flex: none !important; margin-left: auto !important; }
+.sh-th-btn:hover .sh-th-caret,
+.sh-th.is-open .sh-th-caret { opacity: .7 !important; }
+
+.sh-th-index span { padding-left: 10px !important; font-size: 10.5px !important; color: var(--text-muted) !important; }
+
+.sh-th-add-btn {
+  width: 100% !important;
+  height: 35px !important;
+  border: 0 !important;
+  background: transparent !important;
+  color: var(--text-muted) !important;
+  font-size: 13px !important;
+  font-family: inherit !important;
+  cursor: pointer !important;
+}
+
+.sh-th-add-btn:hover { color: var(--color-primary) !important; background: var(--overlay-light) !important; }
+
+.sh-td {
+  height: 40px !important;
+  padding: 0 !important;
+  border-bottom: 1px solid var(--border-light) !important;
+  vertical-align: middle !important;
+}
+
+.sh-row:hover .sh-td { background: color-mix(in srgb, var(--color-primary) 3.5%, transparent) !important; }
+.sh-row.is-active .sh-td { background: color-mix(in srgb, var(--color-primary) 7%, transparent) !important; }
+
+.sh-td-index { position: relative !important; }
+
+.sh-rownum {
+  width: 100% !important;
+  height: 40px !important;
+  border: 0 !important;
+  background: transparent !important;
+  color: var(--text-muted) !important;
+  font-size: 11px !important;
+  font-variant-numeric: tabular-nums !important;
+  font-family: inherit !important;
+  cursor: pointer !important;
+}
+
+.sh-rowmore {
+  position: absolute !important;
+  top: 50% !important;
+  left: 50% !important;
+  transform: translate(-50%, -50%) !important;
+  width: 24px !important;
+  height: 20px !important;
+  border: 0 !important;
+  border-radius: 5px !important;
+  background: var(--bg-card) !important;
+  color: var(--text-muted) !important;
+  font-size: 13px !important;
+  line-height: 1 !important;
+  cursor: pointer !important;
+  opacity: 0 !important;
+  transition: opacity .12s ease !important;
+}
+
+.sh-row:hover .sh-rownum { opacity: 0 !important; }
+.sh-row:hover .sh-td-index { box-shadow: inset 2px 0 0 var(--color-primary) !important; }
+.sh-row:hover .sh-rowmore { opacity: 1 !important; }
+.sh-rowmore:hover { color: var(--color-primary) !important; }
+
+.sh-cell {
+  display: flex !important;
+  align-items: center !important;
+  height: 40px !important;
+  padding: 0 12px !important;
+  box-sizing: border-box !important;
+  overflow: hidden !important;
+  cursor: pointer !important;
+  border-radius: 0 !important;
+  outline: none !important;
+}
+
+.sh-cell > * { min-width: 0 !important; }
+
+.sh-cell:focus-visible {
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--color-primary) 60%, transparent) !important;
+  background: color-mix(in srgb, var(--color-primary) 5%, transparent) !important;
+}
+
+.sh-cell.ft-cell-editing {
+  box-shadow: inset 0 0 0 2px var(--color-primary) !important;
+  background: color-mix(in srgb, var(--color-primary) 8%, transparent) !important;
+}
+
+.ft-number {
+  font-size: 12.5px !important;
+  color: var(--text-main) !important;
+  font-variant-numeric: tabular-nums !important;
+  margin-left: auto !important;
+}
+
+.sh-cell .ft-att-thumb { width: 42px !important; height: 26px !important; }
+
+/* 表格底部「新建记录」 */
+.sh-table-foot { padding: 6px 0 10px !important; }
+
+.sh-addrow {
+  display: flex !important;
+  align-items: center !important;
+  width: 240px !important;
+  height: 30px !important;
+  padding: 0 12px !important;
+  border: 0 !important;
+  background: transparent !important;
+  color: var(--text-muted) !important;
+  font-size: 11.5px !important;
+  font-family: inherit !important;
+  cursor: pointer !important;
+  text-align: left !important;
+}
+
+.sh-addrow:hover { color: var(--color-primary) !important; }
+
+.sh-empty-row td { border-bottom: 0 !important; }
+.sh-table-empty { display: flex !important; flex-direction: column !important; gap: 6px !important; padding: 40px 18px !important; align-items: flex-start !important; }
+
+.sh-status {
+  flex: none !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  padding-top: 2px !important;
+  font-size: 11px !important;
+  font-variant-numeric: tabular-nums !important;
+  color: var(--text-muted) !important;
+}
+
+.sh-status::after {
+  content: '本地数据库 · 不联网' !important;
+  margin-left: auto !important;
+  opacity: .7 !important;
+}
+
+/* --- 浮层 --- */
+.sh-pop {
+  position: fixed !important;
+  z-index: 2600 !important;
+  min-width: 190px !important;
+  padding: 6px !important;
+  border-radius: 10px !important;
+  border: 1px solid var(--border-medium) !important;
+  /* 主题里的 --bg-card 是半透明的（给卡片叠渐变用的），
+     浮层必须不透明，否则会透出下面的表格内容。
+     这里用「卡片色叠不透明底色」的老办法把它压实。 */
+  background: linear-gradient(var(--bg-elevated, #1e293b), var(--bg-elevated, #1e293b)), var(--bg-body) !important;
+  box-shadow: 0 18px 44px -12px rgba(0, 0, 0, .55) !important;
+  animation: sh-pop-in .12s ease !important;
+}
+
+@keyframes sh-pop-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
+
+/* 固定位置元素里的 width:auto 会退化成 min-width，菜单项又被撑成 100%，
+   结果文字被压到 190px 里折行 —— 所以这几类浮层必须给明确宽度。 */
+.sh-colmenu { width: 224px !important; }
+.sh-fieldspanel { width: 248px !important; }
+.sh-colmenu-head { display: flex !important; align-items: baseline !important; gap: 6px !important; padding: 5px 9px 6px !important; }
+.sh-colmenu-name { font-size: 12px !important; font-weight: 600 !important; color: var(--text-main) !important; }
+.sh-colmenu-type { font-size: 10.5px !important; color: var(--text-muted) !important; }
+.sh-colmenu-sep { height: 1px !important; margin: 5px 0 !important; background: var(--border-light) !important; }
+
+.sh-menu-item {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  width: 100% !important;
+  height: 29px !important;
+  padding: 0 9px !important;
+  border: 0 !important;
+  border-radius: 6px !important;
+  background: transparent !important;
+  color: var(--text-secondary) !important;
+  font-size: 11.5px !important;
+  font-family: inherit !important;
+  text-align: left !important;
+  cursor: pointer !important;
+  white-space: nowrap !important;
+}
+
+.sh-menu-item:hover { background: var(--overlay-light) !important; color: var(--text-main) !important; }
+.sh-menu-item.is-danger { color: var(--color-danger) !important; }
+.sh-menu-item.is-danger:hover { background: color-mix(in srgb, var(--color-danger) 12%, transparent) !important; }
+.sh-menu-item .wr-icon { width: 14px !important; height: 14px !important; flex: none !important; opacity: .8 !important; }
+
+.sh-rowmenu { min-width: 168px !important; }
+
+.sh-panel-title { padding: 4px 8px 6px !important; font-size: 11px !important; font-weight: 600 !important; color: var(--text-muted) !important; }
+
+.sh-field-list { display: flex !important; flex-direction: column !important; gap: 1px !important; max-height: 320px !important; overflow: auto !important; }
+
+.sh-field-row {
+  display: flex !important;
+  align-items: center !important;
+  gap: 7px !important;
+  height: 28px !important;
+  padding: 0 8px !important;
+  border-radius: 6px !important;
+  cursor: pointer !important;
+  font-size: 11.5px !important;
+  color: var(--text-secondary) !important;
+}
+
+.sh-field-row:hover { background: var(--overlay-light) !important; }
+.sh-field-name { flex: 1 1 auto !important; overflow: hidden !important; text-overflow: ellipsis !important; white-space: nowrap !important; }
+.sh-field-type { font-size: 10.5px !important; color: var(--text-muted) !important; }
+
+.sh-panel-foot { display: flex !important; align-items: center !important; gap: 8px !important; padding: 8px 6px 2px !important; border-top: 1px solid var(--border-light) !important; margin-top: 6px !important; }
+
+/* 筛选 / 排序面板 */
+.sh-filterpanel { width: 372px !important; }
+.sh-filter-rows { display: flex !important; flex-direction: column !important; gap: 6px !important; }
+.sh-filter-row { display: flex !important; align-items: center !important; gap: 5px !important; }
+.sh-filter-placeholder { flex: 1 1 auto !important; }
+.sh-sortpanel { width: 300px !important; }
+.sh-sort-row { display: flex !important; gap: 6px !important; }
+
+/* --- 表单控件 --- */
+.sh-label { display: block !important; font-size: 11px !important; color: var(--text-muted) !important; margin-bottom: 6px !important; }
+.sh-label-gap { margin-top: 16px !important; }
+.sh-label-hint { font-weight: 400 !important; opacity: .75 !important; }
+
+.sh-input,
+.sh-select {
+  width: 100% !important;
+  height: 34px !important;
+  padding: 0 10px !important;
+  box-sizing: border-box !important;
+  border-radius: 8px !important;
+  border: 1px solid var(--border-medium) !important;
+  background: var(--bg-input, var(--bg-body)) !important;
+  color: var(--text-main) !important;
+  font-size: 12.5px !important;
+  font-family: inherit !important;
+  outline: none !important;
+}
+
+.sh-input:focus,
+.sh-select:focus { border-color: var(--color-primary) !important; box-shadow: 0 0 0 3px var(--ui-ring) !important; }
+
+.sh-input-flat { height: 30px !important; font-size: 12px !important; }
+.sh-select { cursor: pointer !important; }
+.sh-select-sm { width: 84px !important; flex: none !important; }
+
+.sh-linkbtn { font-size: 11.5px !important; color: var(--color-primary) !important; cursor: pointer !important; }
+
+/* 类型网格 */
+.sh-type-grid { display: grid !important; grid-template-columns: 1fr 1fr !important; gap: 7px !important; }
+
+.sh-type {
+  display: flex !important;
+  align-items: center !important;
+  gap: 7px !important;
+  height: 40px !important;
+  padding: 0 10px !important;
+  border-radius: 8px !important;
+  border: 1px solid var(--border-light) !important;
+  background: transparent !important;
+  color: var(--text-secondary) !important;
+  font-size: 11.5px !important;
+  font-family: inherit !important;
+  cursor: pointer !important;
+  text-align: left !important;
+}
+
+.sh-type:hover { border-color: var(--border-strong) !important; color: var(--text-main) !important; }
+.sh-type.is-active {
+  border-color: var(--color-primary) !important;
+  background: color-mix(in srgb, var(--color-primary) 9%, transparent) !important;
+  color: var(--text-main) !important;
+  font-weight: 600 !important;
+}
+
+.sh-type .wr-icon { width: 14px !important; height: 14px !important; flex: none !important; }
+
+/* 选项编辑 */
+.sh-options { display: flex !important; flex-direction: column !important; gap: 6px !important; }
+.sh-option-row { display: flex !important; align-items: center !important; gap: 7px !important; }
+
+.sh-color {
+  width: 26px !important;
+  height: 26px !important;
+  padding: 0 !important;
+  border: 1px solid var(--border-medium) !important;
+  border-radius: 7px !important;
+  background: transparent !important;
+  cursor: pointer !important;
+  flex: none !important;
+}
+
+.sh-color::-webkit-color-swatch-wrapper { padding: 2px !important; }
+.sh-color::-webkit-color-swatch { border: 0 !important; border-radius: 5px !important; }
+
+.sh-add-option {
+  margin-top: 7px !important;
+  height: 28px !important;
+  padding: 0 4px !important;
+  border: 0 !important;
+  background: transparent !important;
+  color: var(--color-primary) !important;
+  font-size: 11.5px !important;
+  font-family: inherit !important;
+  cursor: pointer !important;
+  text-align: left !important;
+}
+
+.sh-preview {
+  display: flex !important;
+  align-items: center !important;
+  height: 42px !important;
+  padding: 0 10px !important;
+  border-radius: 8px !important;
+  border: 1px solid var(--border-light) !important;
+  background: var(--overlay-light) !important;
+}
+
+/* --- 抽屉 --- */
+.sh-scrim {
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: 2700 !important;
+  background: rgba(4, 8, 16, .45) !important;
+  /* 深色主题下纯黑遮罩几乎看不出来，用亮度压低才有「被压住」的层次 */
+  backdrop-filter: brightness(.62) saturate(.92) !important;
+  opacity: 0 !important;
+  transition: opacity .18s ease !important;
+}
+
+.sh-scrim.is-on { opacity: 1 !important; }
+
+.sh-drawer {
+  position: fixed !important;
+  top: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  z-index: 2710 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  background: linear-gradient(var(--bg-card), var(--bg-card)), var(--bg-body) !important;
+  border-left: 1px solid var(--border-medium) !important;
+  box-shadow: -18px 0 48px rgba(6, 10, 18, .28) !important;
+  transform: translateX(24px) !important;
+  opacity: 0 !important;
+  transition: transform .2s cubic-bezier(.32,.72,0,1), opacity .2s ease !important;
+}
+
+.sh-drawer.is-open { transform: none !important; opacity: 1 !important; }
+
+.sh-drawer-head {
+  display: flex !important;
+  align-items: flex-start !important;
+  gap: 12px !important;
+  padding: 18px 20px 14px !important;
+  border-bottom: 1px solid var(--border-light) !important;
+  flex: none !important;
+}
+
+.sh-drawer-titles { display: flex !important; flex-direction: column !important; gap: 4px !important; min-width: 0 !important; flex: 1 1 auto !important; }
+.sh-drawer-kicker { font-size: 10.5px !important; color: var(--text-muted) !important; }
+.sh-drawer-title {
+  margin: 0 !important;
+  font-size: 16px !important;
+  line-height: 1.35 !important;
+  color: var(--text-main) !important;
+  overflow-wrap: anywhere !important;
+}
+
+.sh-drawer-body { flex: 1 1 auto !important; overflow: auto !important; padding: 16px 20px 20px !important; min-height: 0 !important; }
+
+.sh-drawer-foot {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  padding: 12px 20px !important;
+  border-top: 1px solid var(--border-light) !important;
+  flex: none !important;
+}
+
+/* 详情字段 */
+.sh-detail { display: flex !important; flex-direction: column !important; gap: 2px !important; }
+
+.sh-detail-field { display: flex !important; align-items: flex-start !important; gap: 12px !important; padding: 4px 0 !important; }
+
+.sh-detail-label {
+  width: 84px !important;
+  flex: none !important;
+  padding-top: 8px !important;
+  font-size: 11px !important;
+  color: var(--text-muted) !important;
+}
+
+.sh-detail-cell {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  border-radius: 7px !important;
+  padding: 0 8px !important;
+  border: 1px solid transparent !important;
+  min-height: 34px !important;
+  height: auto !important;
+}
+
+.sh-detail-cell:hover { background: var(--overlay-light) !important; }
+/* 抽屉里的数字不要贴右边缘，跟其他值一样左对齐 */
+.sh-detail-cell .ft-number { margin-left: 0 !important; }
+
+/* 图片面板 */
+.sh-imgpanel { width: 292px !important; }
+.sh-img-zone {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 7px !important;
+  height: 88px !important;
+  border-radius: 8px !important;
+  border: 1px dashed var(--border-strong) !important;
+  color: var(--text-muted) !important;
+  cursor: pointer !important;
+  transition: border-color .15s ease, background .15s ease !important;
+}
+
+.sh-img-zone.is-hot,
+.sh-img-zone:hover { border-color: var(--color-primary) !important; background: color-mix(in srgb, var(--color-primary) 6%, transparent) !important; }
+.sh-img-zone .wr-icon { width: 20px !important; height: 20px !important; }
+.sh-img-zone-text { font-size: 11px !important; }
+
+.sh-img-list { display: flex !important; flex-wrap: wrap !important; gap: 6px !important; padding: 8px 2px !important; }
+.sh-img-item { position: relative !important; }
+.sh-img-item img { width: 64px !important; height: 42px !important; object-fit: cover !important; border-radius: 6px !important; border: 1px solid var(--border-light) !important; display: block !important; }
+
+.sh-img-del {
+  position: absolute !important;
+  top: -5px !important;
+  right: -5px !important;
+  width: 16px !important;
+  height: 16px !important;
+  border: 0 !important;
+  border-radius: 50% !important;
+  background: var(--color-danger) !important;
+  color: #fff !important;
+  font-size: 11px !important;
+  line-height: 1 !important;
+  cursor: pointer !important;
+  opacity: 0 !important;
+}
+
+.sh-img-item:hover .sh-img-del { opacity: 1 !important; }
+.sh-img-empty { font-size: 11px !important; color: var(--text-muted) !important; padding: 2px 4px !important; }
+.sh-imgpanel.is-busy { opacity: .7 !important; pointer-events: none !important; }
+
+/* 模态里的表格表单 */
+.sh-modal { display: flex !important; flex-direction: column !important; }
+.sh-template-list { display: grid !important; grid-template-columns: 1fr 1fr !important; gap: 8px !important; }
+
+/* Toast */
+.sh-toast {
+  position: fixed !important;
+  left: 50% !important;
+  bottom: 34px !important;
+  transform: translate(-50%, 10px) !important;
+  z-index: 3000 !important;
+  padding: 8px 16px !important;
+  border-radius: 999px !important;
+  background: var(--text-main) !important;
+  color: var(--bg-card) !important;
+  font-size: 12px !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+  transition: opacity .18s ease, transform .18s ease !important;
+}
+
+.sh-toast.is-on { opacity: .96 !important; transform: translate(-50%, 0) !important; }
+.sh-toast.tone-danger { background: var(--color-danger) !important; color: #fff !important; }
+.sh-toast.tone-info { background: var(--color-primary) !important; color: var(--color-text-inverse, #fff) !important; }
+
+/* 窄窗收口：工具条换行、搜索框缩短 */
+@media (max-width: 1080px) {
+  .sh-page { padding: 18px 18px 12px !important; }
+  .sh-search input { width: 84px !important; }
+  .sh-toolbar { flex-wrap: wrap !important; }
+}
+
+/* --- 表格 v2 · 视觉收尾（卡片摘要 / 分组线 / 药丸轻重） --- */
+.sh-card-fields {
+  font-size: 11px !important;
+  line-height: 1.5 !important;
+  color: color-mix(in srgb, var(--color-primary) 38%, var(--text-muted)) !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+
+.sh-group-head::after {
+  content: '' !important;
+  flex: 1 1 auto !important;
+  height: 1px !important;
+  background: var(--border-light) !important;
+  opacity: .7 !important;
+}
+
+.sh-table-wrap {
+  box-shadow: var(--shadow-sm, 0 1px 2px rgba(0, 0, 0, .06)) !important;
+}
+
+.sh-table .ft-pill {
+  font-size: 11.5px !important;
+  line-height: 17px !important;
+  padding: 1px 8px !important;
+  font-weight: 500 !important;
+}
+
+.sh-table .ft-status { font-size: 12px !important; }
+
+.sh-empty-title { font-size: 16px !important; }
+
+.sh-sheet-card:active { transform: translateY(1px) !important; }
+
+/* 数字列：表头也跟着右对齐，读数时眼睛不用来回跳 */
+.sh-th-num .sh-th-label {
+  text-align: right !important;
+  flex: 1 1 auto !important;
+}
+
+.sh-th-num .sh-th-btn { justify-content: flex-end !important; }
+
+.sh-page-titles h1 { font-size: 22px !important; }
+.sh-page-titles p { color: var(--text-muted) !important; opacity: .9 !important; }
+
+.sh-empty .sh-template-grid { margin: 4px 0 6px !important; }
+.sh-empty .sh-empty-title { font-size: 18px !important; }
+
+/* 新建表格弹窗比通用模态宽一点：两列模板卡 + 表单挤在 500px 里会换行。
+   :has 不支持时自然退回全局 500px，不影响功能。 */
+.custom-modal:has(.sh-modal) {
+  width: 620px !important;
+  max-width: 92vw !important;
+}
+
+/* =========================================================================
+   表格页撑满（只针对表格这一个 subview，不动其他页面）
+   两个既有规则会把表格挤成一小块：
+     1) .main-content > .subview { max-width: 1180px !important } —— 宽屏下右侧永远空一大条
+     2) #workspace-view .main-content > .subview:not(#subview-dashboard) { padding: 28px 30px 76px }
+        —— subview 自带内边距，和 .sh-page 的 padding 叠成两层
+   表格自己管内边距，所以这里把 subview 的 padding 清零、宽度解禁。
+   ========================================================================= */
+/* 特异性要算准：既有规则是
+   `#workspace-view .main-content > .subview:not(#subview-dashboard)`，
+   其中 :not() 里的 id 也算一个 id —— 合计 (2 id, 2 class)。
+   `#workspace-view .main-content > #subview-table` 只有 (2 id, 1 class)，压不住。
+   所以这里把 .subview 也写进后代链，凑成同权且排在后面，才能覆盖 padding。 */
+#workspace-view .main-content > .subview#subview-table {
+  width: 100% !important;
+  height: 100% !important;
+  max-width: none !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+#subview-table .sheet-app {
+  width: 100% !important;
+  height: 100% !important;
+  min-height: 0 !important;
+}
+
+/* 表格里的字比之前大半档，100%/125% 缩放下也看得清 */
+.sh-table .ft-text { font-size: 13.5px !important; }
+.sh-table .ft-date { font-size: 13px !important; }
+.sh-table .ft-number { font-size: 13px !important; }
+.sh-table .ft-pill { font-size: 12px !important; line-height: 18px !important; }
+.sh-table .ft-status { font-size: 12.5px !important; }
+.sh-td { height: 42px !important; }
+.sh-cell { height: 42px !important; }
+.sh-rownum { height: 42px !important; }
+
+/* 图片单元格：缩略图放大到能看出内容，指针提示可点开 */
+.sh-cell .ft-att-thumb {
+  width: 58px !important;
+  height: 36px !important;
+  border-radius: 6px !important;
+  cursor: zoom-in !important;
+  transition: transform .12s ease, box-shadow .12s ease !important;
+}
+
+.sh-cell .ft-att-thumb:hover {
+  transform: scale(1.06) !important;
+  box-shadow: 0 4px 12px -4px rgba(0, 0, 0, .5) !important;
+}
+
+.sh-cell .ft-att-more { font-size: 11.5px !important; }
+
+/* 行号列：更多入口常驻，别等 hover 才出现 */
+.sh-td-index { width: 52px !important; }
+.sh-rownum { font-size: 11.5px !important; }
+
+.sh-rowmore {
+  left: auto !important;
+  right: 2px !important;
+  transform: translateY(-50%) !important;
+  opacity: .38 !important;
+  background: transparent !important;
+}
+
+.sh-row:hover .sh-rowmore { opacity: 1 !important; background: var(--overlay-light) !important; }
+.sh-row:hover .sh-rownum { opacity: 1 !important; }
+
+/* --- 图片大图预览 --- */
+.sh-lightbox {
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: 3200 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  padding: 32px !important;
+  background: rgba(4, 8, 16, .88) !important;
+  backdrop-filter: blur(3px) !important;
+  opacity: 0 !important;
+  transition: opacity .16s ease !important;
+  cursor: zoom-out !important;
+}
+
+.sh-lightbox.is-on { opacity: 1 !important; }
+
+.sh-lightbox-figure {
+  margin: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  gap: 10px !important;
+  max-width: 92vw !important;
+  max-height: 92vh !important;
+}
+
+.sh-lightbox-figure img {
+  max-width: 92vw !important;
+  max-height: 84vh !important;
+  object-fit: contain !important;
+  border-radius: 10px !important;
+  background: #fff !important;
+  box-shadow: 0 28px 70px rgba(0, 0, 0, .65) !important;
+}
+
+.sh-lightbox-cap {
+  font-size: 12px !important;
+  color: rgba(255, 255, 255, .72) !important;
+  max-width: 92vw !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+
+.sh-lightbox-close {
+  position: absolute !important;
+  top: 18px !important;
+  right: 22px !important;
+  width: 34px !important;
+  height: 34px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  border: 0 !important;
+  border-radius: 50% !important;
+  background: rgba(255, 255, 255, .14) !important;
+  color: #fff !important;
+  cursor: pointer !important;
+}
+
+.sh-lightbox-close:hover { background: rgba(255, 255, 255, .24) !important; }
+.sh-lightbox-close .wr-icon { width: 16px !important; height: 16px !important; }
+
+/* --- 详情抽屉：字号、行距、可点提示 --- */
+.sh-drawer-title { font-size: 18px !important; }
+.sh-drawer-kicker { font-size: 11px !important; }
+
+.sh-detail-field { padding: 6px 0 !important; }
+
+.sh-detail-label {
+  width: 96px !important;
+  padding-top: 12px !important;
+  font-size: 12px !important;
+  color: var(--text-muted) !important;
+}
+
+.sh-detail-cell {
+  min-height: 40px !important;
+  height: auto !important;
+  padding: 8px 10px !important;
+  border: 1px solid var(--border-light) !important;
+  background: transparent !important;
+  cursor: text !important;
+}
+
+.sh-detail-cell:hover {
+  border-color: color-mix(in srgb, var(--color-primary) 55%, transparent) !important;
+  background: var(--overlay-light) !important;
+}
+
+.sh-detail-cell .ft-text { font-size: 13.5px !important; line-height: 1.55 !important; white-space: normal !important; }
+.sh-detail-cell .ft-date { font-size: 13px !important; }
+.sh-detail-cell .ft-pill { font-size: 12px !important; line-height: 19px !important; }
+.sh-detail-cell .ft-status { font-size: 13px !important; }
+
+.sh-detail-cell .ft-att-thumb {
+  width: 96px !important;
+  height: 60px !important;
+  border-radius: 7px !important;
+  cursor: zoom-in !important;
+}
+
+.sh-detail-cell .ft-att-thumb:hover { transform: scale(1.02) !important; }
+
+.sh-img-list img { cursor: zoom-in !important; }
+
+/* 大图预览的关闭按钮在深色遮罩上要更明确 */
+.sh-lightbox-close {
+  background: rgba(255, 255, 255, .2) !important;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .45) !important;
+}
+.sh-lightbox-close .wr-icon { stroke-width: 2 !important; }
+
+/* 数字列表头：图标和文字贴着右侧一起排，别一个靠左一个靠右 */
+.sh-th-num .sh-th-btn {
+  justify-content: flex-end !important;
+  padding-right: 12px !important;
+}
+.sh-th-num .sh-th-label { flex: 0 0 auto !important; text-align: right !important; }
+.sh-th-num .sh-th-caret { display: none !important; }
+
+/* =========================================================================
+   表格 v2 · 第二轮（列宽 / 换行 / 日期 / 对齐）
+   ========================================================================= */
+
+/* --- 表头对齐：字段名在左、类型图标在右 --- */
+.sh-table thead .sh-th-btn {
+  padding: 0 10px 0 12px !important;
+  gap: 8px !important;
+  justify-content: flex-start !important;
+}
+
+.sh-th-type {
+  margin-left: auto !important;
+  display: inline-flex !important;
+  opacity: .38 !important;
+  transition: opacity .12s ease !important;
+}
+
+.sh-th-btn:hover .sh-th-type,
+.sh-th.is-open .sh-th-type { opacity: .75 !important; }
+
+/* 数字列：图标让位，字段名贴右，和右对齐的数值对齐 */
+.sh-th-num .sh-th-btn { justify-content: flex-end !important; padding-right: 12px !important; }
+.sh-th-num .sh-th-label { flex: 0 0 auto !important; text-align: right !important; }
+.sh-th-num .sh-th-type { display: none !important; }
+
+/* --- 列宽拖拽手柄 --- */
+.sh-th { position: relative !important; }
+
+.sh-col-resizer {
+  position: absolute !important;
+  top: 0 !important;
+  right: -3px !important;
+  width: 7px !important;
+  height: 100% !important;
+  z-index: 6 !important;
+  cursor: col-resize !important;
+  display: block !important;
+}
+
+.sh-col-resizer::after {
+  content: '' !important;
+  position: absolute !important;
+  top: 8px !important;
+  bottom: 8px !important;
+  left: 3px !important;
+  width: 1px !important;
+  background: transparent !important;
+  transition: background .12s ease !important;
+}
+
+.sh-col-resizer:hover::after,
+.sh-col-resizer.is-active::after { background: var(--color-primary) !important; }
+
+.sh-th:last-of-type .sh-col-resizer { display: none !important; }
+
+/* 拖拽时禁止选中文字、指针保持 col-resize */
+body.sh-col-resizing,
+body.sh-col-resizing * { cursor: col-resize !important; user-select: none !important; }
+
+/* --- 单元格换行 --- */
+.sh-cell.is-wrap {
+  height: auto !important;
+  min-height: 42px !important;
+  align-items: flex-start !important;
+  padding: 9px 12px !important;
+}
+
+.sh-cell.is-wrap .ft-text {
+  white-space: normal !important;
+  word-break: break-word !important;
+  overflow: visible !important;
+  line-height: 1.6 !important;
+}
+
+/* --- 字段面板：分段选择 / 说明 --- */
+.sh-seg {
+  display: inline-flex !important;
+  gap: 2px !important;
+  padding: 3px !important;
+  border-radius: 8px !important;
+  background: var(--overlay-light) !important;
+  align-self: flex-start !important;
+}
+
+.sh-seg-item {
+  height: 26px !important;
+  padding: 0 12px !important;
+  border: 0 !important;
+  border-radius: 6px !important;
+  background: transparent !important;
+  color: var(--text-muted) !important;
+  font-size: 11.5px !important;
+  font-family: inherit !important;
+  cursor: pointer !important;
+}
+
+.sh-seg-item.is-on {
+  background: var(--bg-elevated, #1e293b) !important;
+  color: var(--text-main) !important;
+  font-weight: 600 !important;
+  box-shadow: var(--shadow-sm, 0 1px 2px rgba(0, 0, 0, .1)) !important;
+}
+
+.sh-hint {
+  margin-top: 6px !important;
+  font-size: 10.5px !important;
+  line-height: 1.6 !important;
+  color: var(--text-muted) !important;
+  opacity: .85 !important;
+}
+
+/* --- 列菜单里的宽度预设 --- */
+.sh-colmenu-widths {
+  display: flex !important;
+  gap: 4px !important;
+  padding: 2px 9px 6px !important;
+}
+
+.sh-width-chip {
+  flex: 1 1 0 !important;
+  height: 26px !important;
+  border-radius: 6px !important;
+  border: 1px solid var(--border-light) !important;
+  background: transparent !important;
+  color: var(--text-secondary) !important;
+  font-size: 11px !important;
+  font-family: inherit !important;
+  cursor: pointer !important;
+}
+
+.sh-width-chip:hover {
+  border-color: var(--color-primary) !important;
+  color: var(--color-primary) !important;
+}
+
+/* =========================================================================
+   日期选择器（自研，表格式交互）
+   ========================================================================= */
+.sh-dp {
+  position: fixed !important;
+  z-index: 2650 !important;
+  width: 272px !important;
+  padding: 10px !important;
+  border-radius: 14px !important;
+  border: 1px solid var(--border-medium) !important;
+  background: linear-gradient(var(--bg-elevated, #1e293b), var(--bg-elevated, #1e293b)), var(--bg-body) !important;
+  box-shadow: 0 20px 48px -12px rgba(0, 0, 0, .6) !important;
+  font-family: inherit !important;
+  animation: sh-pop-in .12s ease !important;
+}
+
+.sh-dp-head {
+  display: flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  margin-bottom: 8px !important;
+}
+
+.sh-dp-nav {
+  width: 28px !important;
+  height: 28px !important;
+  border: 0 !important;
+  border-radius: 7px !important;
+  background: transparent !important;
+  color: var(--text-secondary) !important;
+  font-size: 16px !important;
+  line-height: 1 !important;
+  cursor: pointer !important;
+}
+
+.sh-dp-nav:hover { background: var(--overlay-light) !important; color: var(--text-main) !important; }
+
+.sh-dp-title {
+  flex: 1 1 auto !important;
+  height: 28px !important;
+  border: 0 !important;
+  border-radius: 7px !important;
+  background: transparent !important;
+  color: var(--text-main) !important;
+  font-size: 12.5px !important;
+  font-weight: 600 !important;
+  font-family: inherit !important;
+  cursor: pointer !important;
+}
+
+.sh-dp-title:hover { background: var(--overlay-light) !important; }
+
+.sh-dp-week {
+  display: grid !important;
+  grid-template-columns: repeat(7, 1fr) !important;
+  margin-bottom: 2px !important;
+}
+
+.sh-dp-week span {
+  text-align: center !important;
+  font-size: 10.5px !important;
+  color: var(--text-muted) !important;
+  padding: 4px 0 !important;
+}
+
+.sh-dp-grid {
+  display: grid !important;
+  grid-template-columns: repeat(7, 1fr) !important;
+  gap: 2px !important;
+}
+
+.sh-dp-day {
+  height: 32px !important;
+  border: 0 !important;
+  border-radius: 8px !important;
+  background: transparent !important;
+  color: var(--text-main) !important;
+  font-size: 12.5px !important;
+  font-family: inherit !important;
+  cursor: pointer !important;
+  font-variant-numeric: tabular-nums !important;
+}
+
+.sh-dp-day:hover { background: var(--overlay-light) !important; }
+.sh-dp-day.is-out { color: var(--text-muted) !important; opacity: .45 !important; }
+
+.sh-dp-day.is-today {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-primary) 65%, transparent) !important;
+  color: var(--color-primary) !important;
+}
+
+.sh-dp-day.is-on {
+  background: var(--color-primary) !important;
+  color: var(--color-text-inverse, #fff) !important;
+  font-weight: 600 !important;
+  box-shadow: none !important;
+}
+
+.sh-dp-months {
+  display: grid !important;
+  grid-template-columns: repeat(3, 1fr) !important;
+  gap: 5px !important;
+  padding: 4px 0 8px !important;
+}
+
+.sh-dp-month {
+  height: 34px !important;
+  border: 1px solid var(--border-light) !important;
+  border-radius: 8px !important;
+  background: transparent !important;
+  color: var(--text-secondary) !important;
+  font-size: 12px !important;
+  font-family: inherit !important;
+  cursor: pointer !important;
+}
+
+.sh-dp-month:hover { border-color: var(--color-primary) !important; color: var(--text-main) !important; }
+.sh-dp-month.is-on {
+  border-color: var(--color-primary) !important;
+  background: color-mix(in srgb, var(--color-primary) 14%, transparent) !important;
+  color: var(--text-main) !important;
+  font-weight: 600 !important;
+}
+
+.sh-dp-time {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  margin-top: 8px !important;
+  padding-top: 8px !important;
+  border-top: 1px solid var(--border-light) !important;
+}
+
+.sh-dp-time-label { font-size: 11px !important; color: var(--text-muted) !important; }
+
+.sh-dp-time-input {
+  width: 62px !important;
+  height: 28px !important;
+  padding: 0 8px !important;
+  border-radius: 7px !important;
+  border: 1px solid var(--border-medium) !important;
+  background: var(--bg-body) !important;
+  color: var(--text-main) !important;
+  font-size: 12.5px !important;
+  font-variant-numeric: tabular-nums !important;
+  font-family: inherit !important;
+  text-align: center !important;
+  outline: none !important;
+}
+
+.sh-dp-time-input:focus { border-color: var(--color-primary) !important; }
+.sh-dp-time-hint { font-size: 10px !important; color: var(--text-muted) !important; opacity: .7 !important; }
+
+.sh-dp-foot {
+  display: flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  margin-top: 9px !important;
+  padding-top: 8px !important;
+  border-top: 1px solid var(--border-light) !important;
+}
+
+.sh-dp-gap { flex: 1 1 auto !important; }
+
+.sh-dp-btn {
+  height: 28px !important;
+  padding: 0 10px !important;
+  border-radius: 7px !important;
+  border: 1px solid var(--border-light) !important;
+  background: transparent !important;
+  color: var(--text-secondary) !important;
+  font-size: 11.5px !important;
+  font-family: inherit !important;
+  cursor: pointer !important;
+}
+
+.sh-dp-btn:hover { background: var(--overlay-light) !important; color: var(--text-main) !important; }
+
+.sh-dp-btn.is-primary {
+  background: var(--color-primary) !important;
+  border-color: transparent !important;
+  color: var(--color-text-inverse, #fff) !important;
+  font-weight: 600 !important;
+}
+
+/* =========================================================================
+   顺带把 flatpickr 调成同一套视觉（待办、设置等页面还在用它）
+   —— 用户要求「整个软件的日期框统一风格」，只换表格不够。
+   ========================================================================= */
+.flatpickr-calendar {
+  border-radius: 14px !important;
+  border: 1px solid var(--border-medium) !important;
+  background: linear-gradient(var(--bg-elevated, #1e293b), var(--bg-elevated, #1e293b)), var(--bg-body) !important;
+  box-shadow: 0 20px 48px -12px rgba(0, 0, 0, .6) !important;
+  font-family: inherit !important;
+  padding: 8px !important;
+  width: 272px !important;
+}
+
+.flatpickr-calendar.arrowTop::before,
+.flatpickr-calendar.arrowTop::after,
+.flatpickr-calendar.arrowBottom::before,
+.flatpickr-calendar.arrowBottom::after { display: none !important; }
+
+.flatpickr-months { margin-bottom: 4px !important; }
+.flatpickr-months .flatpickr-month { color: var(--text-main) !important; height: 28px !important; }
+.flatpickr-current-month { font-size: 12.5px !important; font-weight: 600 !important; padding: 0 !important; }
+.flatpickr-current-month .numInputWrapper { width: 56px !important; }
+.flatpickr-current-month .cur-year { color: var(--text-main) !important; }
+
+.flatpickr-months .flatpickr-prev-month,
+.flatpickr-months .flatpickr-next-month {
+  top: 6px !important;
+  height: 28px !important;
+  padding: 4px 8px !important;
+  border-radius: 7px !important;
+  fill: var(--text-secondary) !important;
+}
+
+.flatpickr-months .flatpickr-prev-month:hover,
+.flatpickr-months .flatpickr-next-month:hover { background: var(--overlay-light) !important; }
+
+span.flatpickr-weekday {
+  color: var(--text-muted) !important;
+  font-size: 10.5px !important;
+  font-weight: 400 !important;
+}
+
+.flatpickr-day {
+  border-radius: 8px !important;
+  max-width: 36px !important;
+  height: 32px !important;
+  line-height: 32px !important;
+  margin: 0 !important;
+  color: var(--text-main) !important;
+  font-size: 12.5px !important;
+  border: 0 !important;
+}
+
+.flatpickr-day:hover,
+.flatpickr-day:focus { background: var(--overlay-light) !important; border-color: transparent !important; }
+.flatpickr-day.today { border-color: color-mix(in srgb, var(--color-primary) 65%, transparent) !important; }
+.flatpickr-day.selected,
+.flatpickr-day.selected:hover,
+.flatpickr-day.selected:focus {
+  background: var(--color-primary) !important;
+  border-color: var(--color-primary) !important;
+  color: var(--color-text-inverse, #fff) !important;
+  font-weight: 600 !important;
+}
+
+.flatpickr-day.prevMonthDay,
+.flatpickr-day.nextMonthDay { color: var(--text-muted) !important; opacity: .45 !important; }
+
+.flatpickr-time {
+  border-top: 1px solid var(--border-light) !important;
+  height: 34px !important;
+  line-height: 34px !important;
+  margin-top: 6px !important;
+}
+
+.flatpickr-time input,
+.flatpickr-time .flatpickr-time-separator {
+  color: var(--text-main) !important;
+  font-size: 12.5px !important;
+}
+
+.flatpickr-time .numInputWrapper:hover { background: var(--overlay-light) !important; border-radius: 6px !important; }
+
+/* 类型图标紧跟字段名，不要被推到列的最右边（列宽富余时会显得很散） */
+.sh-th-type { margin-left: 4px !important; }
+.sh-th-label { flex: 0 1 auto !important; }
+
+/* =========================================================================
+   第三轮修：行号格定位 / 就地编辑 / 列宽输入 / 多选
+   ========================================================================= */
+
+/* 行号格固定在行顶部的首行高度内：行被撑高时序号和「⋯」不会漂到行中间 */
+.sh-td-index { vertical-align: top !important; padding: 0 !important; }
+
+.sh-index-cell {
+  position: relative !important;
+  height: 42px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+
+.sh-rownum { height: 42px !important; width: 100% !important; padding-right: 14px !important; }
+
+.sh-rowmore {
+  top: 50% !important;
+  right: 3px !important;
+  width: 18px !important;
+  height: 20px !important;
+  font-size: 13px !important;
+  line-height: 1 !important;
+}
+
+.sh-row:hover .sh-rowmore { opacity: 1 !important; background: var(--overlay-light) !important; }
+
+/* 就地编辑：输入框吃满单元格，不要再额外加内边距，否则文字会跳 */
+.sh-cell .ft-inline-input {
+  padding: 0 !important;
+  height: 100% !important;
+  font-size: 13.5px !important;
+  background: transparent !important;
+}
+
+.sh-cell.is-wrap .ft-inline-input {
+  height: auto !important;
+  min-height: 24px !important;
+  line-height: 1.6 !important;
+}
+
+/* --- 列宽输入（替代原来的三档预设） --- */
+.sh-colmenu-width-row {
+  display: flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  padding: 2px 9px 8px !important;
+}
+
+.sh-width-unit { font-size: 10.5px !important; color: var(--text-muted) !important; flex: none !important; }
+
+.sh-width-input {
+  width: 62px !important;
+  height: 26px !important;
+  padding: 0 6px !important;
+  border-radius: 6px !important;
+  border: 1px solid var(--border-medium) !important;
+  background: var(--bg-body) !important;
+  color: var(--text-main) !important;
+  font-size: 11.5px !important;
+  font-variant-numeric: tabular-nums !important;
+  font-family: inherit !important;
+  text-align: right !important;
+  outline: none !important;
+}
+
+.sh-width-input:focus { border-color: var(--color-primary) !important; }
+
+.sh-width-apply {
+  height: 26px !important;
+  padding: 0 10px !important;
+  border: 0 !important;
+  border-radius: 6px !important;
+  background: var(--color-primary) !important;
+  color: var(--color-text-inverse, #fff) !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  font-family: inherit !important;
+  cursor: pointer !important;
+}
+
+/* --- 选区高亮 --- */
+body.sh-selecting,
+body.sh-selecting * { user-select: none !important; }
+
+.sh-cell.is-sel {
+  background: color-mix(in srgb, var(--color-primary) 14%, transparent) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-primary) 42%, transparent) !important;
+}
+
+.sh-th.is-picked .sh-th-btn {
+  color: var(--color-primary) !important;
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent) !important;
+}
+
+.sh-th.is-picked { box-shadow: inset 0 -2px 0 var(--color-primary) !important; }
+
+/* --- 批量操作条 --- */
+.sh-bulk {
+  position: fixed !important;
+  left: 50% !important;
+  bottom: 26px !important;
+  transform: translateX(-50%) !important;
+  z-index: 2500 !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  padding: 8px 12px !important;
+  border-radius: 12px !important;
+  border: 1px solid var(--border-medium) !important;
+  background: linear-gradient(var(--bg-elevated, #1e293b), var(--bg-elevated, #1e293b)), var(--bg-body) !important;
+  box-shadow: 0 18px 44px -14px rgba(0, 0, 0, .6) !important;
+  font-family: inherit !important;
+  animation: sh-pop-in .14s ease !important;
+}
+
+.sh-bulk-count { font-size: 12px !important; font-weight: 600 !important; color: var(--text-main) !important; white-space: nowrap !important; }
+.sh-bulk-label { font-size: 10.5px !important; color: var(--text-muted) !important; }
+.sh-bulk-sep { width: 1px !important; height: 16px !important; background: var(--border-light) !important; }
+
+.sh-bulk-input {
+  width: 68px !important;
+  height: 26px !important;
+  padding: 0 8px !important;
+  border-radius: 7px !important;
+  border: 1px solid var(--border-medium) !important;
+  background: var(--bg-body) !important;
+  color: var(--text-main) !important;
+  font-size: 11.5px !important;
+  font-family: inherit !important;
+  outline: none !important;
+}
+
+.sh-bulk-input.is-wide { width: 150px !important; }
+.sh-bulk-input:focus { border-color: var(--color-primary) !important; }
+
+.sh-bulk-btn {
+  height: 26px !important;
+  padding: 0 10px !important;
+  border-radius: 7px !important;
+  border: 1px solid var(--border-light) !important;
+  background: transparent !important;
+  color: var(--text-secondary) !important;
+  font-size: 11.5px !important;
+  font-family: inherit !important;
+  cursor: pointer !important;
+}
+
+.sh-bulk-btn:hover { background: var(--overlay-light) !important; color: var(--text-main) !important; }
+.sh-bulk-btn.is-danger { color: var(--color-danger) !important; }
+.sh-bulk-btn.is-danger:hover { background: color-mix(in srgb, var(--color-danger) 14%, transparent) !important; }
+
+/* 选区对比度提一档：14% 的底色在深色主题下几乎看不出来 */
+.sh-cell.is-sel {
+  background: color-mix(in srgb, var(--color-primary) 20%, transparent) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-primary) 68%, transparent) !important;
+}
+
+/* 行尾「⋯」默认更实一点，别像没渲染出来 */
+.sh-rowmore { opacity: .55 !important; color: var(--text-secondary) !important; }
+
+/* 换行列的就地编辑：多行输入铺满单元格，随内容长高 */
+.sh-cell.is-wrap .ft-inline-input.is-multiline {
+  width: 100% !important;
+  height: auto !important;
+  min-height: 24px !important;
+  resize: none !important;
+  overflow: hidden !important;
+  line-height: 1.6 !important;
+  font-size: 13.5px !important;
+  padding: 0 !important;
+  background: transparent !important;
+  border: 0 !important;
+}
+
+/* 换行列保留手动换行 */
+.sh-cell.is-wrap .ft-text { white-space: pre-wrap !important; }
+
+/* 让多行输入自己按内容定高（Chrome 123+），不再依赖 JS 量高度 */
+.sh-cell.is-wrap .ft-inline-input.is-multiline {
+  field-sizing: content !important;
+  min-height: 22px !important;
+  max-height: 420px !important;
+}
+
+/* =========================================================================
+   第四轮：行号稳定 / 编辑态收敛 / 菜单重排 / 行高
+   ========================================================================= */
+
+/* 行号与「⋯」完全重叠在同一位置，hover 只切可见性 —— 不会有任何位移 */
+.sh-index-cell { position: relative !important; height: 42px !important; }
+
+.sh-rownum,
+.sh-rowmore {
+  position: absolute !important;
+  top: 0 !important;
+  left: 0 !important;
+  width: 100% !important;
+  height: 42px !important;
+  margin: 0 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  transition: opacity .1s ease !important;
+}
+
+.sh-rownum { opacity: 1 !important; font-size: 11.5px !important; color: var(--text-muted) !important; }
+.sh-rowmore { opacity: 0 !important; font-size: 14px !important; color: var(--text-secondary) !important; }
+
+.sh-row:hover .sh-rownum { opacity: 0 !important; }
+.sh-row:hover .sh-rowmore { opacity: 1 !important; }
+.sh-row:hover .sh-rowmore:hover { color: var(--color-primary) !important; }
+
+/* 编辑态：去掉那圈蓝框，只留一点点底色，看起来就是「文字本身在编辑」 */
+.sh-cell.ft-cell-editing {
+  box-shadow: none !important;
+  background: color-mix(in srgb, var(--color-primary) 6%, transparent) !important;
+  border-radius: 4px !important;
+}
+
+.sh-cell:focus-visible { box-shadow: none !important; background: transparent !important; }
+
+/* 固定行高 + 自动换行：按可用行数截断，末尾自动出省略号 */
+.sh-cell.is-clamped { height: auto !important; }
+
+.sh-cell.is-clamped .ft-text {
+  display: -webkit-box !important;
+  -webkit-box-orient: vertical !important;
+  -webkit-line-clamp: var(--clamp, 2) !important;
+  overflow: hidden !important;
+  white-space: normal !important;
+  word-break: break-word !important;
+  line-height: 1.6 !important;
+}
+
+/* 固定行高的行，单元格内容垂直居中，不要贴顶 */
+.sh-row[style] .sh-cell { height: 100% !important; align-items: center !important; }
+.sh-row[style] .sh-cell.is-wrap { align-items: flex-start !important; padding-top: 9px !important; }
+
+/* =========================================================================
+   菜单重排（WPS 式）：分组 + 图标 + 右侧箭头 + 内联数值输入
+   ========================================================================= */
+.sh-colmenu,
+.sh-rowmenu { width: 238px !important; padding: 5px !important; }
+
+.sh-menu-head {
+  display: flex !important;
+  align-items: baseline !important;
+  gap: 6px !important;
+  padding: 6px 9px 7px !important;
+}
+
+.sh-menu-title { font-size: 12px !important; font-weight: 600 !important; color: var(--text-main) !important; }
+.sh-menu-sub { font-size: 10.5px !important; color: var(--text-muted) !important; }
+
+.sh-menu-sep { height: 1px !important; margin: 5px 0 !important; background: var(--border-light) !important; }
+
+.sh-menu-label { padding: 3px 9px !important; font-size: 10.5px !important; color: var(--text-muted) !important; }
+
+.sh-menu-hint {
+  padding: 3px 9px 7px !important;
+  font-size: 10px !important;
+  line-height: 1.55 !important;
+  color: var(--text-muted) !important;
+  opacity: .8 !important;
+}
+
+.sh-menu-arrow { width: 12px !important; height: 12px !important; margin-left: auto !important; opacity: .55 !important; }
+.sh-menu-item.is-back .wr-icon { transform: rotate(180deg) !important; }
+
+/* WPS 那种「标签 + 输入框 + 单位 + 对勾」的一行 */
+.sh-menu-field {
+  display: flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  padding: 3px 9px !important;
+}
+
+.sh-menu-field-label {
+  flex: 1 1 auto !important;
+  font-size: 11.5px !important;
+  color: var(--text-secondary) !important;
+  white-space: nowrap !important;
+}
+
+.sh-menu-field-input {
+  width: 56px !important;
+  height: 26px !important;
+  padding: 0 6px !important;
+  border-radius: 6px !important;
+  border: 1px solid var(--border-medium) !important;
+  background: var(--bg-body) !important;
+  color: var(--text-main) !important;
+  font-size: 11.5px !important;
+  font-variant-numeric: tabular-nums !important;
+  font-family: inherit !important;
+  text-align: right !important;
+  outline: none !important;
+}
+
+.sh-menu-field-input:focus { border-color: var(--color-primary) !important; }
+.sh-menu-field-unit { font-size: 10.5px !important; color: var(--text-muted) !important; flex: none !important; }
+
+.sh-menu-field-ok {
+  width: 24px !important;
+  height: 24px !important;
+  flex: none !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  border: 1px solid var(--border-light) !important;
+  border-radius: 6px !important;
+  background: transparent !important;
+  color: var(--text-muted) !important;
+  cursor: pointer !important;
+}
+
+.sh-menu-field-ok:hover {
+  background: var(--color-primary) !important;
+  border-color: transparent !important;
+  color: var(--color-text-inverse, #fff) !important;
+}
+
+.sh-menu-field-ok .wr-icon { width: 12px !important; height: 12px !important; stroke-width: 2.4 !important; }
+
+/* 分段选择（内容显示：单行 / 换行） */
+.sh-menu-seg { display: flex !important; gap: 3px !important; padding: 2px 9px 4px !important; }
+
+.sh-menu-seg-item {
+  flex: 1 1 0 !important;
+  height: 26px !important;
+  border-radius: 6px !important;
+  border: 1px solid var(--border-light) !important;
+  background: transparent !important;
+  color: var(--text-muted) !important;
+  font-size: 11px !important;
+  font-family: inherit !important;
+  cursor: pointer !important;
+}
+
+.sh-menu-seg-item.is-on {
+  border-color: var(--color-primary) !important;
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent) !important;
+  color: var(--text-main) !important;
+  font-weight: 600 !important;
+}
+
+/* =========================================================================
+   第五轮：清掉遗留 transform / 控件瘦身
+   ========================================================================= */
+
+/* 上一版给 .sh-rowmore 写的 translate(-50%,-50%) 没清掉，
+   配上 top:0 就整体上移了 21px —— 行号「hover 才歪」的真凶。 */
+.sh-rownum,
+.sh-rowmore {
+  transform: none !important;
+  top: 0 !important;
+  left: 0 !important;
+}
+
+/* 全局 button 有 min-height: 38px，把表格里的小控件全撑肥了 */
+.sh-btn,
+.sh-tool,
+.sh-icon-btn,
+.sh-menu-item,
+.sh-menu-field-ok,
+.sh-menu-seg-item,
+.sh-width-chip,
+.sh-bulk-btn,
+.sh-dp-btn,
+.sh-dp-nav,
+.sh-dp-day,
+.sh-dp-month,
+.sh-view,
+.sh-chip-x,
+.sh-rownum,
+.sh-rowmore,
+.sh-th-btn,
+.sh-th-add-btn,
+.sh-addrow,
+.sh-rowmore {
+  min-height: 0 !important;
+}
+
+/* 工具条控件统一压到 28px，视觉上「小而精致」 */
+.sh-btn { height: 28px !important; padding: 0 12px !important; font-size: 11.5px !important; }
+.sh-search { height: 28px !important; padding: 0 8px !important; }
+.sh-search input { font-size: 11.5px !important; }
+.sh-tool { height: 27px !important; font-size: 11.5px !important; }
+.sh-view { height: 23px !important; font-size: 11px !important; }
+.sh-views { padding: 2px !important; }
+
+/* 搜索框聚焦时不要画一圈比输入框还大的环，只换边框色 */
+.sh-search:focus-within {
+  box-shadow: none !important;
+  border-color: color-mix(in srgb, var(--color-primary) 65%, var(--border-light)) !important;
+}
+
+.sh-search input:focus,
+.sh-search input:focus-visible { outline: none !important; box-shadow: none !important; }
+
+/* 列菜单里的数值行：输入框吃掉左侧空白，扁一点 */
+.sh-menu-field { gap: 5px !important; padding: 2px 8px !important; }
+.sh-menu-field-label { flex: 0 0 auto !important; min-width: 34px !important; font-size: 11px !important; }
+.sh-menu-field-input {
+  flex: 1 1 auto !important;
+  width: auto !important;
+  min-width: 0 !important;
+  height: 24px !important;
+  padding: 0 7px !important;
+  font-size: 11.5px !important;
+  text-align: left !important;
+}
+.sh-menu-field-unit { font-size: 10px !important; margin-right: 2px !important; }
+.sh-menu-field-ok { width: 22px !important; height: 22px !important; border-radius: 5px !important; }
+.sh-menu-field-ok .wr-icon { width: 11px !important; height: 11px !important; }
+
+/* 筛选 / 排序面板的下拉与输入，全部压小 */
+.sh-select,
+.sh-input { height: 28px !important; font-size: 11.5px !important; padding: 0 8px !important; }
+.sh-input-flat { height: 26px !important; font-size: 11.5px !important; }
+.sh-select-sm { width: 78px !important; }
+.sh-filterpanel { width: 340px !important; }
+.sh-filter-row { gap: 4px !important; }
+.sh-sortpanel { width: 280px !important; }
+.sh-panel-title { padding: 3px 8px 5px !important; font-size: 10.5px !important; }
+.sh-panel-foot { padding: 6px 4px 2px !important; }
+.sh-filterpanel .sh-btn,
+.sh-sortpanel .sh-btn { height: 26px !important; font-size: 11px !important; padding: 0 10px !important; }
+.sh-add-option { font-size: 11px !important; height: 24px !important; }
+
+/* 所有表格内的输入/下拉：聚焦只换边框色，不画那圈比控件还大的蓝环 */
+.sh-search input:focus,
+.sh-search input:focus-visible,
+.sh-menu-field-input:focus,
+.sh-bulk-input:focus,
+.sh-input:focus,
+.sh-select:focus,
+.sh-dp-time-input:focus,
+.sh-width-input:focus {
+  box-shadow: none !important;
+  outline: none !important;
+}
+
+/* 原生 select 的箭头又大又钝，换成 4px 的小尖角 */
+.sh-select {
+  appearance: none !important;
+  -webkit-appearance: none !important;
+  padding-right: 20px !important;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--text-muted) 50%),
+    linear-gradient(135deg, var(--text-muted) 50%, transparent 50%) !important;
+  background-position: calc(100% - 12px) calc(50% + 1px), calc(100% - 8px) calc(50% + 1px) !important;
+  background-size: 4px 4px, 4px 4px !important;
+  background-repeat: no-repeat !important;
+}
+
+/* 排序面板：第一个下拉吃掉剩余宽度，方向选择窄一些 */
+.sh-sort-row { gap: 5px !important; }
+.sh-sort-row .sh-select:first-child { flex: 1 1 auto !important; width: auto !important; min-width: 0 !important; }
+.sh-sort-row .sh-select-sm { flex: 0 0 auto !important; width: 74px !important; }
+.sh-sortpanel { width: 292px !important; }
+
+/* 筛选面板：字段名宽一点，操作符和取值窄一点，整体更紧凑 */
+.sh-filter-row .sh-select:first-child { flex: 1.2 1 0 !important; min-width: 0 !important; }
+.sh-filter-row .sh-select-sm { flex: 0 0 auto !important; width: 66px !important; }
+.sh-filter-row .sh-select:last-of-type { flex: 1 1 0 !important; min-width: 0 !important; }
+.sh-filterpanel { width: 352px !important; }
+
+.sh-sort-row .sh-select:first-child { flex: 1 1 0% !important; }
+.sh-filter-row .sh-select:first-child { flex: 1.15 1 0% !important; }
+.sh-filter-row .sh-select:last-of-type { flex: 1 1 0% !important; }
+
+/* 数字输入框的上下小箭头太抢眼，直接去掉（键盘上下键和 ✓ 按钮足够） */
+.sh-menu-field-input::-webkit-outer-spin-button,
+.sh-menu-field-input::-webkit-inner-spin-button,
+.sh-bulk-input::-webkit-outer-spin-button,
+.sh-bulk-input::-webkit-inner-spin-button,
+.sh-width-input::-webkit-outer-spin-button,
+.sh-width-input::-webkit-inner-spin-button {
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  margin: 0 !important;
+}
+
+.sh-menu-field-input,
+.sh-bulk-input,
+.sh-width-input { -moz-appearance: textfield !important; appearance: textfield !important; }
+
+/* 第六轮：行号悬停区跟着行高走 + 菜单输入框与对勾同高 */
+
+/* 行号格里原本固定 42px，行高调大后 hover 区只有上面一小块。
+   改成绝对定位铺满整个单元格，行多高它就多高，序号和「⋯」一起居中。 */
+.sh-index-cell {
+  position: absolute !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  height: auto !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+
+.sh-rownum,
+.sh-rowmore {
+  position: absolute !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  width: auto !important;
+  height: auto !important;
+  transform: none !important;
+}
+
+/* 列菜单里数值框压到 22px，和右侧对勾按钮齐平 */
+.sh-menu-field-input {
+  height: 22px !important;
+  font-size: 11px !important;
+  padding: 0 6px !important;
+  border-radius: 5px !important;
+}
+
+.sh-menu-field-ok { width: 22px !important; height: 22px !important; border-radius: 5px !important; }
+.sh-menu-field-ok .wr-icon { width: 10px !important; height: 10px !important; }
+.sh-menu-field { min-height: 22px !important; }
+.sh-menu-field-unit { font-size: 10px !important; line-height: 22px !important; }
+
+/* 全局给所有 input/select 设了 min-height: var(--control-height-lg)=44px，
+   光写 height 压不下去（min-height 永远赢）。表格内的控件统一解绑。 */
+.sh-search,
+.sh-search input,
+.sh-menu-field,
+.sh-menu-field-input,
+.sh-menu-field-ok,
+.sh-bulk-input,
+.sh-width-input,
+.sh-input,
+.sh-select,
+.sh-dp-time-input,
+.sh-filter-row .sh-select,
+.sh-sort-row .sh-select {
+  min-height: 0 !important;
+  box-sizing: border-box !important;
+}
+
+.sh-menu-field-input,
+.sh-menu-field-ok { height: 22px !important; }
+
+.sh-search,
+.sh-input,
+.sh-select { height: 28px !important; }
+
+.sh-bulk-input { height: 26px !important; }
+.sh-width-input { height: 24px !important; }
+.sh-dp-time-input { height: 28px !important; }
+
+/* 全局 input 规则的权重比单个类高（input[type="number"] 是 0,1,1），
+   这里用同等权重的选择器把它压回去。 */
+input.sh-menu-field-input,
+input.sh-search,
+input.sh-bulk-input,
+input.sh-width-input,
+input.sh-dp-time-input,
+select.sh-select {
+  min-height: 0 !important;
+  height: 22px !important;
+}
+
+input.sh-search,
+input.sh-dp-time-input,
+select.sh-select { height: 28px !important; }
+input.sh-bulk-input { height: 26px !important; }
+input.sh-width-input { height: 24px !important; }
+
+/* =========================================================================
+   第七轮：图片单元格按列宽铺开
+   原来缩略图写死 58×36，列宽 200 也只显示一小块，浪费空间。
+   现在：图片撑满列宽、高度按比例，行高跟着图片走；
+        行高被固定时，图片改为按行高等比缩放（contain）。
+   ========================================================================= */
+.sh-table .sh-cell .ft-att-group {
+  display: flex !important;
+  align-items: center !important;
+  gap: 4px !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  overflow: hidden !important;
+}
+
+.sh-table .sh-cell .ft-att-thumb {
+  flex: 1 1 0 !important;
+  min-width: 0 !important;
+  width: auto !important;
+  height: auto !important;
+  max-height: 260px !important;
+  object-fit: contain !important;
+  object-position: left center !important;
+  border-radius: 5px !important;
+  background: transparent !important;
+  transform: none !important;
+  transition: filter .12s ease !important;
+}
+
+.sh-table .sh-cell .ft-att-thumb:hover { filter: brightness(1.08) !important; }
+
+/* 图多时不要挤成一条线：每张最多占一份，剩下的折叠成 +N */
+.sh-table .sh-cell .ft-att-group .ft-att-thumb:nth-child(n+4) { display: none !important; }
+
+/* 有图的单元格允许行高被图片撑开 */
+.sh-table .sh-cell:has(.ft-att-thumb) {
+  height: auto !important;
+  min-height: 42px !important;
+  padding-top: 4px !important;
+  padding-bottom: 4px !important;
+}
+
+/* 行高被手动固定时：图片按行高 contain，不再撑高行 */
+.sh-row[style] .sh-cell:has(.ft-att-thumb) { height: 100% !important; padding-top: 4px !important; padding-bottom: 4px !important; }
+
+.sh-row[style] .sh-cell .ft-att-group { height: 100% !important; }
+
+.sh-row[style] .sh-cell .ft-att-thumb {
+  flex: 0 0 auto !important;
+  max-height: 100% !important;
+  max-width: 100% !important;
+  width: auto !important;
+}
+
+/* 详情抽屉里的图也按比例放大，别再是 96×60 的小方块 */
+.sh-detail-cell .ft-att-thumb {
+  width: auto !important;
+  height: auto !important;
+  max-width: 100% !important;
+  max-height: 180px !important;
+  object-fit: contain !important;
+  border-radius: 6px !important;
+}
+
+.sh-detail-cell .ft-att-group {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  gap: 6px !important;
+  width: 100% !important;
+}
+
+/* =========================================================================
+   第八轮：交互模型（单击选中 / 双击编辑 / 右键菜单）+ 多图预览
+   ========================================================================= */
+
+/* 选中的单元格：一圈细主色 + 淡底，和框选（is-sel）区分开 */
+.sh-cell.is-active {
+  background: color-mix(in srgb, var(--color-primary) 10%, transparent) !important;
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--color-primary) 70%, transparent) !important;
+  border-radius: 4px !important;
+}
+
+/* 列头：左键选中，右键菜单，别让浏览器弹出默认菜单 */
+.sh-table thead .sh-th { cursor: pointer !important; }
+.sh-table thead .sh-th-btn { cursor: pointer !important; }
+
+/* 大图预览的左右翻页 */
+.sh-lightbox-nav {
+  position: absolute !important;
+  top: 50% !important;
+  transform: translateY(-50%) !important;
+  width: 52px !important;
+  height: 52px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  border: 0 !important;
+  border-radius: 50% !important;
+  background: rgba(255, 255, 255, .12) !important;
+  color: #fff !important;
+  font-size: 26px !important;
+  line-height: 1 !important;
+  cursor: pointer !important;
+  transition: background .15s ease !important;
+  min-height: 0 !important;
+}
+
+.sh-lightbox-nav:hover { background: rgba(255, 255, 255, .24) !important; }
+.sh-lightbox-nav.is-prev { left: 26px !important; }
+.sh-lightbox-nav.is-next { right: 26px !important; }
+
+.sh-lightbox-cap { text-align: center !important; }
+
+/* 多图时统一等高排列（像相册），单图才铺满列宽。
+   之前每张各分一半宽度、高度按各自比例走，一横一竖会一高一低看着很乱。 */
+.sh-table .sh-cell .ft-att-thumb {
+  flex: 1 1 auto !important;
+  width: auto !important;
+  height: auto !important;
+  max-width: 100% !important;
+  max-height: 260px !important;
+}
+
+.sh-table .sh-cell .ft-att-group:has(.ft-att-thumb:nth-child(2)) .ft-att-thumb {
+  flex: 0 0 auto !important;
+  height: 46px !important;
+  width: auto !important;
+  max-height: 46px !important;
+}
+
+.sh-table .sh-cell .ft-att-group:has(.ft-att-thumb:nth-child(2)) {
+  align-items: center !important;
+  height: auto !important;
+}
+
+/* =========================================================================
+   真机验收修复（2026-11-10）：箭头位移 / 网格线 / 行选中 / 多图方块
+   ========================================================================= */
+
+/* 1) 灯箱箭头 hover 下移的真凶：
+      全局 button:hover（5623 行起）带 transform:none !important，
+      悬停时清掉了 .sh-lightbox-nav 的居中位移 translateY(-50%)，
+      箭头掉下去半个按钮高（26px）。悬浮/按下态必须重申位移。 */
+.sh-lightbox-nav:hover,
+.sh-lightbox-nav:active,
+.sh-lightbox-nav:focus-visible { transform: translateY(-50%) !important; }
+
+/* 2) WPS 式网格线：行线本来就有，补上列与列的竖线。
+      「+ 添加字段」列和行号列的边界也画出来，唯独最右缘的 add 列不画（外框已有）。 */
+.sh-table td.sh-td:not(.sh-td-add),
+.sh-table thead th.sh-th:not(.sh-th-add) {
+  border-right: 1px solid var(--border-light) !important;
+}
+
+/* 3) 行选中：与列选中（th.is-picked）同一套视觉语言——
+      整行淡主色 + 行号列左缘主色条 + 行号变主色。 */
+.sh-row.is-picked .sh-td {
+  background: color-mix(in srgb, var(--color-primary) 9%, transparent) !important;
+}
+.sh-row.is-picked .sh-td-index {
+  box-shadow: inset 2px 0 0 var(--color-primary) !important;
+}
+.sh-row.is-picked .sh-rownum {
+  color: var(--color-primary) !important;
+  font-weight: 700 !important;
+  opacity: 1 !important;
+}
+
+/* 4) 多图单元格（WPS 式折叠）：只完整显示第一张（铺满列宽），
+      其余以 .is-folded 隐藏 img 留在 DOM 里供灯箱翻页，右上角「+N」角标。
+      放最后压住前面等高 46px / 42x26 的旧层。 */
+.sh-table .sh-cell .ft-att-group.is-multi {
+  position: relative !important;
+  flex: 0 1 auto !important;
+  width: auto !important;
+  max-width: 100% !important;
+  height: auto !important;
+  max-height: none !important;
+  /* 12921 行给 .ft-att-group 设了 overflow:hidden（裁多余缩略图），
+     会把下面的旋转纸片伪元素一起裁掉 —— 这里必须放开 */
+  overflow: visible !important;
+}
+.sh-table .sh-cell .ft-att-group.is-multi .ft-att-thumb.is-folded {
+  display: none !important;
+}
+.sh-table .sh-cell .ft-att-group.is-multi .ft-att-more {
+  position: absolute !important;
+  top: 5px !important;
+  right: 5px !important;
+  z-index: 2 !important;
+  box-sizing: border-box !important;
+  min-width: 24px !important;
+  height: 20px !important;
+  padding: 0 7px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  border-radius: 10px !important;
+  background: rgba(8, 12, 22, .74) !important;
+  color: #fff !important;
+  font-size: 10.5px !important;
+  font-weight: 600 !important;
+  line-height: 1 !important;
+  pointer-events: none !important;
+}
+
+/* 5) 行号格交互修复：⋯ 原本 inset:0 铺满整个行号格且压在行号上层
+      （opacity:0 也照样接收点击），导致左键点行号永远点在 ⋯ 上弹菜单。
+      收成右缘 20px 的小按钮，行号保持可见可点。 */
+.sh-rowmore {
+  left: auto !important;
+  right: 0 !important;
+  width: 20px !important;
+  border-radius: 6px 0 0 6px !important;
+}
+.sh-row:hover .sh-rownum { opacity: 1 !important; }
+.sh-row:hover .sh-rowmore { opacity: .85 !important; }
+
+/* 6) 附件编辑弹层的 × 按钮：没进第五轮「控件瘦身」名单，
+      被全局 button { min-height:38px; padding:0 16px !important } 撑成约 48x38 的大热区，
+      opacity:0 时也拦截鼠标 —— 表现为叉叉位置跳动、忽隐忽现。 */
+.sh-img-del {
+  min-height: 0 !important;
+  min-width: 0 !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  box-sizing: border-box !important;
+  pointer-events: none !important;
+  transition: opacity .1s ease !important;
+}
+.sh-img-item:hover .sh-img-del { opacity: 1 !important; pointer-events: auto !important; }
+
+/* 7) 多图「照片堆叠」：仿经典 CSS photo stack —— 第一张图带白色相框在最上层，
+      后面两张纸片轻微旋转错位（-4.5° / +3.5°）从边角露出来，一眼看出还有图。
+      +N 角标固定在照片右上角。伪元素不占布局，cell 的 12px 内边距可容纳旋转露边。 */
+.sh-table .sh-cell .ft-att-group.is-multi::before,
+.sh-table .sh-cell .ft-att-group.is-multi::after {
+  content: '' !important;
+  position: absolute !important;
+  border-radius: 3px !important;
+  border: 3px solid #fff !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .32) !important;
+  pointer-events: none !important;
+  z-index: 0 !important;
+  transform-origin: 50% 50% !important;
+}
+.sh-table .sh-cell .ft-att-group.is-multi::before {
+  top: -4px !important;
+  left: -10px !important;
+  right: -10px !important;
+  bottom: -4px !important;
+  background: #e9efe4 !important;
+  transform: rotate(-6deg) !important;
+}
+.sh-table .sh-cell .ft-att-group.is-multi::after {
+  top: 1px !important;
+  left: -7px !important;
+  right: -8px !important;
+  bottom: -9px !important;
+  background: #dbe8f2 !important;
+  transform: rotate(5deg) !important;
+}
+.sh-table .sh-cell .ft-att-group.is-multi .ft-att-thumb:not(.is-folded) {
+  position: relative !important;
+  z-index: 1 !important;
+  box-sizing: border-box !important;
+  border: 3px solid #fff !important;
+  border-radius: 3px !important;
+  background: #fff !important;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, .38) !important;
+}
+
+/* 8) × 悬停不该「变白」：全局 button:hover 会把背景刷成 surface-hover、文字刷成主题色，
+      压掉了 .sh-img-del 的红底白字。悬停应是更醒目的深红（危险操作的直觉）。 */
+.sh-img-del:hover {
+  background: color-mix(in srgb, var(--color-danger) 82%, #000) !important;
+  color: #fff !important;
+}
+
+/* 9) 行号不再有 ⋯：hover 时行号保持可见，给一点可点的提示色 */
+.sh-row:hover .sh-rownum { color: var(--text-main) !important; }
+.sh-row.is-picked:hover .sh-rownum { color: var(--color-primary) !important; }
+
+/* =========================================================================
+   10) 图片单元格（2026-11-10 第三轮）：铺满 + 紧凑叠放，不旋转、不缩放
+   - 缩略图随列宽/行高自适应放大（自动行高按原比例；固定行高铺满 contain 到 cover）
+   - 去掉放大镜光标与 hover 缩放：单击=选中，双击=看原图（JS 已改）
+   - 多图：白边 + 两层错位阴影示意「一叠」，阴影跟随图片尺寸，不需要伪元素
+   ========================================================================= */
+.sh-table .sh-cell .ft-att-group {
+  width: 100% !important;
+  height: 100% !important;
+  max-width: 100% !important;
+  max-height: 100% !important;
+  overflow: visible !important;
+}
+
+/* 上一版的旋转纸片伪元素全部作废 */
+.sh-table .sh-cell .ft-att-group.is-multi::before,
+.sh-table .sh-cell .ft-att-group.is-multi::after { content: none !important; }
+
+/* 自动行高：宽度铺满，高度按原图比例（行高跟着长）；固定行高见下一条 */
+.sh-table .sh-cell .ft-att-thumb:not(.is-folded) {
+  width: 100% !important;
+  height: auto !important;
+  max-width: 100% !important;
+  max-height: 220px !important;
+  flex: 1 1 auto !important;
+  object-fit: cover !important;
+  object-position: center !important;
+  border-radius: 4px !important;
+  border: 0 !important;
+  background: transparent !important;
+  cursor: pointer !important;
+  transform: none !important;
+  filter: none !important;
+}
+
+/* 用户手动调过行高：图片铺满单元格（cover），随行高一起放大 */
+.sh-row[style] .sh-cell .ft-att-thumb:not(.is-folded) {
+  height: 100% !important;
+  max-height: 100% !important;
+}
+
+/* 多图：白边 + 两层向右下错位的白纸边（2/3px、4/5px），紧凑不占地。
+   选择器必须带上 .is-multi —— 13038 行那条 :has(nth-child(2)) 规则特异度 (0,6,0)，
+   会把缩略图锁成 46px 高，不提高特异度压不住。 */
+.sh-table .sh-cell .ft-att-group.is-multi .ft-att-thumb:not(.is-folded) {
+  width: 100% !important;
+  height: auto !important;
+  max-width: 100% !important;
+  max-height: 220px !important;
+  flex: 1 1 auto !important;
+  border: 2px solid #fff !important;
+  box-shadow:
+    2px 2px 0 0 #ffffff,
+    3px 3px 0 0 color-mix(in srgb, var(--text-muted) 55%, transparent),
+    4px 4px 0 0 #ffffff,
+    5px 5px 0 0 color-mix(in srgb, var(--text-muted) 30%, transparent) !important;
+}
+
+.sh-row[style] .sh-cell .ft-att-group.is-multi .ft-att-thumb:not(.is-folded) {
+  height: 100% !important;
+  max-height: 100% !important;
+}
+
+/* 11) 拖框选要丝滑：图片不能被浏览器原生拖拽接管（会打断 pointer 序列） */
+.sh-table .sh-cell img.ft-att-thumb {
+  -webkit-user-drag: none !important;
+  user-select: none !important;
+}
+
+/* 12) 拖选时不要出现浏览器原生文字选区（截图里那种"只有文字宽"的深蓝块）。
+      单元格一律禁止文本选择，只有正在编辑的输入框例外。 */
+.sh-table .sh-cell,
+.sh-table .sh-cell * {
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+.sh-table .sh-cell input,
+.sh-table .sh-cell textarea {
+  user-select: text !important;
+  -webkit-user-select: text !important;
+}
+
+/* 13) 所见即所得：输入里的空格/换行原样保留，不再被 HTML 折叠 */
+.sh-table .sh-cell .ft-text {
+  white-space: pre !important;
+}
+.sh-table .sh-cell.is-wrap .ft-text {
+  white-space: pre-wrap !important;
+}
+
+/* 14) 选区高亮必须「按单元格」而不是按内容：
+      行被其它列的长文本撑高时，单元格自身还是 42px，高亮就只剩一条横带。
+      普通格与图片格都要撑满 td 高度；自动行高下 100% 解析为内容高度，
+      图片「撑行」的行为不受影响（重绘后行高由图片本身决定）。 */
+.sh-table .sh-cell {
+  height: 100% !important;
+  min-height: 42px !important;
+}
+.sh-table .sh-cell:has(.ft-att-thumb) {
+  height: 100% !important;
+  min-height: 42px !important;
+}
+
+/* =========================================================================
+   15) 单元格格式（底色 / 对齐 / 换行）与格式面板
+   ========================================================================= */
+.sh-cell.is-h-left { justify-content: flex-start !important; }
+.sh-cell.is-h-center { justify-content: center !important; }
+.sh-cell.is-h-right { justify-content: flex-end !important; }
+.sh-cell.is-h-left .ft-number,
+.sh-cell.is-h-center .ft-number,
+.sh-cell.is-h-right .ft-number { margin-left: 0 !important; }
+
+.sh-cell.is-v-top { align-items: flex-start !important; }
+.sh-cell.is-v-middle { align-items: center !important; }
+.sh-cell.is-v-bottom { align-items: flex-end !important; }
+
+/* 单格关掉换行时，即使列开着自动换行也按单行省略 */
+.sh-cell:not(.is-wrap) .ft-text {
+  white-space: pre !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+/* --- 格式面板 --- */
+.sh-fmtpanel { width: 252px !important; padding: 6px !important; }
+
+.sh-fmt-label {
+  padding: 7px 6px 4px !important;
+  font-size: 10.5px !important;
+  font-weight: 600 !important;
+  color: var(--text-muted) !important;
+}
+
+.sh-fmt-swatches {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  gap: 5px !important;
+  padding: 0 5px 2px !important;
+}
+
+.sh-fmt-swatch {
+  width: 20px !important;
+  height: 20px !important;
+  min-height: 0 !important;
+  padding: 0 !important;
+  border: 1px solid var(--border-medium) !important;
+  border-radius: 5px !important;
+  background: var(--sw, transparent) !important;
+  cursor: pointer !important;
+}
+
+.sh-fmt-swatch.is-none {
+  background: repeating-linear-gradient(45deg, transparent 0 3px, color-mix(in srgb, var(--text-muted) 32%, transparent) 3px 4px) !important;
+}
+
+.sh-fmt-swatch.is-on {
+  outline: 2px solid var(--color-primary) !important;
+  outline-offset: 1px !important;
+}
+
+.sh-fmt-row {
+  display: flex !important;
+  gap: 4px !important;
+  padding: 0 5px !important;
+}
+
+.sh-fmt-opt {
+  flex: 1 1 0% !important;
+  height: 26px !important;
+  min-height: 0 !important;
+  padding: 0 !important;
+  border: 1px solid var(--border-light) !important;
+  border-radius: 6px !important;
+  background: transparent !important;
+  color: var(--text-secondary) !important;
+  font-size: 11.5px !important;
+  cursor: pointer !important;
+}
+
+.sh-fmt-opt:hover { background: var(--overlay-light) !important; color: var(--text-main) !important; }
+
+.sh-fmt-opt.is-on {
+  border-color: color-mix(in srgb, var(--color-primary) 45%, transparent) !important;
+  background: color-mix(in srgb, var(--color-primary) 16%, transparent) !important;
+  color: var(--color-primary) !important;
+}
+
+/* 自定义底色存 CSS 变量；选区/激活态用 background-image 叠加半透明主色，
+   这样「选中时也能看到自己设的底色」，不会被高亮整块盖掉。 */
+.sh-table .sh-cell {
+  background-color: var(--cell-bg, transparent) !important;
+}
+.sh-table .sh-cell.is-sel {
+  background-color: var(--cell-bg, transparent) !important;
+  background-image: linear-gradient(
+    color-mix(in srgb, var(--color-primary) 14%, transparent),
+    color-mix(in srgb, var(--color-primary) 14%, transparent)
+  ) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-primary) 42%, transparent) !important;
+}
+.sh-table .sh-cell.is-active {
+  background-color: var(--cell-bg, transparent) !important;
+  background-image: linear-gradient(
+    color-mix(in srgb, var(--color-primary) 10%, transparent),
+    color-mix(in srgb, var(--color-primary) 10%, transparent)
+  ) !important;
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--color-primary) 70%, transparent) !important;
+}
+
+/* =========================================================================
+   16) 链接文件：单元格里只显示文件名胶囊，双击出「定位 / 打开 / 打开方式」
+   ========================================================================= */
+.sh-table .sh-cell .ft-file-list {
+  display: flex !important;
+  flex: 0 1 auto !important;
+  align-items: center !important;
+  gap: 6px !important;
+  min-width: 0 !important;
+  margin-left: 6px !important;
+}
+
+.sh-table .sh-cell .ft-file-chip {
+  display: inline-flex !important;
+  flex: 1 1 0 !important;
+  align-items: center !important;
+  gap: 4px !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  padding: 2px 7px !important;
+  border: 1px solid var(--border-light) !important;
+  border-radius: 5px !important;
+  background: var(--overlay-light) !important;
+  color: var(--text-secondary) !important;
+  font-size: 11.5px !important;
+  line-height: 16px !important;
+  cursor: pointer !important;
+}
+
+/* 只有一个文件时按内容宽度，别撑成整条 */
+.sh-table .sh-cell .ft-file-chip:only-child {
+  flex: 0 1 auto !important;
+}
+
+.sh-table .sh-cell .ft-file-chip:hover {
+  border-color: color-mix(in srgb, var(--color-primary) 45%, transparent) !important;
+  color: var(--color-primary) !important;
+}
+
+.sh-table .sh-cell .ft-file-chip .wr-icon {
+  flex: none !important;
+  width: 12px !important;
+  height: 12px !important;
+}
+
+.sh-table .sh-cell .ft-file-name {
+  min-width: 0 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+
+.sh-table .sh-cell .ft-file-more {
+  flex: none !important;
+  font-size: 11px !important;
+  color: var(--text-muted) !important;
+}
+
+/* 附件编辑弹层里的「文件」格子 */
+.sh-img-item.is-file {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 96px !important;
+  height: 42px !important;
+  padding: 0 8px !important;
+  border: 1px dashed var(--border-medium) !important;
+  border-radius: 6px !important;
+  box-sizing: border-box !important;
+}
+
+.sh-file-tile {
+  max-width: 100% !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  font-size: 11px !important;
+  color: var(--text-secondary) !important;
+}
+
+/* 附件格右下角的「＋」：hover 单元格时高亮，点它追加附件 */
+.sh-table .sh-cell { position: relative !important; }
+
+.ft-att-add {
+  position: absolute !important;
+  right: 5px !important;
+  bottom: 5px !important;
+  z-index: 3 !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 18px !important;
+  height: 18px !important;
+  border-radius: 5px !important;
+  background: rgba(8, 12, 22, .62) !important;
+  color: #fff !important;
+  font-size: 12px !important;
+  line-height: 1 !important;
+  cursor: pointer !important;
+  opacity: .45 !important;
+  transition: opacity .12s ease, background .12s ease !important;
+}
+
+.sh-table .sh-cell:hover .ft-att-add {
+  opacity: 1 !important;
+  background: var(--color-primary) !important;
+}
+
+.sh-detail-cell .ft-att-add { display: none !important; }

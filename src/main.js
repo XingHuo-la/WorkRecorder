@@ -11,7 +11,8 @@ import { initFreeCellModule } from './freecell.js';
 import { initNotesEditor, flushBeforeLeave, refreshNotesCache } from './notesEditor.js';
 import { initNotesModule } from './notes.js';
 import { setNotesDataPathProvider } from './notesStore.js';
-import { initTablePage, setTableAdapter } from './tablePage.js';
+import { initSheetPage } from './sheetPage.js';
+import { setSheetAdapter } from './sheetStore.js';
 
 // Tauri 全局对象由 withGlobalTauri 同步注入，正常情况可直接取用。
 // 这里做一次防御：万一注入时序异常，也不要让整个模块崩溃。
@@ -77,9 +78,9 @@ async function initApp() {
 
   await loadData();
 
-  // 表格页的数据访问走注入：tablePage.js 本身零顶层依赖，
-  // 调试壳（_debug/ui-review.html）可绕过 Tauri 直接复用其渲染函数。
-  setTableAdapter({ dbQuery, dbExecute });
+  // 表格页的数据访问走注入：sheetStore.js 本身零顶层依赖（只认 adapter），
+  // 调试壳（_debug/sheet-review.html）可绕过 Tauri 直接复用同一套渲染与交互。
+  setSheetAdapter({ dbQuery, dbExecute });
 
   await import('./settings.js').then(async (m) => {
       await m.applySavedThemeFromDB();
@@ -338,7 +339,7 @@ function setupRouting() {
       localStorage.setItem('workRecorder:lastSubview', item.btn.id);
       if (item.btn.id === 'nav-timeline') renderTimeline();
       if (item.btn.id === 'nav-table') {
-        try { await initTablePage(); } catch (error) { logToFile('error', `表格页初始化失败: ${error?.stack || error}`); }
+        try { await initSheetPage(); } catch (error) { logToFile('error', `表格页初始化失败: ${error?.stack || error}`); }
       }
       if (item.btn.id === 'nav-search') document.getElementById('global-search-input')?.focus();
     });

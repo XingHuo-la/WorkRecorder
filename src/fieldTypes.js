@@ -14,19 +14,21 @@ import { escapeHtml } from './htmlUtils.js';
 // ==========================================
 
 // 类型展示顺序（列头菜单的「字段类型」面板按此排列，对齐设计稿③）
-export const FIELD_TYPE_ORDER = ['text', 'select', 'multi_select', 'date', 'checkbox', 'attachment'];
+export const FIELD_TYPE_ORDER = ['text', 'number', 'select', 'multi_select', 'date', 'checkbox', 'attachment'];
 
 export const FIELD_TYPE_LABELS = {
   text: '文本',
+  number: '数字',
   select: '单选',
   multi_select: '多选',
   date: '日期',
   checkbox: '复选框',
-  attachment: '附件',
+  attachment: '图片 / 附件',
 };
 
 const TYPE_ICON_IDS = {
   text: 'ic-type-text',
+  number: 'ic-type-number',
   select: 'ic-type-select',
   multi_select: 'ic-type-multi',
   date: 'ic-type-date',
@@ -129,6 +131,8 @@ function renderPill(label, color, extraClass = '') {
 }
 
 function selectColor(option) {
+  // 选项自带颜色优先（用户在图表面板里配的），其次是内置 tone，最后按值取稳定色。
+  if (option.color) return option.color;
   if (option.tone && TONE_VARS[option.tone]) return TONE_VARS[option.tone];
   return optionColor(option.value ?? option.label);
 }
@@ -155,6 +159,12 @@ function renderMultiSelectCell(field, value, ctx) {
     .join('')}</span>`;
 }
 
+// 日期字段的精度存在字段配置里：{ dateOnly: true } 表示只到日。
+export function isDateOnly(field) {
+  const config = parseFieldConfig(field);
+  return config.dateOnly === true;
+}
+
 function renderDateCell(value, ctx) {
   const str = String(value ?? '').trim();
   if (!str) return renderEmpty(ctx);
@@ -173,26 +183,78 @@ function renderCheckboxCell(value, ctx) {
   }</span>`;
 }
 
+function baseName(path) {
+  const text = String(path || '');
+  const cut = Math.max(text.lastIndexOf('\\'), text.lastIndexOf('/'));
+  return cut >= 0 ? text.slice(cut + 1) : text;
+}
+
 function renderAttachmentCell(value, ctx) {
   const items = Array.isArray(value) ? value.filter(item => item && item.path) : [];
   if (!items.length) return renderEmpty(ctx);
-  const visible = items.slice(0, 3);
-  const rest = items.length - visible.length;
-  const thumbs = visible
-    .map(item => `<img class="ft-att-thumb" src="${escapeHtml(toAssetUrl(item.path))}" alt="${escapeHtml(item.name || '附件')}" title="${escapeHtml(item.name || '')}" />`)
+  // 两类附件：图片（嵌入到数据目录，可缩略预览）与普通文件（只存路径链接）
+  const images = items.filter(item => item.kind !== 'file');
+  const files = items.filter(item => item.kind === 'file');
+  // 有内容的附件格右下角给一个「＋」：点它追加图片/文件（空格的添加走双击）
+  const addBtn = '<span class="ft-att-add" data-add-att="1" title="追加图片或文件">＋</span>';
+  return `${images.length ? renderImagePart(images) : ''}${files.length ? renderFilePart(files, images.length > 0) : ''}${addBtn}`;
+}
+
+function renderImagePart(items) {
+  const img = item =>
+    `<img class="ft-att-thumb" src="${escapeHtml(toAssetUrl(item.path))}" alt="${escapeHtml(item.name || '附件')}" title="${escapeHtml(item.name || '')}" />`;
+  // 单图：铺满列宽按比例展示。
+  // 多图（WPS 式折叠）：只完整显示第一张，其余以隐藏 img 折叠在后面（点开灯箱仍能翻全组），
+  // 右上角「+N」角标提示还有几张。
+  if (items.length === 1) {
+    return `<span class="ft-att-group">${img(items[0])}</span>`;
+  }
+  const rest = items.length - 1;
+  return `<span class="ft-att-group is-multi">${img(items[0])}${items
+    .slice(1)
+    .map(item => `<img class="ft-att-thumb is-folded" src="${escapeHtml(toAssetUrl(item.path))}" alt="${escapeHtml(item.name || '附件')}" title="${escapeHtml(item.name || '')}" />`)
+    .join('')}${rest > 0 ? `<span class="ft-att-more">+${rest}</span>` : ''}</span>`;
+}
+
+// 普通文件只显示「文件名」小胶囊（不暴露长路径），双击弹三个动作：
+// 资源管理器定位 / 默认应用打开 / 选择打开方式
+function renderFilePart(files, compact) {
+  const max = compact ? 1 : 2;
+  const visible = files.slice(0, max);
+  const rest = files.length - visible.length;
+  const chips = visible
+    .map(item => `<span class="ft-file-chip" data-path="${escapeHtml(item.path)}" data-name="${escapeHtml(item.name || baseName(item.path))}" title="${escapeHtml(item.name || baseName(item.path))}">
+      <svg class="wr-icon" aria-hidden="true"><use href="#ic-type-attachment"/></svg>
+      <span class="ft-file-name">${escapeHtml(item.name || baseName(item.path))}</span>
+    </span>`)
     .join('');
-  return `<span class="ft-att-group">${thumbs}${rest > 0 ? `<span class="ft-att-more">+${rest}</span>` : ''}</span>`;
+  return `<span class="ft-file-list">${chips}${rest > 0 ? `<span class="ft-file-more">+${rest}</span>` : ''}</span>`;
 }
 
 function renderTextCell(value, ctx) {
-  const str = String(value ?? '').trim();
+  // 所见即所得：不 trim、不合并空格，用户敲进去什么样就显示什么样
+  const str = String(value ?? '');
   if (!str) return renderEmpty(ctx);
   return `<span class="ft-text">${escapeHtml(str)}</span>`;
+}
+
+function formatNumber(value) {
+  // 不做千分位、不四舍五入：输入 00123 / 1.50 就按原样显示
+  if (value == null || value === '') return '';
+  return String(value);
+}
+
+function renderNumberCell(value, ctx) {
+  if (value == null || value === '') return renderEmpty(ctx);
+  const text = formatNumber(value);
+  if (!text) return renderEmpty(ctx);
+  return `<span class="ft-number">${escapeHtml(text)}</span>`;
 }
 
 // 统一入口：按字段类型渲染只读单元格内容
 export function renderCell(field, value, ctx = {}) {
   switch (field?.type) {
+    case 'number': return renderNumberCell(value, ctx);
     case 'select': return renderSelectCell(field, value, ctx);
     case 'multi_select': return renderMultiSelectCell(field, value, ctx);
     case 'date': return renderDateCell(value, ctx);
@@ -219,12 +281,34 @@ function unmarkEditing(cellEl) {
 function openTextEditor(cellEl, field, value, actions) {
   const original = value == null ? '' : String(value);
   markEditing(cellEl);
-  const input = document.createElement('input');
-  input.type = 'text';
-  input.className = 'ft-inline-input';
+  // 关键：把原内容收起来再放输入框。
+  // 否则 flex 布局会把 input 排在原文字后面，变成「文字 + 旁边一个小框」。
+  const restore = cellEl.innerHTML;
+  cellEl.innerHTML = '';
+  // 换行的列用多行输入：单行 input 装不下两三行文字，编辑时只能看到末尾
+  const multiline = cellEl.classList.contains('is-wrap');
+  const input = document.createElement(multiline ? 'textarea' : 'input');
+  if (!multiline) input.type = 'text';
+  input.className = `ft-inline-input${multiline ? ' is-multiline' : ''}`;
   input.value = original;
   input.spellcheck = false;
   cellEl.appendChild(input);
+
+  if (multiline) {
+    input.rows = 1;
+    // 优先用 CSS 的 field-sizing: content（浏览器自己按内容算高度，最准）。
+    // 老内核不支持时退回手动量 scrollHeight —— 但要等一帧，否则量到的是空内容。
+    const supportsFieldSizing = window.CSS?.supports?.('field-sizing', 'content');
+    if (!supportsFieldSizing) {
+      const grow = () => {
+        input.style.height = 'auto';
+        input.style.height = `${input.scrollHeight}px`;
+      };
+      input.addEventListener('input', grow);
+      requestAnimationFrame(grow);
+      setTimeout(grow, 30);
+    }
+  }
 
   let settled = false;
   const finish = (save) => {
@@ -233,21 +317,84 @@ function openTextEditor(cellEl, field, value, actions) {
     const next = input.value;
     input.remove();
     unmarkEditing(cellEl);
+    // 任何分支都先把原内容放回去，保存成功后由 commit 重新渲染
+    cellEl.innerHTML = restore;
     if (save && next !== original) Promise.resolve(actions.commit(next)).catch(() => {});
     else actions.onSettled?.();
   };
 
   input.addEventListener('keydown', event => {
+    // Shift+Enter 在多行模式里换行，其余情况 Enter 直接提交
+    if (event.key === 'Enter' && !(multiline && event.shiftKey)) { event.preventDefault(); finish(true); }
+    else if (event.key === 'Escape') { event.preventDefault(); finish(false); }
+  });
+  input.addEventListener('blur', () => finish(true));
+  input.focus();
+  if (multiline) input.setSelectionRange(original.length, original.length);
+  else input.select();
+}
+
+// ---- 数字：内嵌输入，只接受数字 ----
+function openNumberEditor(cellEl, field, value, actions) {
+  const original = value == null || value === '' ? '' : String(value);
+  markEditing(cellEl);
+  const restore = cellEl.innerHTML;
+  cellEl.innerHTML = '';
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.inputMode = 'decimal';
+  input.className = 'ft-inline-input ft-number-input';
+  input.value = original;
+  input.spellcheck = false;
+  cellEl.appendChild(input);
+
+  let settled = false;
+  const finish = (save) => {
+    if (settled) return;
+    settled = true;
+    const raw = input.value.trim();
+    input.remove();
+    unmarkEditing(cellEl);
+    cellEl.innerHTML = restore;
+    if (!save) { actions.onSettled?.(); return; }
+    if (raw === '' ) {
+      if (original !== '') Promise.resolve(actions.commit('')).catch(() => {});
+      else actions.onSettled?.();
+      return;
+    }
+    // 存用户输入的原始字符串（保留 00123 / 1.50 这类写法），只做合法性校验
+    const num = Number(raw.replace(/,/g, ''));
+    if (!Number.isFinite(num)) { actions.onSettled?.(); return; }
+    if (raw !== original) Promise.resolve(actions.commit(raw)).catch(() => {});
+    else actions.onSettled?.();
+  };
+
+  input.addEventListener('input', () => {
+    // 只保留数字、小数点和负号，避免输入法塞进奇怪字符
+    const cleaned = input.value.replace(/[^\d.\-]/g, '');
+    if (cleaned !== input.value) input.value = cleaned;
+  });
+  input.addEventListener('keydown', event => {
     if (event.key === 'Enter') { event.preventDefault(); finish(true); }
     else if (event.key === 'Escape') { event.preventDefault(); finish(false); }
+    else if (event.key === 'Tab') { finish(true); }
   });
   input.addEventListener('blur', () => finish(true));
   input.focus();
   input.select();
 }
 
-// ---- 日期：flatpickr 内嵌 ----
+// ---- 日期：统一选择器（调用方注入），没注入时退回 flatpickr ----
 function openDateEditor(cellEl, field, value, actions) {
+  if (typeof actions.openDatePicker === 'function') {
+    markEditing(cellEl);
+    actions.openDatePicker(cellEl, field, value, {
+      dateOnly: isDateOnly(field),
+      commit: next => Promise.resolve(actions.commit(next)).catch(() => {}),
+      done: () => { unmarkEditing(cellEl); actions.onSettled?.(); },
+    });
+    return;
+  }
   if (!window.flatpickr) return;
   const original = String(value ?? '').trim();
   markEditing(cellEl);
@@ -471,6 +618,7 @@ export function openCellEditor(cellEl, field, value, actions) {
   if (!cellEl || cellEl.querySelector('.ft-inline-input, .ft-dropdown')) return;
   if (cellEl.classList.contains('ft-cell-editing')) return;
   switch (field?.type) {
+    case 'number': openNumberEditor(cellEl, field, value, actions); break;
     case 'select': openSelectPanel(cellEl, field, value, actions, { multiple: false }); break;
     case 'multi_select': openSelectPanel(cellEl, field, value, actions, { multiple: true }); break;
     case 'date': openDateEditor(cellEl, field, value, actions); break;
