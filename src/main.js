@@ -1,4 +1,4 @@
-import { loadData, appData, dbQuery, dbExecute } from './data.js';
+import { loadData, appData, dbQueryStrict, dbExecuteStrict } from './data.js';
 import { logToFile, markLogReady } from './logger.js';
 import { initTodoModule } from './todo.js';
 import { initLogModule, renderHistoryList } from './log.js';
@@ -80,7 +80,8 @@ async function initApp() {
 
   // 表格页的数据访问走注入：sheetStore.js 本身零顶层依赖（只认 adapter），
   // 调试壳（_debug/sheet-review.html）可绕过 Tauri 直接复用同一套渲染与交互。
-  setSheetAdapter({ dbQuery, dbExecute });
+  // 这里用严格版：写库失败必须抛，不能让「保存不动」被静默吞掉。
+  setSheetAdapter({ dbQuery: dbQueryStrict, dbExecute: dbExecuteStrict });
 
   await import('./settings.js').then(async (m) => {
       await m.applySavedThemeFromDB();

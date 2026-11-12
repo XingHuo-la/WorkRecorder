@@ -67,6 +67,26 @@ export function parseOptions(field) {
   }
 }
 
+// 字段配置是「一个 JSON blob 装所有开关」。以前有三处各自重新拼一遍，
+// 每拼一次就把没参与拼装的键（典型是列级 format）抹掉。
+// 统一走这里：读出现有配置 → 只覆盖本次真正改动的键 → 写回。
+// patch 里显式传 null/undefined 表示「删掉这个键」。
+export function mergeFieldOptions(field, patch = {}) {
+  const base = parseOptions(field);
+  const next = { ...base };
+  Object.entries(patch).forEach(([key, value]) => {
+    if (value === undefined || value === null) delete next[key];
+    else next[key] = value;
+  });
+  if (!next.source) next.source = 'custom';
+  if (!Array.isArray(next.options)) next.options = [];
+  if (!next.wrap) delete next.wrap;
+  if (!next.dateOnly) delete next.dateOnly;
+  if (next.format && typeof next.format === 'object' && !Object.keys(next.format).length) delete next.format;
+  if (next.format && typeof next.format !== 'object') delete next.format;
+  return JSON.stringify(next);
+}
+
 export function fieldOptionsList(field) {
   const config = parseOptions(field);
   return Array.isArray(config.options) ? config.options : [];
@@ -234,20 +254,31 @@ export async function createSheet({ name, taskId = null, templateKey = 'blank' }
   const stamp = nowStamp();
   const sheetName = String(name || '未命名表格').trim();
 
+  // 排序值取「现有最大值 + 1」。
+  // 以前用 Date.now() % 100000 —— 每 100 秒循环一次，等于随机数，
+  // 「全部表格」的顺序每次新建都可能乱。
+  const maxRows = await db().dbQuery('SELECT COALESCE(MAX(sort), -1) AS max_sort FROM sheet');
+  const nextSort = Number(maxRows?.[0]?.max_sort ?? -1) + 1;
+
   // ⚠️ 数据层的 dbExecute 会把参数统一 String()，
   // 直接传 null 会变成字符串 'null' 落库，所以「不归属任务」必须走不带该列的 INSERT。
   if (taskId == null) {
     await db().dbExecute(
       'INSERT INTO sheet (name, created_at, updated_at, sort) VALUES (?, ?, ?, ?)',
-      [sheetName, stamp, stamp, Date.now() % 100000]
+      [sheetName, stamp, stamp, nextSort]
     );
   } else {
     await db().dbExecute(
       'INSERT INTO sheet (name, task_id, created_at, updated_at, sort) VALUES (?, ?, ?, ?, ?)',
-      [sheetName, Number(taskId), stamp, stamp, Date.now() % 100000]
+      [sheetName, Number(taskId), stamp, stamp, nextSort]
     );
   }
-  const created = await db().dbQuery('SELECT id FROM sheet ORDER BY id DESC LIMIT 1');
+  // 不能用 MAX(id)：插入一旦失败，拿到的会是「上一张表」的 id，
+  // 后面那批字段就会写进别人的表里。按刚写入的唯一 sort 精确定位。
+  const created = await db().dbQuery(
+    'SELECT id FROM sheet WHERE sort = ? AND name = ? ORDER BY id DESC LIMIT 1',
+    [nextSort, sheetName]
+  );
   const sheetId = created?.[0]?.id;
   if (!sheetId) throw new Error('创建表格失败');
 
@@ -328,7 +359,9 @@ export async function createField(sheetId, { label, type = 'text', options = nul
       key,
       String(label || '新字段').trim(),
       type,
-      options ? serializeOptions(options) : null,
+      // 允许直接传已经序列化好的 JSON：再 serializeOptions 一次会把它当成
+      // 「一个没有 options 字段的对象」，选项会被清空。
+      options ? (typeof options === 'string' ? options : serializeOptions(options)) : null,
       width || defaultWidthFor(type),
       nextSort,
     ]
@@ -365,13 +398,21 @@ export async function loadRows(sheetId) {
 
 export async function insertRow(sheetId, values = {}) {
   const stamp = nowStamp();
-  const rows = await db().dbQuery('SELECT COUNT(*) AS total FROM sheet_row WHERE sheet_id = ?', [sheetId]);
-  const sort = Number(rows?.[0]?.total || 0);
+  // 排序值必须取 MAX(sort)+1，不能取 COUNT(*)：
+  // 删过中间行之后 COUNT 比最大 sort 小，新记录会插到表格中间。
+  const maxRows = await db().dbQuery(
+    'SELECT COALESCE(MAX(sort), -1) AS max_sort FROM sheet_row WHERE sheet_id = ?',
+    [sheetId]
+  );
+  const sort = Number(maxRows?.[0]?.max_sort ?? -1) + 1;
   await db().dbExecute(
     'INSERT INTO sheet_row (sheet_id, data, sort, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
     [sheetId, JSON.stringify(values), sort, stamp, stamp]
   );
-  const created = await db().dbQuery('SELECT id FROM sheet_row WHERE sheet_id = ? ORDER BY id DESC LIMIT 1', [sheetId]);
+  const created = await db().dbQuery(
+    'SELECT id FROM sheet_row WHERE sheet_id = ? AND sort = ? ORDER BY id DESC LIMIT 1',
+    [sheetId, sort]
+  );
   return created?.[0]?.id || null;
 }
 
@@ -394,9 +435,16 @@ export async function insertRowAt(sheetId, sortIndex, count = 1, values = {}) {
 }
 
 export async function setRowHeight(rowId, height) {
+  const stamp = nowStamp();
+  // 参数会被统一 String()，null 传下去会写成字符串 'null'（INTEGER 列存成 TEXT）。
+  // 「自动行高」必须走不带参数的 SQL NULL。
+  if (height == null) {
+    await db().dbExecute('UPDATE sheet_row SET height = NULL, updated_at = ? WHERE id = ?', [stamp, rowId]);
+    return;
+  }
   await db().dbExecute('UPDATE sheet_row SET height = ?, updated_at = ? WHERE id = ?', [
-    height == null ? null : Math.max(28, Math.min(600, Number(height))),
-    nowStamp(),
+    Math.max(28, Math.min(600, Number(height))),
+    stamp,
     rowId,
   ]);
 }

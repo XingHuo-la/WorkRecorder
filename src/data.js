@@ -29,6 +29,21 @@ export async function dbExecute(sql, params = []) {
 }
 
 // ==========================================
+// 🌟 2.1 严格版：失败就抛
+// ==========================================
+// 上面两个函数为了兼容旧模块，把错误吞成 [] / 0。这对「读个列表」无害，
+// 对「写一条记录」是灾难：调用方拿到 0 以为成功，界面照常更新，重启才发现丢了。
+// 表格层统一走这两个：失败必须抛，让上层回滚 UI 并提示。
+export async function dbQueryStrict(sql, params = []) {
+    const res = await invoke('db_query', { query: sql, params: params.map(String) });
+    return JSON.parse(res);
+}
+
+export async function dbExecuteStrict(sql, params = []) {
+    return invoke('db_execute', { query: sql, params: params.map(String) });
+}
+
+// ==========================================
 // 🌟 3. 核心改造：从 SQLite 极速加载数据，并拼装成兼容旧版的格式
 // ==========================================
 export async function loadData() {

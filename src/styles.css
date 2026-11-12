@@ -10346,7 +10346,8 @@ textarea::-webkit-scrollbar-track {
 /* 单选 / 多选下拉面板（设计稿②） */
 .ft-dropdown {
   position: fixed !important;
-  z-index: 2400 !important;
+  /* 必须高于抽屉遮罩(2700)：这个下拉也会从记录详情里弹出来 */
+  z-index: 2760 !important;
   display: flex !important;
   flex-direction: column !important;
   padding: 6px !important;
@@ -11327,9 +11328,12 @@ textarea::-webkit-scrollbar-track {
 }
 
 /* --- 浮层 --- */
+/* 层级约定：抽屉(2710) > 遮罩(2700) > 表格浮层(2750+)。
+   浮层必须高于遮罩，否则从记录详情里点单元格，下拉/日历会藏在遮罩下面，
+   点上去命中的是遮罩 —— 表现为「一点编辑，抽屉就关了」。 */
 .sh-pop {
   position: fixed !important;
-  z-index: 2600 !important;
+  z-index: 2750 !important;
   min-width: 190px !important;
   padding: 6px !important;
   border-radius: 10px !important;
@@ -12063,7 +12067,8 @@ body.sh-col-resizing * { cursor: col-resize !important; user-select: none !impor
    ========================================================================= */
 .sh-dp {
   position: fixed !important;
-  z-index: 2650 !important;
+  /* 同上：要盖住抽屉遮罩 */
+  z-index: 2770 !important;
   width: 272px !important;
   padding: 10px !important;
   border-radius: 14px !important;

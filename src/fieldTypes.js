@@ -52,6 +52,13 @@ export function optionColor(value) {
   return OPTION_PALETTE[hash % OPTION_PALETTE.length];
 }
 
+// 中文输入法正在组词时按回车，是「选词」不是「提交」。
+// Chrome/WebView2 会把这类按键报成 keyCode 229 / isComposing=true，
+// 不拦掉就会出现「拼音还没选完，编辑器就把半截文字存了并关掉」。
+export function isImeKey(event) {
+  return event.isComposing === true || event.keyCode === 229;
+}
+
 // 带 tone 的选项用主题令牌（跟随主题换色）；无 tone 走 hash 色板。
 const TONE_VARS = {
   muted: 'var(--text-muted)',
@@ -127,7 +134,12 @@ function renderEmpty(actions) {
 // ==========================================
 
 function renderPill(label, color, extraClass = '') {
-  return `<span class="ft-pill${extraClass ? ` ${extraClass}` : ''}" style="--pill:${color}">${escapeHtml(label)}</span>`;
+  // 颜色会拼进 inline style，必须限定成「十六进制色 / 主题变量」两种形态，
+  // 否则一条脏数据就能往 style 里塞任意声明。
+  const safe = typeof color === 'string' && /^(#[0-9a-f]{6}|var\(--[a-z0-9-]+\))$/i.test(color)
+    ? color
+    : optionColor(label);
+  return `<span class="ft-pill${extraClass ? ` ${extraClass}` : ''}" style="--pill:${safe}">${escapeHtml(label)}</span>`;
 }
 
 function selectColor(option) {
@@ -324,6 +336,7 @@ function openTextEditor(cellEl, field, value, actions) {
   };
 
   input.addEventListener('keydown', event => {
+    if (isImeKey(event)) return;
     // Shift+Enter 在多行模式里换行，其余情况 Enter 直接提交
     if (event.key === 'Enter' && !(multiline && event.shiftKey)) { event.preventDefault(); finish(true); }
     else if (event.key === 'Escape') { event.preventDefault(); finish(false); }
@@ -375,6 +388,7 @@ function openNumberEditor(cellEl, field, value, actions) {
     if (cleaned !== input.value) input.value = cleaned;
   });
   input.addEventListener('keydown', event => {
+    if (isImeKey(event)) return;
     if (event.key === 'Enter') { event.preventDefault(); finish(true); }
     else if (event.key === 'Escape') { event.preventDefault(); finish(false); }
     else if (event.key === 'Tab') { finish(true); }
@@ -525,11 +539,13 @@ function openSelectPanel(cellEl, field, value, actions, { multiple = false } = {
     }
     const trimmed = keyword.trim();
     const exact = options.some(item => String(item.label).toLowerCase() === trimmed.toLowerCase());
+    // 只有「输入了内容、且没有完全同名选项」时才有可新建的东西。
+    // 以前两个分支都 hidden=false，空输入时也挂着一个「＋ 新建选项」的死按钮。
     if (trimmed && !exact) {
       createBtn.hidden = false;
       createBtn.textContent = `＋ 新建「${trimmed}」`;
     } else {
-      createBtn.hidden = false;
+      createBtn.hidden = true;
       createBtn.textContent = '＋ 新建选项';
     }
   };
@@ -576,6 +592,7 @@ function openSelectPanel(cellEl, field, value, actions, { multiple = false } = {
       renderList();
     });
     searchInput.addEventListener('keydown', event => {
+      if (isImeKey(event)) return;
       if (event.key === 'Enter') {
         event.preventDefault();
         const first = listEl.querySelector('.ft-option');

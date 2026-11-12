@@ -46,6 +46,7 @@ import {
   duplicateRow,
   SHEET_TEMPLATES,
   serializeOptions,
+  mergeFieldOptions,
   fieldOptionsList,
   rowTitle,
 } from './sheetStore.js';
@@ -161,6 +162,34 @@ function displayValue(field, value) {
   return String(value);
 }
 
+// 搜索专用的文本：选项字段要按「屏幕上看到的字」匹配。
+// 状态列库里存 doing、界面显示「进行中」，拿原始值搜是搜不到的。
+// 注意别把它用在筛选的 equals 上 —— 筛选面板传的是选项 value。
+function searchTextOf(field, value) {
+  if (value == null || value === '') return '';
+  if (field.type === 'select') {
+    const option = fieldOptionsList(field).find(item => String(item.value) === String(value));
+    return option ? String(option.label) : String(value);
+  }
+  if (field.type === 'multi_select') {
+    const options = fieldOptionsList(field);
+    const list = Array.isArray(value) ? value : String(value).split(',');
+    return list
+      .map(item => {
+        const hit = options.find(option => String(option.value) === String(item));
+        return hit ? String(hit.label) : String(item);
+      })
+      .join(' ');
+  }
+  if (field.type === 'checkbox') {
+    return value === true || value === 1 || value === '1' || value === 'true' ? '是' : '否';
+  }
+  if (field.type === 'attachment') {
+    return (Array.isArray(value) ? value : []).map(item => `${item?.name || ''} ${item?.path || ''}`).join(' ');
+  }
+  return String(value);
+}
+
 // ==========================================
 // 行过滤 / 排序
 // ==========================================
@@ -188,7 +217,7 @@ function filterRows(rows) {
   if (state.search) {
     const keyword = state.search.toLowerCase();
     list = list.filter(row =>
-      visibleFields().some(field => displayValue(field, row.values[field.key]).toLowerCase().includes(keyword))
+      visibleFields().some(field => searchTextOf(field, row.values[field.key]).toLowerCase().includes(keyword))
     );
   }
   if (state.sorts.length) {
@@ -358,9 +387,12 @@ function toolbarHtml() {
   ${filterChips || sortChip ? `<div class="sh-chips">${filterChips}${sortChip}</div>` : ''}`;
 }
 
-function renderSheet() {
+function renderSheet({ resetScroll = false } = {}) {
   const sheet = state.sheet;
   if (!sheet) { renderLibrary(); return; }
+  // 全量重排会把滚动位置打回顶部。改个格式、隐藏一列就跳回第一行，
+  // 长表根本没法用。这里先记住位置，重排完再补回来。
+  const prevScroll = resetScroll ? null : captureScroll();
   clearSelection();
   const task = state.tasks.find(item => String(item.id) === String(sheet.task_id));
   const total = state.rows.length;
@@ -403,7 +435,32 @@ function renderSheet() {
   </div>`;
 
   renderBodyRows(true);
+  if (prevScroll) restoreScroll(prevScroll);
   bindScroll();
+}
+
+function captureScroll() {
+  const scroller = host?.querySelector('[data-scroll]');
+  return scroller ? { top: scroller.scrollTop, left: scroller.scrollLeft } : null;
+}
+
+// 行是分块渲染的，直接写 scrollTop 会被夹到 0：
+// 先把块补到「高度够得到目标位置」再恢复。
+function restoreScroll(prev) {
+  const scroller = host?.querySelector('[data-scroll]');
+  if (!scroller || !prev) return;
+  let guard = 0;
+  const limit = Math.min(state.rowTotal, ROW_LIMIT_HINT);
+  while (
+    scroller.scrollHeight < prev.top + scroller.clientHeight &&
+    state.rendered < limit &&
+    guard < ROW_LIMIT_HINT
+  ) {
+    renderBodyRows(false);
+    guard += 1;
+  }
+  scroller.scrollTop = prev.top;
+  scroller.scrollLeft = prev.left;
 }
 
 function renderBodyRows(reset) {
@@ -456,8 +513,13 @@ function bindScroll() {
 // ==========================================
 
 async function refreshSheets() {
-  state.sheets = await listSheets();
-  state.tasks = await listTasks();
+  // 读失败只提示、不抛：列表读不出来不该把「刚建好的表」也一起回滚掉。
+  try {
+    state.sheets = await listSheets();
+    state.tasks = await listTasks();
+  } catch (error) {
+    toast(`读取表格列表失败：${error?.message || error}`, 'danger');
+  }
   try { state.fieldIndex = await listAllFields(); } catch (error) { state.fieldIndex = new Map(); }
 }
 
@@ -471,7 +533,8 @@ async function openSheet(sheetId) {
   state.fields = await loadFields(sheet.id);
   state.rows = await loadRows(sheet.id);
   state.view = 'sheet';
-  render();
+  // 换了一张表：必须回到顶部，不能沿用上一张表的滚动位置
+  renderSheet({ resetScroll: true });
 }
 
 function backToLibrary() {
@@ -495,13 +558,25 @@ async function reloadRows() {
 // 单元格编辑
 // ==========================================
 
+// 同一行的写入必须串行：下拉多选连点、格式防抖、单元格提交可能同时在飞，
+// 后发先至会把旧快照写回去（表现就是「刚改的值自己弹回去了」）。
+// 队列里写的是行对象本身，执行时取最新值，所以连续修改不会互相覆盖。
+const rowWriteChains = new Map();
+function writeRow(row) {
+  const key = String(row.id);
+  const prev = rowWriteChains.get(key) || Promise.resolve();
+  const next = prev.catch(() => {}).then(() => saveRowValues(row.id, row.values));
+  rowWriteChains.set(key, next.catch(() => {}));
+  return next;
+}
+
 async function commitCell(field, row, cellEl, value) {
   const previous = row.values[field.key];
   row.values[field.key] = value;
   if (cellEl) cellEl.innerHTML = renderCell(field, value, cellCtx(field));
   markSaving();
   try {
-    await saveRowValues(row.id, row.values);
+    await writeRow(row);
     await touchSheet(state.sheet.id);
     markSaved();
     // 标题类字段改动后，详情抽屉的标题也要跟着变 —— 简单起见重建抽屉不划算，
@@ -511,7 +586,18 @@ async function commitCell(field, row, cellEl, value) {
     if (cellEl) cellEl.innerHTML = renderCell(field, previous, cellCtx(field));
     markSaved();
     toast(`保存失败：${error?.message || error}`, 'danger');
+  } finally {
+    // 编辑器被移除后焦点会落到 body，随后 Delete / ↑↓ / Enter 全部失灵。
+    // 只在「没人接手焦点」时把焦点还给单元格；用户点去别处就不抢。
+    focusIfIdle(cellEl);
   }
+}
+
+function focusIfIdle(cellEl) {
+  if (!cellEl || !cellEl.isConnected) return;
+  const active = document.activeElement;
+  if (active && active !== document.body) return;
+  cellEl.focus?.({ preventScroll: true });
 }
 
 function startCellEdit(field, row, cellEl) {
@@ -550,7 +636,7 @@ function startCellEdit(field, row, cellEl) {
     commit: value => commitCell(field, row, cellEl, value),
     toast,
     placeholder: cellCtx(field).placeholder,
-    onSettled: () => cellEl.blur?.(),
+    onSettled: () => focusIfIdle(cellEl),
   });
 }
 
@@ -574,9 +660,27 @@ function imageSize(dataUrl) {
   });
 }
 
+// MIME → 落盘扩展名。必须白名单：以前是 `file.type.split('/')[1]`，
+// image/svg+xml 会变成 "svg+xml"、HEIC 会变成 "heic"，后端统一兜底存成 .png，
+// 结果文件内容是 SVG/HEIC、扩展名是 png —— 缩略图必然裂。
+const MIME_IMAGE_EXT = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/webp': 'webp',
+  'image/gif': 'gif',
+  'image/bmp': 'bmp',
+};
+const IMAGE_EXT_ALLOWED = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'];
+
 async function storeImageFile(file) {
+  if (file.type === 'image/svg+xml' || extOfPath(file.name || '') === 'svg') {
+    throw new Error('SVG 不支持嵌入，请先另存为 PNG');
+  }
+  const ext = MIME_IMAGE_EXT[file.type] || extOfPath(file.name || '') || '';
+  if (!IMAGE_EXT_ALLOWED.includes(ext)) {
+    throw new Error(`不支持的图片格式：${file.type || ext || '未知'}`);
+  }
   const dataUrl = await fileToDataUrl(file);
-  const ext = (file.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
   const dims = await imageSize(dataUrl);
   const path = await invoke('save_sheet_asset', { data: dataUrl, ext });
   return { path, name: file.name || '粘贴的图片', size: file.size || 0, w: dims.w || 0, h: dims.h || 0 };
@@ -658,7 +762,6 @@ async function appendAttachments(field, row, cellEl, { replace = false } = {}) {
 
 function openAttachmentEditor(cellEl, field, row) {
   const current = Array.isArray(row.values[field.key]) ? [...row.values[field.key]] : [];
-  const rect = cellEl.getBoundingClientRect();
 
   const panel = openPopoverSimple(cellEl, `
     <div class="sh-img-zone" data-zone>
@@ -701,10 +804,10 @@ function openAttachmentEditor(cellEl, field, row) {
     const all = [...files];
     const images = all.filter(file => file.type.startsWith('image/'));
     if (!images.length) {
-      if (all.length) toast('普通文件请用「关联文件」，只保存链接、不复制文件', 'info');
+      if (all.length) toast('普通文件请点面板底部「添加附件…」，只保存链接、不复制文件', 'info');
       return;
     }
-    if (images.length < all.length) toast('非图片文件已跳过，请用「关联文件」', 'info');
+    if (images.length < all.length) toast('非图片文件已跳过，请用「添加附件…」添加链接', 'info');
     panel.classList.add('is-busy');
     try {
       for (const file of images) {
@@ -818,12 +921,20 @@ function openPopoverSimple(anchorEl, html) {
 async function addRow() {
   // 新建的就是一行空记录，不预填任何字段值（所见即所得：建出来什么样就是什么样）
   const values = {};
-  const id = await insertRow(state.sheet.id, values);
-  await reloadRows();
-  await touchSheet(state.sheet.id);
+  let id = null;
+  try {
+    id = await insertRow(state.sheet.id, values);
+    await reloadRows();
+    await touchSheet(state.sheet.id);
+  } catch (error) {
+    toast(`新建记录失败：${error?.message || error}`, 'danger');
+    return;
+  }
   renderSheet();
 
-  const cell = host.querySelector(`.sh-cell[data-row="${id}"]`);
+  // 长表是分块渲染的，新记录在最后一块：先补块补到能看见它，再滚过去。
+  // 以前超过 60 行时这里根本查不到元素，新建完什么都不发生。
+  const cell = ensureRowRendered(id);
   if (cell) {
     cell.scrollIntoView({ block: 'nearest' });
     const field = state.fields.find(item => item.key === cell.dataset.key);
@@ -835,11 +946,31 @@ async function addRow() {
   }
 }
 
+// 分块渲染的表格里按 row id 找单元格；找不到就继续往下补块（最多补到上限）。
+function ensureRowRendered(rowId) {
+  if (rowId == null) return null;
+  const selector = `.sh-cell[data-row="${CSS.escape(String(rowId))}"]`;
+  let cell = host?.querySelector(selector) || null;
+  const limit = Math.min(state.rowTotal, ROW_LIMIT_HINT);
+  let guard = 0;
+  while (!cell && state.rendered < limit && guard < ROW_LIMIT_HINT) {
+    renderBodyRows(false);
+    cell = host?.querySelector(selector) || null;
+    guard += 1;
+  }
+  return cell;
+}
+
 async function removeRow(row) {
   const title = rowTitle(row.values, state.fields);
   window.showModal?.('删除记录', `<p style="margin:0;">删除「${escapeHtml(title)}」？此操作无法撤销。</p>`, null, async () => {
-    await deleteRow(row.id);
-    await reloadRows();
+    try {
+      await deleteRow(row.id);
+      await reloadRows();
+    } catch (error) {
+      toast(`删除失败：${error?.message || error}`, 'danger');
+      return false;
+    }
     closeAllPanels();
     renderSheet();
     toast('记录已删除');
@@ -1001,7 +1132,7 @@ async function pasteBlockFromClipboard(cellEl) {
   markSaving();
   try {
     for (const { row, touched } of touchedRows.values()) {
-      if (touched) await saveRowValues(row.id, row.values);
+      if (touched) await writeRow(row);
     }
     await touchSheet(state.sheet.id);
     markSaved();
@@ -1023,15 +1154,20 @@ async function pasteRowFromClipboard(targetRows) {
   }
   const rows = targetRows.filter(Boolean);
   if (!rows.length) return false;
-  for (const row of rows) {
-    visibleFields().forEach(field => {
-      if (Object.prototype.hasOwnProperty.call(clipboard.values, field.key)) {
-        row.values[field.key] = cloneValue(clipboard.values[field.key]);
-      }
-    });
-    await saveRowValues(row.id, row.values);
+  try {
+    for (const row of rows) {
+      visibleFields().forEach(field => {
+        if (Object.prototype.hasOwnProperty.call(clipboard.values, field.key)) {
+          row.values[field.key] = cloneValue(clipboard.values[field.key]);
+        }
+      });
+      await writeRow(row);
+    }
+    await touchSheet(state.sheet.id);
+  } catch (error) {
+    toast(`粘贴失败：${error?.message || error}`, 'danger');
+    return false;
   }
-  await touchSheet(state.sheet.id);
   clearSelection();
   renderSheet();
   toast(rows.length > 1 ? `已粘贴到 ${rows.length} 行` : '已粘贴记录内容');
@@ -1052,16 +1188,31 @@ function applyCellFormatToEl(cellEl, field, row) {
   else cellEl.style.removeProperty('--cell-bg');
   const wrap = fmt.wrap === undefined ? field.type === 'text' && isWrapField(field) : fmt.wrap === true;
   cellEl.classList.toggle('is-wrap', wrap);
-  if (!wrap) cellEl.classList.remove('is-clamped');
+  // 行高固定 + 换行：按可用高度重算截断行数。
+  // 以前只关不打开，格式面板里把换行打开后文字会直接溢出到下一行。
+  const fixedHeight = Number(row?.height) || 0;
+  if (wrap && fixedHeight > 0) {
+    cellEl.style.setProperty('--clamp', String(Math.max(1, Math.floor((fixedHeight - 18) / 21))));
+    cellEl.classList.add('is-clamped');
+  } else {
+    cellEl.style.removeProperty('--clamp');
+    cellEl.classList.remove('is-clamped');
+  }
 }
 
-// 格式改动很频繁（点一下一个色块），350ms 合并成一次写库，拖动/连点都不卡
-let formatSaveTimer = null;
+// 格式改动很频繁（点一下一个色块），350ms 合并成一次写库，拖动/连点都不卡。
+// 定时器必须按行分桶：共用一个定时器时，350ms 内改了两行，前一行永远不会落库。
+const formatSaveTimers = new Map();
 function saveRowSoon(row) {
-  clearTimeout(formatSaveTimer);
-  formatSaveTimer = setTimeout(() => {
-    saveRowValues(row.id, row.values).catch(() => toast('格式保存失败', 'danger'));
-  }, 350);
+  const key = String(row.id);
+  clearTimeout(formatSaveTimers.get(key));
+  formatSaveTimers.set(
+    key,
+    setTimeout(() => {
+      formatSaveTimers.delete(key);
+      writeRow(row).catch(() => toast('格式保存失败', 'danger'));
+    }, 350)
+  );
 }
 
 function setCellFormat(cellEl, field, row, patch) {
@@ -1090,16 +1241,16 @@ function clearCellFormat(cellEl, field, row) {
 }
 
 async function applyFormatToColumn(field, format) {
-  const config = (() => {
-    try { return field.options ? JSON.parse(field.options) : {}; } catch (error) { return {}; }
-  })();
-  const next = serializeOptions({
-    options: config.options || [],
-    wrap: config.wrap,
-    dateOnly: config.dateOnly,
-    format,
+  // 走统一合并器：选项、换行、日期精度都原样保留，只替换 format
+  const next = mergeFieldOptions(field, {
+    format: format && Object.keys(format).length ? format : null,
   });
-  await patchField(field.id, { options: next });
+  try {
+    await patchField(field.id, { options: next });
+  } catch (error) {
+    toast(`设置列格式失败：${error?.message || error}`, 'danger');
+    return;
+  }
   field.options = next;
   renderSheet();
   toast(`「${field.label}」已设为该列默认格式`);
@@ -1144,6 +1295,11 @@ function openCellMenuFor(cellEl, field, row) {
       if (gallery.length) openImagePreview(gallery[0].src, gallery[0].name, gallery);
     },
     clear: () => {
+      // 菜单头写的是「已选 N 格」，就清整片选区，不能只清右键落点那一格
+      if ((sel.mode === 'cells' || sel.mode === 'cell') && sel.cells.size > 1 && sel.cells.has(cellKey)) {
+        bulkWriteCells('clear');
+        return;
+      }
       const empty = field.type === 'checkbox' ? false : field.type === 'attachment' ? [] : '';
       commitCell(field, row, cellEl, empty);
     },
@@ -1225,15 +1381,25 @@ async function pasteFromClipboard(field, row, cellEl) {
 
 async function insertRows(row, count, side) {
   const sortIndex = Number(row.sort || 0) + (side === 'below' ? 1 : 0);
-  await insertRowAt(state.sheet.id, sortIndex, count);
-  await reloadRows();
-  await touchSheet(state.sheet.id);
+  try {
+    await insertRowAt(state.sheet.id, sortIndex, count);
+    await reloadRows();
+    await touchSheet(state.sheet.id);
+  } catch (error) {
+    toast(`插入行失败：${error?.message || error}`, 'danger');
+    return;
+  }
   renderSheet();
   toast(`已插入 ${count} 行`);
 }
 
 async function applyRowHeight(row, height) {
-  await setRowHeight(row.id, height);
+  try {
+    await setRowHeight(row.id, height);
+  } catch (error) {
+    toast(`行高没存住：${error?.message || error}`, 'danger');
+    return;
+  }
   row.height = height;
   renderSheet();
 }
@@ -1335,40 +1501,45 @@ function openDetail(row) {
 // 字段操作
 // ==========================================
 
-async function addFieldAt(anchorField, side) {
+function addFieldAt(anchorField, side) {
   const ordered = [...state.fields].sort((a, b) => Number(a.sort) - Number(b.sort));
   const index = anchorField ? ordered.findIndex(item => item.id === anchorField.id) : ordered.length - 1;
-  const insertSort = side === 'left' ? Number(ordered[index]?.sort || 0) : Number(ordered[index]?.sort || 0) + 1;
-  const field = await createField(state.sheet.id, { label: '新字段', type: 'text', sort: insertSort });
-  await reloadFields();
-  renderSheet();
-  if (field) openFieldPanelFor(field);
+  const anchorSort = Number(ordered[index]?.sort || 0);
+  const insertSort = side === 'left' ? anchorSort : anchorSort + 1;
+  // 不再「先落一条新字段再开面板」：用户按 Esc / 取消会永久留下一条空列。
+  // 现在只有点了「保存字段」才真正建列。
+  openFieldPanelFor(null, { mode: 'new', sort: insertSort });
 }
 
-function openFieldPanelFor(field, { mode = 'edit' } = {}) {
+function openFieldPanelFor(field, { mode = 'edit', sort = null } = {}) {
   openFieldPanel({
     field: mode === 'edit' ? field : null,
     sheetName: state.sheet?.name || '',
     onSave: async payload => {
       try {
-        const optionsJson = serializeOptions({
-          options: payload.options || [],
-          wrap: payload.wrap,
-          dateOnly: payload.dateOnly,
+        const hasOptions = payload.type === 'select' || payload.type === 'multi_select';
+        // 只覆盖本次真正改到的键。以前是「重新拼一个 options JSON」，
+        // 顺手把列级 format（底色/对齐/换行）抹掉了 —— 改个字段名就丢格式。
+        const optionsJson = mergeFieldOptions(field, {
+          source: 'custom',
+          options: hasOptions ? payload.options || [] : undefined,
+          // 类型换了就把不再适用的开关显式清掉，别留一个看不见的 wrap/dateOnly
+          wrap: payload.type === 'text' ? (payload.wrap ? true : null) : null,
+          dateOnly: payload.type === 'date' ? (payload.dateOnly ? true : null) : null,
         });
-        const needsJson = payload.type === 'select' || payload.type === 'multi_select' || payload.wrap || payload.dateOnly;
         if (mode === 'edit' && field) {
           await patchField(field.id, {
             label: payload.label,
             type: payload.type,
-            options: needsJson ? optionsJson : null,
+            options: optionsJson,
           });
           toast('字段已更新');
         } else {
           await createField(state.sheet.id, {
             label: payload.label,
             type: payload.type,
-            options: needsJson ? optionsJson : null,
+            options: optionsJson,
+            sort,
           });
           toast('字段已添加');
         }
@@ -1380,8 +1551,13 @@ function openFieldPanelFor(field, { mode = 'edit' } = {}) {
     },
     onDelete: async target => {
       if (!target) return;
-      await deleteField(target.id);
-      await reloadFields();
+      try {
+        await deleteField(target.id);
+        await reloadFields();
+      } catch (error) {
+        toast(`删除字段失败：${error?.message || error}`, 'danger');
+        return;
+      }
       renderSheet();
       toast(`已删除「${target.label}」`);
     },
@@ -1468,7 +1644,12 @@ function renameSheet() {
   }, async modalBody => {
     const name = modalBody.querySelector('[data-name]')?.value.trim();
     if (!name) return false;
-    await updateSheet(state.sheet.id, { name });
+    try {
+      await updateSheet(state.sheet.id, { name });
+    } catch (error) {
+      toast(`重命名失败：${error?.message || error}`, 'danger');
+      return false;
+    }
     state.sheet.name = name;
     await refreshSheets();
     renderSheet();
@@ -1500,7 +1681,12 @@ function openSheetMenu(anchorEl) {
       const taskOptions = ['<option value="">不归属任务</option>', ...state.tasks.map(task => `<option value="${escapeHtml(task.id)}" ${String(task.id) === String(state.sheet.task_id) ? 'selected' : ''}>${escapeHtml(task.label)}${task.done ? '（已完成）' : ''}</option>`)].join('');
       window.showModal?.('改所属任务', `<div class="sh-modal"><label class="sh-label">所属任务</label><select class="sh-select" data-task>${taskOptions}</select></div>`, null, async modalBody => {
         const value = modalBody.querySelector('[data-task]')?.value || null;
-        await updateSheet(state.sheet.id, { task_id: value == null ? null : Number(value) });
+        try {
+          await updateSheet(state.sheet.id, { task_id: value == null ? null : Number(value) });
+        } catch (error) {
+          toast(`更新归属失败：${error?.message || error}`, 'danger');
+          return false;
+        }
         state.sheet.task_id = value;
         await refreshSheets();
         renderSheet();
@@ -1510,7 +1696,12 @@ function openSheetMenu(anchorEl) {
     }
     if (action === 'delete') {
       window.showModal?.('删除表格', `<p style="margin:0;">删除「${escapeHtml(state.sheet.name)}」以及它的 ${state.rows.length} 条记录？此操作无法撤销。</p>`, null, async () => {
-        await deleteSheet(state.sheet.id);
+        try {
+          await deleteSheet(state.sheet.id);
+        } catch (error) {
+          toast(`删除失败：${error?.message || error}`, 'danger');
+          return false;
+        }
         backToLibrary();
         toast('表格已删除');
         return true;
@@ -1772,6 +1963,7 @@ async function bulkWriteCells(mode, rawValue) {
 
   // 直接遍历选区集合（支持 Ctrl 加选的离散格），按行聚合后每行只存一次
   const touchedRows = new Map(); // rowId → { row, touched }
+  let touchedCells = 0;
   sel.cells.forEach(key => {
     const [r, c] = key.split(':').map(Number);
     const row = rows[r];
@@ -1782,22 +1974,27 @@ async function bulkWriteCells(mode, rawValue) {
     const current = row.values[field.key];
     if (mode === 'clear') {
       if (current !== '' && current !== undefined && current !== null) {
-        row.values[field.key] = field.type === 'checkbox' ? false : '';
+        row.values[field.key] = field.type === 'checkbox' ? false : field.type === 'attachment' ? [] : '';
         entry.touched = true;
+        touchedCells += 1;
       }
       return;
     }
     if (field.type !== 'text' && field.type !== 'number') return;
     const next = String(rawValue ?? '');
-    if (current !== next) { row.values[field.key] = next; entry.touched = true; }
+    if (current !== next) { row.values[field.key] = next; entry.touched = true; touchedCells += 1; }
   });
-  if (![...touchedRows.values()].some(entry => entry.touched)) return;
+  if (![...touchedRows.values()].some(entry => entry.touched)) {
+    // 非文本列会被跳过：全都填不进去时给个明确提示，别静默无反应
+    if (mode === 'fill') toast('选中的单元格不是文本/数字列，填不进去', 'info');
+    return;
+  }
 
-  const count = sel.cells.size;
+  const count = touchedCells;
   markSaving();
   try {
     for (const { row, touched } of touchedRows.values()) {
-      if (touched) await saveRowValues(row.id, row.values);
+      if (touched) await writeRow(row);
     }
     await touchSheet(state.sheet.id);
     markSaved();
@@ -1813,14 +2010,19 @@ async function bulkWriteCells(mode, rawValue) {
 async function bulkApplyToFields(action, widthValue) {
   const fields = sel.fieldKeys.map(key => state.fields.find(field => field.key === key)).filter(Boolean);
   if (!fields.length) return;
-  for (const field of fields) {
-    if (action === 'width') {
-      const width = Math.max(72, Math.min(640, Number(widthValue) || 160));
-      await patchField(field.id, { width });
-      field.width = width;
+  try {
+    for (const field of fields) {
+      if (action === 'width') {
+        const width = Math.max(72, Math.min(640, Number(widthValue) || 160));
+        await patchField(field.id, { width });
+        field.width = width;
+      }
+      if (action === 'hide') await patchField(field.id, { visible: 0 });
+      if (action === 'delete') await deleteField(field.id);
     }
-    if (action === 'hide') await patchField(field.id, { visible: 0 });
-    if (action === 'delete') await deleteField(field.id);
+  } catch (error) {
+    toast(`批量操作失败：${error?.message || error}`, 'danger');
+    return;
   }
   const label = action === 'width' ? '列宽已更新' : action === 'hide' ? '已隐藏所选列' : '已删除所选列';
   clearSelection();
@@ -1946,6 +2148,10 @@ function applyColumnWidth(field, width) {
 
 function onHostPointerDown(event) {
   if (event.button !== 0) return; // 右键/中键不参与框选
+  // 上一次拖选留下的「吞掉下一次点击」标记在这里复位。
+  // pointerup 落在表格外时，click 不会经过 host，标记会一直留着，
+  // 下一轮第一次点按钮就被吃掉。
+  suppressClick = false;
   const handle = event.target.closest('.sh-col-resizer');
   if (!handle) {
     // 单元格拖选：记下起点，移动超过 5px 才算框选（否则仍然是单击编辑）
@@ -2179,12 +2385,13 @@ function onHostClick(event) {
 
 function applyFilters(filters) {
   state.filters = Array.isArray(filters) ? filters : [];
-  renderSheet();
+  // 换了筛选条件，列表已经换了，回顶部才是对的
+  renderSheet({ resetScroll: true });
 }
 
 function applySorts(sorts) {
   state.sorts = Array.isArray(sorts) ? sorts : [];
-  renderSheet();
+  renderSheet({ resetScroll: true });
 }
 
 function openColumnMenuFor(anchor, field) {
@@ -2192,11 +2399,14 @@ function openColumnMenuFor(anchor, field) {
     edit: () => openFieldPanelFor(field),
     autofit: () => autoFitColumn(field),
     wrap: async next => {
-      const config = (() => {
-        try { return field.options ? JSON.parse(field.options) : {}; } catch (error) { return {}; }
-      })();
-      const nextOptions = serializeOptions({ options: config.options || [], wrap: next, dateOnly: config.dateOnly });
-      await patchField(field.id, { options: nextOptions });
+      // 只改 wrap，别顺手把列级 format / 选项重写一遍
+      const nextOptions = mergeFieldOptions(field, { wrap: next ? true : null });
+      try {
+        await patchField(field.id, { options: nextOptions });
+      } catch (error) {
+        toast(`保存换行设置失败：${error?.message || error}`, 'danger');
+        return;
+      }
       field.options = nextOptions;
       renderSheet();
       toast(next ? '已改为自动换行' : '已改为单行省略');
@@ -2211,15 +2421,25 @@ function openColumnMenuFor(anchor, field) {
     left: () => addFieldAt(field, 'left'),
     right: () => addFieldAt(field, 'right'),
     hide: async () => {
-      await patchField(field.id, { visible: 0 });
-      await reloadFields();
+      try {
+        await patchField(field.id, { visible: 0 });
+        await reloadFields();
+      } catch (error) {
+        toast(`隐藏失败：${error?.message || error}`, 'danger');
+        return;
+      }
       renderSheet();
       toast(`已隐藏「${field.label}」，可从「字段」里恢复`);
     },
     del: () => {
       window.showModal?.('删除字段', `<p style="margin:0;">删除「${escapeHtml(field.label)}」这一列？列里的数据会一起消失。</p>`, null, async () => {
-        await deleteField(field.id);
-        await reloadFields();
+        try {
+          await deleteField(field.id);
+          await reloadFields();
+        } catch (error) {
+          toast(`删除失败：${error?.message || error}`, 'danger');
+          return false;
+        }
         renderSheet();
         toast('字段已删除');
         return true;
@@ -2252,8 +2472,14 @@ function openFieldsPanel(anchorEl) {
     if (!key) return;
     const field = state.fields.find(item => item.key === key);
     if (!field) return;
-    await patchField(field.id, { visible: event.target.checked ? 1 : 0 });
-    await reloadFields();
+    try {
+      await patchField(field.id, { visible: event.target.checked ? 1 : 0 });
+      await reloadFields();
+    } catch (error) {
+      event.target.checked = !event.target.checked;
+      toast(`保存字段显隐失败：${error?.message || error}`, 'danger');
+      return;
+    }
     renderSheet();
   });
   el.addEventListener('click', event => {
@@ -2400,6 +2626,7 @@ export async function initSheetPage() {
     const applySearch = value => {
       state.search = String(value || '').trim();
       renderBodyRows(true);
+      host.querySelector('[data-scroll]')?.scrollTo({ top: 0 });
       const status = host.querySelector('[data-status-text]');
       if (status) {
         const total = state.rows.length;

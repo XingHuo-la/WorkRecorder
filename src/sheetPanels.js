@@ -125,9 +125,9 @@ export function openDrawer({ title, subtitle = '', width = 396, body, footer = '
 
   const onOutside = event => {
     if (el.contains(event.target)) return;
-    // 单元格编辑器（下拉 / 日期日历）挂在 body 上，点它们不算「点在外面」，
-    // 否则从抽屉里编辑字段时抽屉会先被关掉。
-    if (event.target.closest?.('.ft-dropdown, .flatpickr-calendar, .sh-pop')) return;
+    // 单元格编辑器（下拉 / 日期日历 / 附件面板 / 灯箱 / 全局弹窗）都挂在 body 上，
+    // 点它们不算「点在外面」，否则从抽屉里编辑字段时抽屉会先被关掉。
+    if (event.target.closest?.('.ft-dropdown, .flatpickr-calendar, .sh-pop, .sh-dp, .sh-lightbox, .custom-modal-overlay')) return;
     closeAllPanels();
   };
   const onKey = event => {
@@ -160,6 +160,9 @@ const MENU_ICONS = {
 export function openColumnMenu(anchor, field, handlers = {}) {
   const el = openPopover(anchor, 'sh-colmenu', '', { width: 236 });
   if (!el) return;
+  // 本地记一份换行状态：handlers.wrap 是异步写库的，
+  // 写完之前 paint 会拿回旧值，表现就是「点了没反应」。
+  let wrapState = parseWrap(field);
 
   const mainView = () => `
     <div class="sh-menu-head">
@@ -203,7 +206,7 @@ export function openColumnMenu(anchor, field, handlers = {}) {
     </button>`;
 
   const moreView = () => {
-    const wrapOn = parseWrap(field);
+    const wrapOn = wrapState;
     return `
     <button type="button" class="sh-menu-item is-back" data-view="main">
       <svg class="wr-icon" aria-hidden="true"><use href="#ic-chevron-right"/></svg>返回
@@ -247,7 +250,8 @@ export function openColumnMenu(anchor, field, handlers = {}) {
     if (viewBtn) { paint(viewBtn.dataset.view); return; }
     const wrapBtn = event.target.closest('[data-wrap]');
     if (wrapBtn) {
-      handlers.wrap?.(wrapBtn.dataset.wrap === '1');
+      wrapState = wrapBtn.dataset.wrap === '1';
+      handlers.wrap?.(wrapState);
       paint('more');
       return;
     }
@@ -371,7 +375,7 @@ export function openCellMenu(anchor, { field, value, hasImages = false, hasItems
       <svg class="wr-icon" aria-hidden="true"><use href="#ic-copy"/></svg>${count > 1 ? `复制 ${count} 格` : '复制内容'}
     </button>
     <button type="button" class="sh-menu-item" data-act="paste">
-      <svg class="wr-icon" aria-hidden="true"><use href="#ic-image"/></svg>粘贴（覆盖）
+      <svg class="wr-icon" aria-hidden="true"><use href="#ic-insert-right"/></svg>粘贴（覆盖）
     </button>
     <button type="button" class="sh-menu-item" data-act="edit">
       <svg class="wr-icon" aria-hidden="true"><use href="#ic-pencil"/></svg>${isAttachment ? (hasItems ? '管理附件…' : '添加附件…') : '编辑内容'}
@@ -384,7 +388,7 @@ export function openCellMenu(anchor, { field, value, hasImages = false, hasItems
     </button>` : ''}
     <div class="sh-menu-sep"></div>
     <button type="button" class="sh-menu-item" data-act="clear">
-      <svg class="wr-icon" aria-hidden="true"><use href="#ic-close"/></svg>清空内容
+      <svg class="wr-icon" aria-hidden="true"><use href="#ic-close"/></svg>${count > 1 ? `清空 ${count} 格` : '清空内容'}
     </button>
     <div class="sh-menu-sep"></div>
     <button type="button" class="sh-menu-item" data-act="insertAbove">
@@ -441,7 +445,7 @@ export function openFileActionMenu(anchor, { name, path }, handlers = {}) {
 
 export function openCellFormatPanel(anchor, { field, columnFormat = {}, cellFormat = {} }, handlers = {}) {
   let merged = { ...columnFormat, ...cellFormat };
-  const hasOverride = Object.keys(cellFormat || {}).length > 0;
+  let hasOverride = Object.keys(cellFormat || {}).length > 0;
 
   const el = openPopover(anchor, 'sh-fmtpanel', `
     <div class="sh-menu-head">
@@ -530,6 +534,8 @@ export function openCellFormatPanel(anchor, { field, columnFormat = {}, cellForm
     const action = event.target.closest('[data-fmt]')?.dataset.fmt;
     if (action === 'clear') {
       merged = { ...columnFormat };
+      // 清掉之后本格已经没有覆盖了，按钮该跟着变灰（以前一直是亮的）
+      hasOverride = false;
       handlers.clear?.();
       paint();
       return;
@@ -778,8 +784,27 @@ export function openFieldPanel({ field = null, sheetName, onSave, onDelete, onCl
     closeAllPanels();
   });
   drawer.querySelector('[data-del]')?.addEventListener('click', () => {
-    onDelete?.(field);
-    closeAllPanels();
+    if (!field) return;
+    // 列菜单里的「删除此列」有二次确认，字段面板里原本没有 ——
+    // 同一个不可逆动作不能两套标准。
+    if (typeof window.showModal !== 'function') {
+      Promise.resolve(onDelete?.(field)).then(() => closeAllPanels()).catch(() => closeAllPanels());
+      return;
+    }
+    window.showModal(
+      '删除字段',
+      `<p style="margin:0;">删除「${escapeHtml(field.label)}」这一列？列里的数据会一起消失，无法撤销。</p>`,
+      null,
+      async () => {
+        try {
+          await onDelete?.(field);
+        } finally {
+          closeAllPanels();
+        }
+        return true;
+      },
+      { danger: true, btnText: '删除' }
+    );
   });
 }
 
@@ -854,7 +879,15 @@ export function openFilterPanel(anchor, { fields, filters, onApply }) {
     if (!row) return;
     const index = Number(row.dataset.index);
     if (!draft[index]) return;
-    if (event.target.matches('[data-filter-key]')) draft[index].key = event.target.value;
+    if (event.target.matches('[data-filter-key]')) {
+      // 换了字段，值控件（文本框 / 选项下拉）必须跟着换：
+      // 以前只改 key 不重绘，值还停在上一列的选项上，筛出来永远是空。
+      draft[index].key = event.target.value;
+      draft[index].value = '';
+      repaint();
+      el.querySelectorAll('[data-filter-key]')[index]?.focus();
+      return;
+    }
     if (event.target.matches('[data-filter-op]')) { draft[index].op = event.target.value; repaint(); }
     if (event.target.matches('[data-filter-value]')) draft[index].value = event.target.value;
   });

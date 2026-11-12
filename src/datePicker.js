@@ -59,6 +59,11 @@ export function openDatePicker(anchorEl, options = {}) {
   let viewMode = 'day'; // day | month
   let selected = parsed.date;
   let timeValue = parsed.time || '09:00';
+  // 打开后什么都没改就点「确定」= 不该写库。
+  // 否则一个只存了日期（没有时间）的旧值会被悄悄补成 09:00。
+  const originalRaw = String(value || '').trim();
+  const originalTime = parsed.time || '';
+  let dirty = false;
 
   const el = document.createElement('div');
   el.className = 'sh-dp';
@@ -84,6 +89,7 @@ export function openDatePicker(anchorEl, options = {}) {
           <span class="sh-dp-gap"></span>
           <button type="button" class="sh-dp-btn is-primary" data-done>确定</button>
         </div>`;
+      put();
       return;
     }
 
@@ -121,6 +127,7 @@ export function openDatePicker(anchorEl, options = {}) {
         <span class="sh-dp-gap"></span>
         <button type="button" class="sh-dp-btn is-primary" data-done>确定</button>
       </div>`;
+    put();
   };
 
   const commit = (date, time) => {
@@ -129,18 +136,22 @@ export function openDatePicker(anchorEl, options = {}) {
     closeDatePicker();
   };
 
-  paint();
+  // 定位：贴锚点下方，放不下就上翻。
+  // 写成函数声明（会提升），paint() 每次重绘后都重量一次 ——
+  // 切到「年视图」高度会变，不重量就会跑出屏幕。
+  function put() {
+    const rect = anchorEl.getBoundingClientRect();
+    const width = el.offsetWidth || 268;
+    const height = el.offsetHeight || 340;
+    const left = Math.min(Math.max(8, rect.left), window.innerWidth - width - 8);
+    let top = rect.bottom + 6;
+    if (top + height > window.innerHeight - 8) top = Math.max(8, rect.bottom - height - rect.height - 6);
+    if (top < 8) top = Math.max(8, window.innerHeight - height - 8);
+    el.style.left = `${left}px`;
+    el.style.top = `${top}px`;
+  }
 
-  // 定位：贴锚点下方，放不下就上翻
-  const rect = anchorEl.getBoundingClientRect();
-  const width = el.offsetWidth || 268;
-  const height = el.offsetHeight || 340;
-  let left = Math.min(Math.max(8, rect.left), window.innerWidth - width - 8);
-  let top = rect.bottom + 6;
-  if (top + height > window.innerHeight - 8) top = Math.max(8, rect.bottom - height - rect.height - 6);
-  if (top < 8) top = Math.max(8, window.innerHeight - height - 8);
-  el.style.left = `${left}px`;
-  el.style.top = `${top}px`;
+  paint();
 
   el.addEventListener('click', event => {
     const nav = event.target.closest('[data-nav]');
@@ -173,6 +184,7 @@ export function openDatePicker(anchorEl, options = {}) {
       selected = new Date(y, m - 1, d);
       viewYear = y;
       viewMonth = m - 1;
+      dirty = true;
       const timeInput = el.querySelector('[data-time]');
       const time = timeInput ? timeInput.value.trim() : timeValue;
       if (dateOnly) commit(selected, '');
@@ -183,6 +195,7 @@ export function openDatePicker(anchorEl, options = {}) {
       selected = new Date(today.getFullYear(), today.getMonth(), today.getDate());
       viewYear = selected.getFullYear();
       viewMonth = selected.getMonth();
+      dirty = true;
       const timeInput = el.querySelector('[data-time]');
       const time = timeInput ? timeInput.value.trim() : timeValue;
       if (dateOnly) commit(selected, '');
@@ -195,6 +208,8 @@ export function openDatePicker(anchorEl, options = {}) {
       return;
     }
     if (event.target.closest('[data-done]')) {
+      // 打开后原值没动过：直接关掉，不产生一次无意义的写库
+      if (!dirty && originalRaw) { closeDatePicker(); return; }
       const timeInput = el.querySelector('[data-time]');
       commit(selected || new Date(), dateOnly ? '' : (timeInput ? timeInput.value.trim() : timeValue));
     }
@@ -216,6 +231,7 @@ export function openDatePicker(anchorEl, options = {}) {
     const hh = Math.min(23, Number(match[1] || 0));
     const mm = Math.min(59, Number(match[2] || 0));
     timeValue = `${pad2(hh)}:${pad2(mm)}`;
+    if (timeValue !== originalTime) dirty = true;
     event.target.value = timeValue;
   });
 
@@ -225,9 +241,14 @@ export function openDatePicker(anchorEl, options = {}) {
   const onKey = event => {
     if (event.key === 'Escape') { event.stopPropagation(); closeDatePicker(); }
     if (event.key === 'Enter') {
+      // 输入法还在组词时回车是「选词」，不是「确定日期」
+      if (event.isComposing || event.keyCode === 229) return;
       const timeInput = el.querySelector('[data-time]');
+      const timeRaw = timeInput ? timeInput.value.trim() : timeValue;
+      const timeChanged = !dateOnly && timeRaw !== originalTime;
       event.preventDefault();
-      commit(selected || new Date(), dateOnly ? '' : (timeInput ? timeInput.value.trim() : timeValue));
+      if (!dirty && !timeChanged && originalRaw) { closeDatePicker(); return; }
+      commit(selected || new Date(), dateOnly ? '' : timeRaw);
     }
   };
   document.addEventListener('mousedown', onOutside, true);

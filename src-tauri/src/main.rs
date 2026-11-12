@@ -316,6 +316,11 @@ fn init_and_migrate_db() -> Result<(), String> {
 #[tauri::command]
 async fn db_query(query: String, params: Vec<String>) -> Result<String, String> {
     let conn = Connection::open(get_db_file_path()).map_err(|e| e.to_string())?;
+    // 每次调用都是一个独立连接。写库（防抖保存 / 批量粘贴）与读并发时，
+    // SQLite 默认 busy_timeout=0 会直接抛 database is locked ——
+    // 等 3 秒再放弃，比「偶发写入丢失」划算。
+    conn.busy_timeout(std::time::Duration::from_millis(3000))
+        .map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(&query).map_err(|e| e.to_string())?;
     let column_names: Vec<String> = stmt.column_names().into_iter().map(|s| s.to_string()).collect();
     let rusqlite_params = rusqlite::params_from_iter(params.iter());
@@ -365,6 +370,8 @@ async fn db_query(query: String, params: Vec<String>) -> Result<String, String> 
 #[tauri::command]
 async fn db_execute(query: String, params: Vec<String>) -> Result<usize, String> {
     let conn = Connection::open(get_db_file_path()).map_err(|e| e.to_string())?;
+    conn.busy_timeout(std::time::Duration::from_millis(3000))
+        .map_err(|e| e.to_string())?;
     let rusqlite_params = rusqlite::params_from_iter(params.iter());
     conn.execute(&query, rusqlite_params).map_err(|e| e.to_string())
 }
