@@ -29,6 +29,7 @@ import {
   isRecordStoreReady,
 } from './recordStore.js';
 import { renderMarkdown } from './markdown.js';
+import { logToFile } from './logger.js';
 
 const DRAWER_WIDTH = 560;
 
@@ -58,6 +59,12 @@ const state = {
   // 自增令牌：抽屉被替换 / 关闭后，上一轮还没跑完的异步分区靠它对账后自行放弃，
   // 否则会出现「点了子项，父抽屉的异步结果回来把子抽屉的内容覆盖掉」。
   token: 0,
+  // 正文的「已落库基线」。captureBodyDraft() 拿编辑框的值和它比，相同就是没改过，
+  // 不写库。打开抽屉时重置为 record.body，保存成功后也推进到这个值。
+  bodyBaseline: '',
+  // 写库失败时留下的草稿 {recordId, body}。下次 flush（关抽屉 / 切记录 / 关窗口）
+  // 再补写一次 —— 失败要能重试，不能静默丢字。
+  pendingBody: null,
 };
 
 // ==========================================
@@ -90,6 +97,12 @@ const state = {
  * @returns {HTMLElement} 抽屉根节点
  */
 export function openRowDrawer(opts = {}) {
+  // ★ 换记录前先把上一份正文草稿抓住并落库。
+  // captureBodyDraft() 是**同步**的：值在 DOM 里，而下面 openDrawer → closeAllPanels
+  // 会立刻把旧抽屉的节点删掉，等异步回来再读就只剩空字符串。
+  // 这里刻意不 await —— 一次写库不该把新抽屉的打开卡住。
+  void flushDrawerBody();
+
   const options = opts && typeof opts === 'object' ? opts : {};
   const row = options.row && typeof options.row === 'object' ? options.row : null;
   const recordId = toId(options.recordId ?? row?.id);
@@ -123,6 +136,12 @@ export function openRowDrawer(opts = {}) {
     // 完整记录（含 custom），异步取一次，各分区共用同一份 Promise —— 不要各查一次。
     recordPromise: null,
     record: null,
+    // 正文：bodySource = 当前「库里的值」（编辑放弃时回退到它），
+    // bodyEditing = 编辑框是否开着（异步 markdown 渲染回来不能把它冲掉）。
+    bodySource: '',
+    bodyEditing: false,
+    // 编辑态挂的 window 捕获监听器，退出时必须摘掉（见 teardownBodyEditor）
+    bodyKeyCapture: null,
   };
 
   const initialTitle = resolveTitle(ctx);
@@ -163,6 +182,12 @@ export function openRowDrawer(opts = {}) {
     body: bodyHtml,
     footer: footerHtml(index, total, handlers),
     onClose: () => {
+      // 点遮罩 / 点 × / Esc 关抽屉走的是这条路（sheetPage 的上一条/下一条是
+      // 先 closeAllPanels 再开新抽屉，同样经过这里）。closeAllPanels 是
+      // 「先摘节点、后调 onClose」，所以这里 state.el 还在，只是脱离了文档 ——
+      // querySelector 照样能取到编辑框的值，草稿不会丢。
+      void flushDrawerBody();
+      teardownBodyEditor(ctx);
       state.open = false;
       state.el = null;
       handlers.onClose?.();
@@ -180,6 +205,11 @@ export function openRowDrawer(opts = {}) {
   const token = state.token;
   ctx.el = drawer;
 
+  // 正文基线：首屏只有 preload 那点信息，真正的 record.body 在 applyRecord 里补正。
+  // 基线必须在这里重置 —— 上一条记录的正文不能拿来跟这一条比。
+  ctx.bodySource = String(preload?.body ?? '');
+  state.bodyBaseline = ctx.bodySource;
+
   // 首屏：正文先用已知文本顶上（markdown 渲染要等 vendor 脚本，不能阻塞开抽屉）
   paintPreloadBody(ctx);
   bindEvents(ctx);
@@ -190,14 +220,34 @@ export function openRowDrawer(opts = {}) {
 }
 
 /**
- * 关闭前把正文刷进库。**本期是占位实现**：正文目前只读，没有待刷的草稿。
- * 导出它是为了让 main.js 的 beforeunload 和 T05 的调用点先接上，
- * 免得 T05 上线时还要改签名。
+ * 把抽屉里还没落库的正文写进 record.body。
  *
- * @returns {Promise<boolean>} true = 真的写了库
+ * 时序上唯一要紧的一点：**抓值必须同步**。调用方（openRowDrawer / closeRowDrawer /
+ * openDrawer 的 onClose）会在调用后立刻销毁抽屉 DOM，所以 captureBodyDraft() 先同步
+ * 把值取出来并推进基线，之后才是异步写库。
+ *
+ * 三个调用点：
+ *   ① openRowDrawer 开头（换记录 / 重开抽屉）
+ *   ② closeRowDrawer（兼容壳主动关）
+ *   ③ openDrawer 的 onClose（点遮罩 / 点 × / Esc）
+ * 三者都不会重复写：基线的推进发生在同步段，第二次进来时编辑框已经不再是「脏」的。
+ *
+ * @returns {Promise<boolean>} true = 真的写了库，false = 没有草稿 / 写失败
  */
-export function flushDrawerBody() {
-  return Promise.resolve(false);
+export async function flushDrawerBody() {
+  const fresh = captureBodyDraft();
+  const pending = state.pendingBody;
+  const draft = fresh || pending;
+  if (!draft) return false;
+
+  // 新一轮草稿优先：它的值更新，旧的 pending 只会把更早的内容盖回去
+  state.pendingBody = null;
+  if (fresh && pending && pending.recordId !== fresh.recordId) {
+    logToFile('warn', `[rowDrawer] 丢弃未补写的正文草稿 record=${pending.recordId}（已被新记录覆盖）`);
+  }
+
+  // 关抽屉 / 切记录这一步没有 ctx（提示条也随抽屉一起没了），只写日志
+  return writeBody(null, draft.recordId, draft.body);
 }
 
 /**
@@ -214,6 +264,8 @@ export function isDrawerOpen() {
  */
 export function closeRowDrawer() {
   if (!state.open) return;
+  // 先同步抓草稿，再销毁 DOM
+  void flushDrawerBody();
   closeAllPanels();
 }
 
@@ -328,12 +380,22 @@ function paintPreloadBody(ctx) {
   const host = section(ctx, 'body')?.querySelector('[data-body]');
   if (!host) return;
   const text = String(ctx.preload?.body ?? '');
+  ctx.bodySource = text;
   if (!text.trim()) {
-    host.innerHTML = '<span class="rd-empty">暂无正文</span>';
+    paintEmptyBody(host);
     return;
   }
   // markdown 依赖（marked / DOMPurify）是异步脚本，先用纯文本顶上，避免白屏
   host.innerHTML = plainTextHtml(text);
+}
+
+/**
+ * 空正文不是「暂无正文」四个字，而是一行可点的提示 —— 空状态在这里同时是入口。
+ * @param {HTMLElement} host .rd-body 容器
+ */
+function paintEmptyBody(host) {
+  host.classList.add('is-empty');
+  host.innerHTML = '<span class="rd-empty rd-empty-action" data-body-start>写点什么…</span>';
 }
 
 // ==========================================
@@ -376,7 +438,15 @@ async function applyRecord(ctx, token) {
   // 完全没有字段（随手记 / 待办 / 子项）才用记录信息网格顶替字段区，
   // 有字段但都不是 text 的行不能走这里 —— 那会把已经渲染好的字段网格覆盖掉。
   if (!ctx.visibleFields.length) renderMetaRows(ctx, record);
-  await renderBody(ctx, record.body);
+
+  // 正文基线补正：preload 里可能只有临时值，record 才是权威。
+  // bodySource 永远代表「库里的值」（Esc 放弃时回退到它），所以编辑态下也要更新；
+  // 但**基线**不能在编辑态下动 —— 否则用户敲进去的字会被当成「没改过」。
+  const body = String(record.body ?? '');
+  ctx.bodySource = body;
+  if (!ctx.bodyEditing) state.bodyBaseline = body;
+
+  await renderBody(ctx, body);
 }
 
 /**
@@ -441,18 +511,22 @@ async function loadChildSheets(ctx, token) {
 async function renderBody(ctx, rawBody) {
   const host = section(ctx, 'body')?.querySelector('[data-body]');
   if (!host) return;
+  // 编辑中：一次晚到的异步渲染会把 textarea 冲掉，正在敲的字就没了
+  if (ctx.bodyEditing) return;
+
   const source = String(rawBody ?? '');
   if (!source.trim()) {
-    host.innerHTML = '<span class="rd-empty">暂无正文</span>';
+    paintEmptyBody(host);
     return;
   }
+  host.classList.remove('is-empty');
 
   // 先用纯文本顶上（首屏已经有 preload 内容时这里等于不变），markdown 渲染完再换
   if (!host.querySelector('.rd-body-text')) host.innerHTML = plainTextHtml(source);
 
   try {
     const html = await renderMarkdown(source);
-    if (!host.isConnected) return;
+    if (!host.isConnected || ctx.bodyEditing) return;
     host.innerHTML = html;
   } catch (error) {
     // 渲染链挂了不能把正文弄丢：退回纯文本
@@ -507,6 +581,7 @@ function bindEvents(ctx) {
   drawer.querySelector('[data-next]')?.addEventListener('click', () => ctx.handlers.onNext?.(ctx.row));
 
   bindTitleEdit(ctx);
+  bindBodyEditor(ctx);
 }
 
 function onBodyClick(ctx, event) {
@@ -706,6 +781,178 @@ function openInlineTitleInput(ctx, titleEl) {
   input.addEventListener('blur', () => {
     void finish(true);
   });
+}
+
+// ==========================================
+// 正文就地编辑（T05a）
+// ==========================================
+//
+// 交互只有三条，刻意的少：
+//   点正文 → 进编辑态（textarea 自适应高度，光标落末尾）
+//   Ctrl/⌘+Enter → 保存并退出
+//   Esc → 放弃本次修改，回到原值的 markdown 预览
+// **不在 blur 上保存**：点「上一条」/ 点子项时 blur 先于 click 触发，
+// 自动保存会和「正在切换记录」打架（轻则多一次写库，重则把 A 的正文写到 B 上）。
+
+function bindBodyEditor(ctx) {
+  const host = section(ctx, 'body')?.querySelector('[data-body]');
+  if (!host) return;
+  host.addEventListener('click', event => {
+    if (event.target.closest('[data-body-edit]')) return;
+    // 正文里的链接要能点，其余位置一律进编辑态
+    if (event.target.closest('a')) return;
+    startBodyEdit(ctx);
+  });
+}
+
+function startBodyEdit(ctx) {
+  const host = section(ctx, 'body')?.querySelector('[data-body]');
+  if (!host || ctx.bodyEditing) return;
+
+  const textarea = document.createElement('textarea');
+  textarea.className = 'rd-body-edit';
+  textarea.setAttribute('data-body-edit', '');
+  textarea.setAttribute('aria-label', '编辑正文');
+  textarea.spellcheck = false;
+  textarea.value = ctx.bodySource;
+
+  host.classList.remove('is-empty');
+  host.classList.add('is-editing');
+  host.innerHTML = '';
+  host.appendChild(textarea);
+  ctx.bodyEditing = true;
+
+  autoGrowBody(textarea);
+  textarea.focus();
+  // 光标置末尾：用户点进来就是要接着往下写
+  const end = textarea.value.length;
+  textarea.setSelectionRange(end, end);
+
+  textarea.addEventListener('input', () => autoGrowBody(textarea));
+  textarea.addEventListener('keydown', event => {
+    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+      event.preventDefault();
+      void exitBodyEdit(ctx, { discard: false });
+    }
+  });
+
+  // Esc 必须拦在 openDrawer 的监听之前。那一层绑在 document 的**捕获**阶段，
+  // 而捕获是 window → document → … → 目标，所以只有 window 捕获阶段的监听器
+  // 比它更早。不这么做的话，按 Esc 会连抽屉一起关掉，「放弃修改」就成了「关窗丢字」。
+  const onKeyCapture = event => {
+    if (event.key !== 'Escape') return;
+    // 只处理「在编辑框里按的 Esc」：用户可能已经点去别的单元格编辑，
+    // 那时 Esc 应该是那一格/抽屉的事，不该被这里截走。
+    if (event.target !== textarea) return;
+    event.preventDefault();
+    event.stopPropagation();
+    void exitBodyEdit(ctx, { discard: true });
+  };
+  ctx.bodyKeyCapture = onKeyCapture;
+  window.addEventListener('keydown', onKeyCapture, true);
+}
+
+/**
+ * 退出编辑态。
+ * @param {object} ctx 抽屉上下文
+ * @param {{discard?: boolean}} opts discard=true 表示放弃修改（Esc），否则保存（Ctrl+Enter）
+ */
+async function exitBodyEdit(ctx, { discard = false } = {}) {
+  const host = section(ctx, 'body')?.querySelector('[data-body]');
+  if (!ctx.bodyEditing || !host) return;
+
+  const textarea = host.querySelector('[data-body-edit]');
+  const value = String(textarea?.value ?? '');
+  ctx.bodyEditing = false;
+  host.classList.remove('is-editing');
+  teardownBodyKeyCapture(ctx);
+
+  if (discard) {
+    // 回到「库里的值」。ctx.bodySource 只在保存成功或打开抽屉时更新，
+    // 所以这里天然是原文，不需要额外缓存一份。
+    await renderBody(ctx, ctx.bodySource);
+    return;
+  }
+
+  const recordId = ctx.recordId ?? state.recordId;
+  // 先把用户敲的内容显示出来（保存是异步的，别让画面闪回旧文）
+  await renderBody(ctx, value);
+  // 一个字没改就退出：不写库（省一次 UPDATE，也免得白抬 updated_at）
+  if (value === state.bodyBaseline) return;
+  const ok = await writeBody(ctx, recordId, value);
+  if (ok) {
+    // 只有写成功才认这个值为「库里的值」：写失败时 bodySource 保持旧值，
+    // 草稿进了 state.pendingBody，关抽屉时会再补写一次。
+    ctx.bodySource = value;
+    state.bodyBaseline = value;
+  }
+}
+
+function teardownBodyKeyCapture(ctx) {
+  if (!ctx || !ctx.bodyKeyCapture) return;
+  window.removeEventListener('keydown', ctx.bodyKeyCapture, true);
+  ctx.bodyKeyCapture = null;
+}
+
+/**
+ * 抽屉被外部关掉时的收尾（onClose 里调）：编辑态没退就退掉，
+ * 不留下一个指向已销毁 DOM 的 window 监听器。
+ */
+function teardownBodyEditor(ctx) {
+  teardownBodyKeyCapture(ctx);
+  ctx.bodyEditing = false;
+  section(ctx, 'body')?.querySelector('[data-body]')?.classList.remove('is-editing');
+}
+
+function autoGrowBody(textarea) {
+  // height 先归 auto 才能拿到真实 scrollHeight，否则只会一路变大
+  textarea.style.height = 'auto';
+  textarea.style.height = `${Math.max(160, textarea.scrollHeight)}px`;
+}
+
+/**
+ * **同步**抓取未落库的正文草稿。返回 null 的三种情况：
+ *   没有编辑框 / 值是空的同一个值（没改过）/ 不知道是哪条记录。
+ *
+ * 抓到值后立刻把基线推进到新值 —— 写库是异步的，这期间可能又触发一次 flush
+ * （openRowDrawer → closeAllPanels → onClose 就是连着的），不推进就会写两遍。
+ *
+ * @returns {{recordId:number, body:string}|null}
+ */
+function captureBodyDraft() {
+  const input = state.el?.querySelector('[data-body-edit]');
+  if (!input || state.recordId === null) return null;
+
+  const value = String(input.value ?? '');
+  if (value === state.bodyBaseline) return null;
+
+  state.bodyBaseline = value;
+  return { recordId: state.recordId, body: value };
+}
+
+/**
+ * 写 record.body。失败不静默：日志文件 + 抽屉提示条（ctx 存在时）+ 留下 pending 草稿。
+ *
+ * @param {object|null} ctx 抽屉上下文（关抽屉时已没有，只写日志）
+ * @param {number|null} recordId
+ * @param {string} body
+ * @returns {Promise<boolean>}
+ */
+async function writeBody(ctx, recordId, body) {
+  const id = toId(recordId);
+  if (id === null) return false;
+  try {
+    await patchRecord(id, { body });
+    if (state.pendingBody && state.pendingBody.recordId === id) state.pendingBody = null;
+    return true;
+  } catch (error) {
+    const message = error?.message || String(error);
+    console.error('[rowDrawer] 正文保存失败', error);
+    logToFile('error', `[rowDrawer] 正文保存失败 record=${id}: ${message}`);
+    state.pendingBody = { recordId: id, body };
+    if (ctx) showHint(ctx, `正文保存失败：${message}`);
+    return false;
+  }
 }
 
 // ==========================================

@@ -15,6 +15,7 @@ import { initSheetPage } from './sheetPage.js';
 import { setSheetAdapter } from './sheetStore.js';
 import { setRecordAdapter } from './recordStore.js';
 import { initCommandPalette } from './commandPalette.js';
+import { flushDrawerBody } from './rowDrawer.js';
 
 // Tauri 全局对象由 withGlobalTauri 同步注入，正常情况可直接取用。
 // 这里做一次防御：万一注入时序异常，也不要让整个模块崩溃。
@@ -129,6 +130,14 @@ async function initApp() {
   safeRun('freecell', initFreeCellModule);
   safeRun('legacy-tools-toggle', setupLegacyToolsToggle);
   safeRun('dashboard-chrome', setupDashboardChrome);
+
+  // 关窗口前把抽屉里还没落库的正文再刷一次。
+  // 抓值是同步的（captureBodyDraft），所以即使 WebView 随后就拆掉了，值也已经取出来；
+  // invoke 已发出，主进程的 async 命令会排队写完。
+  // 这是 best-effort：进程被强杀时救不回来 —— 真正的保证是「关抽屉即保存」。
+  window.addEventListener('beforeunload', () => {
+    void flushDrawerBody();
+  });
 
   // 全局事件 1：点击空白处收起所有三点菜单
   document.addEventListener('click', (e) => {

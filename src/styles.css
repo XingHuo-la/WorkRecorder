@@ -14907,3 +14907,69 @@ body.cmdk-open { overflow: hidden !important; }
   color: var(--text-main) !important;
 }
 
+/* ==========================================================================
+   8.11 正文就地编辑（T05a）
+   只读态整块可点：hover 一点中性底、光标是文本光标 —— 这是「这里能改」的
+   唯一提示，不加按钮也不加图标，正文区保持干净。
+   编辑框不受全局规则影响（textarea 没有 !important，见 8.10 那段说明），
+   所以这一节不需要 !important。
+   ========================================================================== */
+.rd-body {
+  border-radius: 7px;
+  cursor: text;
+  transition: background 0.15s ease;
+}
+
+.rd-body:hover {
+  background: rgba(127, 127, 127, 0.06);
+}
+
+/* 编辑态：hover 底色压在 textarea 边框下面会显脏，去掉；光标还给文本域自己 */
+.rd-body.is-editing,
+.rd-body.is-editing:hover {
+  background: transparent;
+  cursor: auto;
+}
+
+/* 空正文：提示本身就是入口，给一块高度让人点得到 */
+.rd-body.is-empty {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  margin: 0 -4px;
+  padding: 0 4px;
+}
+
+.rd-empty-action {
+  cursor: text;
+  transition: color 0.15s ease;
+}
+
+.rd-empty-action:hover {
+  color: var(--text-main);
+}
+
+/* 编辑框：字号/行高跟只读正文一致，切换时文字不跳；高度由 JS 按 scrollHeight 调，
+   同时保留 resize: vertical，长文里用户可以自己拉高 */
+.rd-body-edit {
+  display: block;
+  width: 100%;
+  min-height: 160px;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--color-focus);
+  border-radius: 8px;
+  background: rgba(127, 127, 127, 0.06);
+  color: var(--text-main);
+  font-family: inherit;
+  font-size: 13.5px;
+  line-height: 1.7;
+  resize: vertical;
+  overflow: auto;
+  box-shadow: 0 0 0 3px rgba(var(--color-primary-rgb), 0.14);
+}
+
+.rd-body-edit:focus {
+  outline: none;
+}
+
