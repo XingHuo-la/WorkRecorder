@@ -15814,7 +15814,476 @@ body.cmdk-open { overflow: hidden !important; }
   background: var(--border-light);
 }
 
-/* 9.7 笔记页 —— 留给 T04，本节暂空。 */
+/* 9.7 笔记页（T04：打开即写 · 关联记录 chips · 三态视图） ------------------ */
+/* 本节把 index.html #subview-notes 的旧四层结构（kicker 页头 / 三下拉常驻 /
+   第二行工具栏 / 双栏小标签）整体压掉。旧节点已删的规则（.subview-kicker、
+   .note-split-label、#note-save-btn）不再命中任何元素，留着无害。 */
+
+/* —— 壳：整页两栏，页头并入左列表头（PRD R05：页头一行化） —— */
+#subview-notes {
+  padding: 0 !important;
+  display: flex !important;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+#subview-notes .notes-workbench {
+  display: grid;
+  grid-template-columns: var(--nt-list-w) minmax(0, 1fr);
+  gap: 0;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+}
+
+/* —— 左列表 —— */
+.nt-list-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 44px;
+  padding: 0 10px 0 16px;
+}
+.nt-list-title {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .02em;
+  color: var(--text-muted);
+}
+.nt-list-gap { flex: 1 1 auto; }
+
+.nt-icon-btn {
+  min-height: 0 !important;
+  padding: 0 !important;
+  box-shadow: none !important;
+  font-family: inherit !important;
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent !important;
+  border-radius: var(--radius-sm, 6px) !important;
+  background: transparent !important;
+  color: var(--text-secondary) !important;
+  font-size: 14px !important;
+  cursor: pointer;
+}
+.nt-icon-btn:hover {
+  background: var(--overlay-hover, rgba(255,255,255,.06)) !important;
+  color: var(--text-main) !important;
+}
+.nt-new-btn {
+  font-size: 16px !important;
+  color: var(--accent, var(--text-main)) !important;
+}
+
+.nt-search-row { padding: 0 10px 6px 16px; }
+#notes-filter-input,
+.nt-search-input {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 0 !important;
+  height: 30px !important;
+  padding: 0 10px !important;
+  font-size: 13px !important;
+  border-radius: var(--radius-sm, 6px) !important;
+}
+#subview-notes .nt-search-row { display: block; }
+#subview-notes .nt-search-row[hidden] { display: none !important; }
+
+/* 列表项两行：标题 + meta（旧 70 字摘要已删，PRD R12） */
+#subview-notes .note-list-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  min-height: 0 !important;
+  padding: 8px 12px !important;
+  border: 0 !important;
+  border-radius: 8px !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  color: inherit !important;
+  cursor: pointer;
+}
+#subview-notes .note-list-item:hover { background: var(--overlay-hover, rgba(255,255,255,.05)) !important; }
+#subview-notes .note-list-item.is-active { background: var(--overlay-hover, rgba(255,255,255,.08)) !important; }
+#subview-notes .note-list-item .note-list-title {
+  font-size: 14px !important;
+  font-weight: 500 !important;
+  line-height: 1.45;
+  color: var(--text-main) !important;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#subview-notes .note-list-item .note-list-meta {
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+/* —— 右编辑区：无卡片边框，打开即写 —— */
+#subview-notes .note-editor-pane {
+  display: flex !important;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border-left: 1px solid var(--border-light);
+}
+#subview-notes .note-editor-pane-inner {
+  display: flex !important;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 0;
+}
+
+/* 空态：主行动 + 一句话（R11），不再左右各说一遍 */
+#subview-notes .note-editor-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  flex: 1 1 auto;
+}
+.nt-empty-hint { font-size: 13px; color: var(--text-muted); }
+
+/* 顶栏：返回 + 标题 + 状态 + 视图切换 + ⋯（一行装完） */
+.nt-doc-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 4px 24px 0 28px;
+}
+.nt-back {
+  min-height: 0 !important;
+  padding: 2px 6px !important;
+  box-shadow: none !important;
+  font-family: inherit !important;
+  border: 0 !important;
+  border-radius: 6px !important;
+  background: transparent !important;
+  color: var(--text-muted) !important;
+  font-size: 12px !important;
+  font-weight: 500;
+  cursor: pointer;
+  flex: none;
+}
+.nt-back:hover { color: var(--text-main) !important; background: var(--overlay-hover, rgba(255,255,255,.06)) !important; }
+
+#note-title-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0 !important;
+  height: 34px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  color: var(--text-main) !important;
+  font-size: var(--nt-fs-title, 22px) !important;
+  font-weight: 700 !important;
+  line-height: 1.3 !important;
+}
+#note-title-input::placeholder { color: var(--text-faint, var(--text-muted)); font-weight: 500; }
+
+.nt-doc-head-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+.note-editor-status { font-size: 12px; color: var(--text-muted); }
+.note-editor-status[data-tone='warn'] { color: var(--color-warning, #d9a441); }
+.note-editor-status[data-tone='error'] { color: var(--color-danger, #e5484d); }
+
+.nt-seg {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--overlay-hover, rgba(127,127,127,.12));
+}
+.nt-seg-btn {
+  min-height: 0 !important;
+  padding: 3px 10px !important;
+  box-shadow: none !important;
+  font-family: inherit !important;
+  border: 0 !important;
+  border-radius: 6px !important;
+  background: transparent !important;
+  color: var(--text-muted) !important;
+  font-size: 12px !important;
+  font-weight: 500;
+  cursor: pointer;
+}
+.nt-seg-btn[aria-pressed='true'] {
+  background: var(--bg-card-solid, var(--bg-card)) !important;
+  color: var(--text-main) !important;
+}
+
+.nt-more-wrap { position: relative; display: inline-flex; }
+.nt-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  min-width: 150px;
+  padding: 4px;
+  border: 1px solid var(--border-light);
+  border-radius: 10px;
+  background: var(--bg-card);
+  box-shadow: var(--shadow-lg, 0 8px 24px rgba(0,0,0,.35));
+  z-index: 30;
+}
+.nt-menu-item {
+  display: block;
+  width: 100%;
+  min-height: 0 !important;
+  padding: 0 10px !important;
+  box-sizing: border-box;
+  text-align: left;
+  box-shadow: none !important;
+  font-family: inherit !important;
+  border: 0 !important;
+  border-radius: 6px !important;
+  background: transparent !important;
+  color: var(--text-main) !important;
+  font-size: 13px !important;
+  line-height: 30px;
+  cursor: pointer;
+}
+.nt-menu-item:hover { background: var(--overlay-hover, rgba(255,255,255,.07)) !important; }
+.nt-menu-item.is-danger { color: var(--color-danger, #e5484d) !important; }
+.nt-menu-item.is-danger:hover { background: rgba(229,72,77,.1) !important; }
+.nt-menu-sep { height: 1px; margin: 4px 6px; background: var(--border-light); }
+
+/* 第二行：关联记录 chips + 分类折叠（26px 一行，PRD R05「常驻控件 ≤ 1 行」） */
+.nt-sub-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+  padding: 0 24px 0 28px;
+  margin-top: 2px;
+}
+.nt-sub-gap { flex: 1 1 auto; }
+.nt-link-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.nt-link-row::-webkit-scrollbar { display: none; }
+
+.nt-link-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 0 !important;
+  height: 22px;
+  padding: 0 4px 0 8px !important;
+  box-sizing: border-box;
+  box-shadow: none !important;
+  font-family: inherit !important;
+  border: 1px solid var(--border-light) !important;
+  border-radius: 999px !important;
+  background: var(--overlay-hover, rgba(127,127,127,.1)) !important;
+  color: var(--text-secondary) !important;
+  font-size: 12px !important;
+  cursor: pointer;
+  flex: none;
+  max-width: 220px;
+}
+.nt-link-chip:hover { color: var(--text-main) !important; border-color: var(--text-faint, var(--border-light)) !important; }
+.nt-link-chip-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nt-link-chip-x {
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1;
+}
+.nt-link-chip-x:hover { background: rgba(229,72,77,.15); color: var(--color-danger, #e5484d); }
+.nt-link-chip.is-dead {
+  border-style: dashed !important;
+  color: var(--text-muted) !important;
+  cursor: default;
+  padding-right: 8px !important;
+}
+
+.nt-link-add {
+  min-height: 0 !important;
+  height: 22px;
+  padding: 0 10px !important;
+  box-sizing: border-box;
+  box-shadow: none !important;
+  font-family: inherit !important;
+  border: 1px dashed var(--border-light) !important;
+  border-radius: 999px !important;
+  background: transparent !important;
+  color: var(--text-muted) !important;
+  font-size: 12px !important;
+  cursor: pointer;
+  flex: none;
+}
+.nt-link-add:hover { color: var(--text-main) !important; border-color: var(--text-faint, var(--border-light)) !important; }
+
+/* 「挂到记录」选择器：锚在第二行下方的浮动小面板 */
+.nt-picker {
+  position: absolute;
+  left: 28px;
+  top: 58px;
+  width: 300px;
+  padding: 6px;
+  border: 1px solid var(--border-light);
+  border-radius: 10px;
+  background: var(--bg-card);
+  box-shadow: var(--shadow-lg, 0 8px 24px rgba(0,0,0,.35));
+  z-index: 30;
+}
+.nt-picker-input {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 0 !important;
+  height: 30px !important;
+  padding: 0 8px !important;
+  font-size: 13px !important;
+  border-radius: 6px !important;
+}
+.nt-picker-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 0 !important;
+  padding: 4px 8px !important;
+  box-sizing: border-box;
+  text-align: left;
+  box-shadow: none !important;
+  font-family: inherit !important;
+  border: 0 !important;
+  border-radius: 6px !important;
+  background: transparent !important;
+  color: var(--text-main) !important;
+  font-size: 13px !important;
+  cursor: pointer;
+}
+.nt-picker-item:hover { background: var(--overlay-hover, rgba(255,255,255,.07)) !important; }
+.nt-picker-kind { margin-left: auto; font-size: 12px; color: var(--text-muted); }
+.nt-picker-hint { padding: 6px 8px; font-size: 12px; color: var(--text-muted); }
+
+/* 分类折叠：收起是一段文字，展开是三个下拉（点一次才出现，不算常驻控件） */
+.nt-meta-toggle {
+  min-height: 0 !important;
+  padding: 2px 6px !important;
+  box-shadow: none !important;
+  font-family: inherit !important;
+  border: 0 !important;
+  border-radius: 6px !important;
+  background: transparent !important;
+  color: var(--text-muted) !important;
+  font-size: 12px !important;
+  cursor: pointer;
+  flex: none;
+}
+.nt-meta-toggle:hover { color: var(--text-secondary) !important; }
+.nt-meta-edit {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 24px 0 28px;
+}
+.nt-meta-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.nt-meta-select {
+  min-height: 0 !important;
+  height: 28px !important;
+  padding: 0 6px !important;
+  font-size: 13px !important;
+  border-radius: 6px !important;
+}
+
+/* 正文：源码 / 预览 / 双栏三态（data-pane），选择记在 settings.note_pane */
+.note-split { min-height: 0; flex: 1 1 auto; }
+#subview-notes[data-pane='source'] .note-split {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+}
+#subview-notes[data-pane='source'] .note-split-preview { display: none !important; }
+#subview-notes[data-pane='preview'] .note-split {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+}
+#subview-notes[data-pane='preview'] .note-split-source { display: none !important; }
+#subview-notes[data-pane='split'] .note-split {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) !important;
+}
+#subview-notes[data-pane='split'] .note-split-source {
+  border-right: 1px solid var(--border-light) !important;
+}
+
+/* 单栏态正文限宽（可读行长的上限），双栏铺满 */
+#subview-notes[data-pane='source'] .note-split,
+#subview-notes[data-pane='preview'] .note-split {
+  max-width: 860px;
+  width: 100%;
+  padding: 10px 32px 12px 28px;
+  box-sizing: border-box;
+}
+
+#note-source-input {
+  width: 100%;
+  height: 100% !important;
+  min-height: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  color: var(--text-main) !important;
+  font-size: var(--nt-fs-body, 15px) !important;
+  line-height: var(--nt-lh-body, 1.9) !important;
+  resize: none;
+}
+#note-preview {
+  font-size: var(--nt-fs-body, 15px);
+  line-height: var(--nt-lh-body, 1.9);
+  color: var(--text-main);
+  overflow-y: auto;
+  height: 100%;
+}
+
+/* 底部一行只读信息（字数 / 更新时间），不承载任何操作 */
+.nt-doc-foot {
+  display: flex;
+  align-items: center;
+  height: 26px;
+  padding: 0 24px 0 28px;
+  border-top: 1px solid var(--border-light);
+  font-size: 12px;
+  color: var(--text-muted);
+  flex: none;
+}
+.nt-foot-gap { flex: 1 1 auto; }
 
 /* 9.8 [hidden] 兜底 ------------------------------------------------------ */
 /* 必须放在层 9 的**最后**，且必须带 !important：
@@ -15833,7 +16302,19 @@ body.cmdk-open { overflow: hidden !important; }
 .rd-crumbs[hidden],
 .rd-note-panel[hidden],
 .rd-link-btn[hidden],
-.rd-notes-foot[hidden] {
+.rd-notes-foot[hidden],
+.nt-menu[hidden],
+.nt-search-row[hidden],
+.nt-meta-edit[hidden],
+.nt-meta-toggle[hidden],
+.nt-back[hidden],
+.nt-link-chip[hidden],
+.nt-picker[hidden],
+#note-back-btn[hidden],
+#note-open-external-btn[hidden],
+[data-pane-split][hidden],
+#note-editor-pane[hidden],
+#note-editor-empty[hidden] {
   display: none !important;
 }
 

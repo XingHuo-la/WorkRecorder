@@ -1,19 +1,24 @@
 // ==========================================
-// 笔记编辑器
+// 笔记编辑器（v1.2 重排：打开即写 / 关联记录 chips / 三态视图）
 //
-// 形态：左侧 Markdown 源码，右侧实时预览。
-// 当前版本不支持语法速插（工具栏输入）。工具栏按钮仅切换预览主题与外部编辑器。
+// 形态：默认单栏源码，可切预览或双栏（settings.note_pane 记忆）。
+// 顶栏 = 返回记录（从抽屉进来时）+ 标题 + 保存状态 + 视图切换 + ⋯ 菜单。
+// 第二行 = 关联记录 chips（多对多）+ 分类折叠入口。
 // 依赖渲染能力由 markdown.js 提供，全部本地 vendored。
 // ==========================================
 
-import { renderMarkdown, preloadRenderer, detectDarkTheme, extractExcerpt } from './markdown.js';
+import { renderMarkdown, preloadRenderer, detectDarkTheme } from './markdown.js';
 import { escapeHtml } from './htmlUtils.js';
 import { logToFile } from './logger.js';
 import {
   readNote,
   writeNote,
-  deleteNote
+  deleteNote,
+  normalizeRecordIds,
+  addNoteRecord,
+  removeNoteRecord
 } from './notesStore.js';
+import { getRecords, searchRecords } from './recordStore.js';
 import {
   getPreferredEditor,
   openInExternalEditor
@@ -47,7 +52,19 @@ const state = {
   /** 是否已绑定 DOM 事件 */
   bound: false,
   /** 关闭确认回调，供外部注入 */
-  onRequestClose: null
+  onRequestClose: null,
+  /** 视图三态：source | preview | split（settings.note_pane） */
+  pane: 'source',
+  /** 来源记录（从抽屉点笔记进来时记录，供「← 返回记录」）。null = 独立进入 */
+  origin: null,
+  /** 关联记录 chips 的标题缓存（id → {title, found}） */
+  linkTitles: new Map(),
+  /** 「挂到记录」选择器的开关态 */
+  pickerOpen: false,
+  /** ⋯ 菜单开关态 */
+  menuOpen: false,
+  /** meta（分类）编辑行展开态 */
+  metaOpen: false
 };
 
 let els = {};
@@ -59,6 +76,7 @@ function cacheElements() {
     listMeta: document.getElementById('notes-list-meta'),
     editor: document.getElementById('note-editor-pane'),
     empty: document.getElementById('note-editor-empty'),
+    emptyNewBtn: document.getElementById('note-empty-new-btn'),
     titleInput: document.getElementById('note-title-input'),
     source: document.getElementById('note-source-input'),
     preview: document.getElementById('note-preview'),
@@ -67,12 +85,21 @@ function cacheElements() {
     subTagSelect: document.getElementById('note-editor-subtag'),
     typeSelect: document.getElementById('note-editor-type'),
     newBtn: document.getElementById('note-new-btn'),
-    saveBtn: document.getElementById('note-save-btn'),
     deleteBtn: document.getElementById('note-delete-btn'),
     externalBtn: document.getElementById('note-open-external-btn'),
     folderBtn: document.getElementById('note-open-folder-btn'),
+    folderBtnMenu: document.getElementById('note-open-folder-btn-menu'),
     searchInput: document.getElementById('notes-filter-input'),
-    splitToggle: document.getElementById('note-split-toggle')
+    searchToggle: document.getElementById('note-search-toggle'),
+    searchRow: document.querySelector('#subview-notes [data-search-row]'),
+    backBtn: document.getElementById('note-back-btn'),
+    moreBtn: document.getElementById('note-more-btn'),
+    menu: document.querySelector('#subview-notes [data-note-menu]'),
+    linkRow: document.querySelector('#subview-notes [data-link-row]'),
+    metaToggle: document.querySelector('#subview-notes [data-meta-toggle]'),
+    metaEdit: document.querySelector('#subview-notes [data-meta-edit]'),
+    wordcount: document.getElementById('nt-wordcount'),
+    updated: document.getElementById('nt-updated')
   };
 }
 
@@ -155,21 +182,19 @@ export function renderNotesPane() {
   const activeRel = state.doc?.rel_path || '';
   els.list.innerHTML = items.map(note => {
     const isActive = note.rel_path === activeRel;
-    const excerpt = extractExcerpt(note.content, 70);
-    const updated = (note.updated_at || note.created_at || '').substring(0, 16);
-    const tagBits = [note.tag, note.sub_tag].filter(Boolean);
-    const tagHtml = tagBits.length
-      ? `<span class="note-list-tag">${escapeHtml(tagBits.join(' / '))}</span>`
-      : '<span class="note-list-tag is-muted">未分类</span>';
+    // 列表项两行：标题 + 一行 meta（`2 条记录 · 10-12`）。
+    // 70 字摘要在 210px 列宽下只是噪音（design-v1.2 §3.6 / PRD R12）。
+    const linkCount = normalizeRecordIds(note.record_ids).length;
+    const updated = (note.updated_at || note.created_at || '').substring(5, 10);
+    const bits = [];
+    if (linkCount) bits.push(`${linkCount} 条记录`);
+    if (updated) bits.push(updated);
+    const meta = bits.join(' · ');
 
     return `
       <button type="button" class="note-list-item${isActive ? ' is-active' : ''}" data-rel="${escapeHtml(note.rel_path)}">
         <div class="note-list-title">${escapeHtml(note.title || '未命名笔记')}</div>
-        ${excerpt ? `<div class="note-list-excerpt">${escapeHtml(excerpt)}</div>` : ''}
-        <div class="note-list-foot">
-          ${tagHtml}
-          <span class="note-list-time">${escapeHtml(updated)}</span>
-        </div>
+        <div class="note-list-meta">${escapeHtml(meta || '独立笔记')}</div>
       </button>
     `;
   }).join('');
@@ -262,6 +287,246 @@ function refreshMetaControls() {
 }
 
 // ==========================================
+// 关联记录 chips（多对多 · R03）
+// ==========================================
+
+/**
+ * 刷新第二行：关联记录 chips + 分类折叠入口。
+ *
+ * 标题解析用 getRecords 一次批量拿；查不到的 id 渲染成灰色占位
+ * 「已删除记录（原 #37）」——留痕口径（§9.3 / R06），不静默消失、
+ * 也不自动从 front-matter 里清掉。
+ */
+async function refreshLinkRow() {
+  if (!els.linkRow) return;
+  const ids = normalizeRecordIds(state.doc?.record_ids);
+  state.linkTitles = new Map();
+
+  if (ids.length) {
+    const records = await getRecords(ids).catch(() => []);
+    const found = new Map((records || []).map(r => [Number(r.id), r]));
+    for (const id of ids) {
+      const rec = found.get(Number(id));
+      state.linkTitles.set(Number(id), rec ? { title: rec.title || `#${id}`, found: true } : { title: `已删除记录（原 #${id}）`, found: false });
+    }
+  }
+
+  renderLinkRow();
+}
+
+function renderLinkRow() {
+  if (!els.linkRow) return;
+  const ids = normalizeRecordIds(state.doc?.record_ids);
+  const chips = ids.map(id => {
+    const info = state.linkTitles.get(Number(id)) || { title: `#${id}`, found: true };
+    if (!info.found) {
+      return `<span class="nt-link-chip is-dead" data-dead-id="${id}" aria-disabled="true" title="这条记录已删除，关联保留在文件里">${escapeHtml(info.title)}</span>`;
+    }
+    return `<button type="button" class="nt-link-chip" data-record-id="${id}" title="打开这条记录">
+      <span class="nt-link-chip-text">${escapeHtml(info.title)}</span>
+      <span class="nt-link-chip-x" data-unlink-id="${id}" role="button" aria-label="解除关联" title="解除关联">×</span>
+    </button>`;
+  });
+
+  const picker = state.pickerOpen ? renderPickerHtml() : '';
+  const addBtn = `<button type="button" class="nt-link-add" data-link-add>＋挂到记录…</button>`;
+  els.linkRow.innerHTML = chips.join('') + addBtn + picker;
+}
+
+function renderPickerHtml() {
+  return `
+    <div class="nt-picker" data-note-picker>
+      <input type="text" class="nt-picker-input" data-picker-input placeholder="搜记录标题或 #id" />
+      <div class="nt-picker-list" data-picker-list><div class="nt-picker-hint">输入关键词，回车挂上第一条</div></div>
+    </div>`;
+}
+
+function closePicker() {
+  if (!state.pickerOpen) return;
+  state.pickerOpen = false;
+  renderLinkRow();
+}
+
+/** 在选择器里搜记录（标题 LIKE / id 等值），排除已挂的。 */
+async function renderPickerResults(keyword) {
+  const list = els.linkRow?.querySelector('[data-picker-list]');
+  if (!list) return;
+  const kw = String(keyword ?? '').trim();
+  if (!kw) {
+    list.innerHTML = '<div class="nt-picker-hint">输入关键词，回车挂上第一条</div>';
+    return;
+  }
+  const exclude = normalizeRecordIds(state.doc?.record_ids);
+  const rows = await searchRecords(kw, { limit: 8, excludeIds: exclude }).catch(() => []);
+  if (!rows?.length) {
+    list.innerHTML = '<div class="nt-picker-hint">没有匹配的记录</div>';
+    return;
+  }
+  list.innerHTML = rows.map(r =>
+    `<button type="button" class="nt-picker-item" data-pick-id="${Number(r.id)}">
+      <span class="nt-picker-title">${escapeHtml(r.title || `#${r.id}`)}</span>
+      <span class="nt-picker-kind">#${Number(r.id)}</span>
+    </button>`
+  ).join('');
+}
+
+/** 挂上一条记录：addNoteRecord 是文件级真相的并集操作，幂等。 */
+async function attachRecord(recordId) {
+  const rel = state.doc?.rel_path;
+  if (!rel) {
+    setStatus('笔记尚未落盘，先写点内容', 'warn');
+    return;
+  }
+  try {
+    const saved = await addNoteRecord(rel, Number(recordId));
+    state.doc = { ...state.doc, record_ids: normalizeRecordIds(saved?.record_ids) };
+    closePicker();
+    await refreshLinkRow();
+    await refreshNotesCache({ keepSelection: true });
+    setStatus('已挂到记录');
+  } catch (error) {
+    console.error('挂接记录失败:', error);
+    logToFile('error', `笔记挂接记录失败 rel=${rel} record=${recordId}: ${error?.message || error}`);
+    setStatus(`挂接失败：${error?.message || error}`, 'error');
+  }
+}
+
+/** 解除一条关联：只少这一个 id，其余关联原样保留（R02/R03）。 */
+async function detachRecord(recordId) {
+  const rel = state.doc?.rel_path;
+  if (!rel) return;
+  try {
+    const saved = await removeNoteRecord(rel, Number(recordId));
+    state.doc = { ...state.doc, record_ids: normalizeRecordIds(saved?.record_ids) };
+    await refreshLinkRow();
+    await refreshNotesCache({ keepSelection: true });
+    setStatus('已解除关联');
+  } catch (error) {
+    console.error('解除关联失败:', error);
+    logToFile('error', `笔记解除关联失败 rel=${rel} record=${recordId}: ${error?.message || error}`);
+    setStatus(`解除失败：${error?.message || error}`, 'error');
+  }
+}
+
+// ==========================================
+// 视图三态 / meta 折叠 / 底部信息 / 返回记录
+// ==========================================
+
+const PANE_KEY = 'note_pane';
+
+/** 读回视图偏好。settings 表读不到时给默认值。 */
+async function loadPanePref() {
+  try {
+    const { dbQuery } = await import('./data.js');
+    const rows = await dbQuery('SELECT value FROM settings WHERE key = ?', [PANE_KEY]).catch(() => []);
+    const value = rows?.[0]?.value;
+    if (value === 'source' || value === 'preview' || value === 'split') {
+      state.pane = value;
+    }
+  } catch (error) {
+    logToFile('warn', `读取 note_pane 偏好失败（用默认单栏）: ${error?.message || error}`);
+  }
+  // 双栏只在宽屏可选：窄窗口下即便库里存着 split 也回落单栏
+  if (state.pane === 'split' && window.innerWidth < 1200) state.pane = 'source';
+  applyPane();
+}
+
+/** 双写：内存 + settings 表（与主题同源，能进备份；§八 8.6）。 */
+async function savePanePref(pane) {
+  state.pane = pane;
+  applyPane();
+  try {
+    const { dbExecute } = await import('./data.js');
+    await dbExecute('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', [PANE_KEY, pane]);
+  } catch (error) {
+    logToFile('warn', `写入 note_pane 偏好失败: ${error?.message || error}`);
+  }
+}
+
+function applyPane() {
+  if (!els.view) return;
+  els.view.dataset.pane = state.pane;
+  els.view.querySelectorAll('.nt-seg-btn').forEach(btn => {
+    btn.setAttribute('aria-pressed', String(btn.dataset.paneOpt === state.pane));
+  });
+  // 双栏只在宽屏可选：按钮跟着窗口宽度显隐（applyPane 在 init 与每次切换都会跑）
+  const splitBtn = els.view.querySelector('[data-pane-split]');
+  if (splitBtn) splitBtn.hidden = window.innerWidth < 1200;
+}
+
+function updateMetaToggle() {
+  if (!els.metaToggle) return;
+  const doc = state.doc;
+  if (!doc) {
+    els.metaToggle.hidden = true;
+    return;
+  }
+  els.metaToggle.hidden = false;
+  if (state.metaOpen) {
+    els.metaToggle.textContent = '收起分类';
+    if (els.metaEdit) els.metaEdit.hidden = false;
+  } else {
+    const bits = [NOTE_TYPES[doc.note_type] || doc.note_type, doc.tag, doc.sub_tag].filter(Boolean);
+    els.metaToggle.textContent = bits.length ? `分类：${bits.join(' / ')}` : '＋ 分类';
+    if (els.metaEdit) els.metaEdit.hidden = true;
+  }
+}
+
+function updateDocFoot() {
+  const content = els.source?.value ?? '';
+  const chars = content.replace(/\s/g, '').length;
+  if (els.wordcount) els.wordcount.textContent = chars ? `${chars} 字` : '';
+  const when = String(state.doc?.updated_at ?? '').substring(5, 16);
+  if (els.updated) els.updated.textContent = when ? `更新于 ${when}` : '';
+}
+
+/** 来源记录（R09）：由 rowDrawer 打开笔记时传入。 */
+export function setOrigin(recordId) {
+  const id = Number(recordId);
+  state.origin = Number.isFinite(id) && id > 0 ? { recordId: id } : null;
+  updateBackButton();
+}
+
+function updateBackButton() {
+  if (!els.backBtn) return;
+  if (!state.origin) {
+    els.backBtn.hidden = true;
+    els.backBtn.textContent = '';
+    return;
+  }
+  els.backBtn.hidden = false;
+  els.backBtn.textContent = `← 记录 #${state.origin.recordId}`;
+  els.backBtn.title = '回到这条记录的详情';
+}
+
+/** 回到来源记录：直接开抽屉（记录页内定位该行是 T09 的活，这里不越界）。 */
+async function goBackToRecord() {
+  const recordId = state.origin?.recordId;
+  if (!recordId) return;
+  try {
+    const drawer = await import('./rowDrawer.js');
+    drawer.openRowDrawer({ recordId });
+  } catch (error) {
+    console.error('返回记录失败:', error);
+    setStatus('返回记录失败', 'error');
+  }
+}
+
+function closeMenu() {
+  if (!state.menuOpen) return;
+  state.menuOpen = false;
+  if (els.menu) els.menu.hidden = true;
+  if (els.moreBtn) els.moreBtn.setAttribute('aria-expanded', 'false');
+}
+
+function toggleMenu() {
+  state.menuOpen = !state.menuOpen;
+  if (els.menu) els.menu.hidden = !state.menuOpen;
+  if (els.moreBtn) els.moreBtn.setAttribute('aria-expanded', String(state.menuOpen));
+  if (state.menuOpen) closePicker();
+}
+
+// ==========================================
 // 编辑器生命周期
 // ==========================================
 
@@ -275,6 +540,8 @@ function loadIntoEditor(doc) {
   state.doc = doc;
   state.draft = doc?.content ?? '';
   state.dirty = false;
+  closePicker();
+  closeMenu();
 
   if (!doc) {
     setEditorVisible(false);
@@ -286,15 +553,21 @@ function loadIntoEditor(doc) {
   if (els.titleInput) els.titleInput.value = doc.title || '';
   if (els.source) els.source.value = doc.content || '';
   refreshMetaControls();
+  updateMetaToggle();
+  void refreshLinkRow();
   refreshPreview();
-  setStatus('已加载');
+  updateDocFoot();
+  setStatus('');
   renderNotesPane();
 }
 
 /**
  * 打开一篇笔记。
+ * @param {string} relPath 相对路径
+ * @param {{ fromRecordId?: number|null }} [opts] 从记录抽屉进来时带上来源，
+ *        顶栏会出现「← 记录标题」，点它或按 Esc 回到该记录的抽屉（R09）。
  */
-export async function openNote(relPath) {
+export async function openNote(relPath, opts = {}) {
   if (state.dirty) {
     const ok = await confirmDiscard();
     if (!ok) return;
@@ -305,6 +578,10 @@ export async function openNote(relPath) {
     setStatus('打开失败', 'error');
     return;
   }
+  // 来源只由调用方显式设置：从列表点进来的普通浏览要把上一次的来源清掉，
+  // 否则「← 某记录」会一直挂在顶栏，指着一个早已离开的记录。
+  state.origin = opts.fromRecordId ? { recordId: Number(opts.fromRecordId) } : null;
+  updateBackButton();
   loadIntoEditor(doc);
 }
 
@@ -314,6 +591,8 @@ export function createNewNote() {
   const appData = window.__wrAppData?.() || {};
   const defaultTag = appData.tags?.[0] || '未分类';
 
+  state.origin = null;
+  updateBackButton();
   loadIntoEditor({
     id: null,
     title: '',
@@ -366,7 +645,11 @@ export async function saveCurrentNote(options = {}) {
       sub_tag: els.subTagSelect?.value || '',
       created_at: state.doc.created_at || nowString(),
       updated_at: nowString(),
-      rel_path: state.doc.rel_path || ''
+      rel_path: state.doc.rel_path || '',
+      // ⚠️ 不变式 1（design-v1.2 §2.5）：notes_write 是**整份覆盖** front-matter。
+      // 漏传 record_ids 等于每次自动保存都把关联清空，而且零报错。
+      // 清空关联的唯一入口是 setNoteRecords(rel, [])，不是漏传。
+      record_ids: normalizeRecordIds(state.doc.record_ids)
     };
 
     const saved = await writeNote(payload);
@@ -382,6 +665,8 @@ export async function saveCurrentNote(options = {}) {
     }
 
     setStatus(`已保存 ${saved.updated_at.substring(11, 16)}`);
+    void refreshLinkRow();
+    updateDocFoot();
     await refreshNotesCache({ keepSelection: true });
     return true;
   } catch (error) {
@@ -515,6 +800,10 @@ export async function initNotesEditor() {
     state.bound = true;
   }
 
+  // 视图三态偏好（settings.note_pane）：要在首帧前定好 data-pane
+  await loadPanePref();
+  updateBackButton();
+
   await refreshNotesCache();
 
   // 默认打开最近一篇
@@ -538,7 +827,7 @@ function updateExternalButton() {
 }
 
 function bindEvents() {
-  // 列表点击 → 打开笔记
+  // 列表点击 → 打开笔记（普通浏览，清掉来源）
   els.list?.addEventListener('click', async event => {
     const item = event.target.closest('.note-list-item');
     if (!item) return;
@@ -551,10 +840,24 @@ function bindEvents() {
     renderNotesPane();
   });
 
-  // 正文输入 → 预览节流刷新 + 自动保存计时
+  // 搜索图标 → 展开筛选行（05 设计稿：列表头只留一个 ⌕，不常驻输入框）
+  els.searchToggle?.addEventListener('click', () => {
+    if (!els.searchRow) return;
+    const show = els.searchRow.hidden;
+    els.searchRow.hidden = !show;
+    if (show) els.searchInput?.focus();
+    else if (filterKeyword) {
+      filterKeyword = '';
+      if (els.searchInput) els.searchInput.value = '';
+      renderNotesPane();
+    }
+  });
+
+  // 正文输入 → 预览节流刷新 + 自动保存计时 + 底部字数
   els.source?.addEventListener('input', () => {
     schedulePreview();
     markDirty();
+    updateDocFoot();
   });
 
   // 标题输入
@@ -568,11 +871,24 @@ function bindEvents() {
     const subs = appData.sub_tags?.[els.tagSelect.value] || [];
     fillSelect(els.subTagSelect, subs, '', '(无子项目)');
     markDirty();
+    updateMetaToggle();
   });
-  els.subTagSelect?.addEventListener('change', markDirty);
-  els.typeSelect?.addEventListener('change', markDirty);
+  els.subTagSelect?.addEventListener('change', () => {
+    markDirty();
+    updateMetaToggle();
+  });
+  els.typeSelect?.addEventListener('change', () => {
+    markDirty();
+    updateMetaToggle();
+  });
 
-  // 工具栏
+  // 分类折叠行
+  els.metaToggle?.addEventListener('click', () => {
+    state.metaOpen = !state.metaOpen;
+    updateMetaToggle();
+  });
+
+  // 新建（列表头 ＋ / 空态主按钮）
   els.newBtn?.addEventListener('click', async () => {
     if (state.dirty) {
       const ok = await confirmDiscard();
@@ -581,11 +897,27 @@ function bindEvents() {
     createNewNote();
   });
 
-  els.saveBtn?.addEventListener('click', () => saveCurrentNote());
+  els.emptyNewBtn?.addEventListener('click', async () => {
+    if (state.dirty) {
+      const ok = await confirmDiscard();
+      if (!ok) return;
+    }
+    createNewNote();
+  });
 
-  els.deleteBtn?.addEventListener('click', deleteCurrentNote);
+  els.deleteBtn?.addEventListener('click', () => {
+    closeMenu();
+    void deleteCurrentNote();
+  });
+
+  // ⋯ 菜单里的「打开文件夹」与列表头的 ⌂ 是同一个动作
+  els.folderBtnMenu?.addEventListener('click', () => {
+    closeMenu();
+    void openNotesFolderSafe();
+  });
 
   els.externalBtn?.addEventListener('click', async () => {
+    closeMenu();
     // 未保存的改动先落盘，避免外部编辑器打开的是旧内容
     if (state.dirty) {
       const ok = await saveCurrentNote({ silent: true });
@@ -602,17 +934,94 @@ function bindEvents() {
     setStatus(ok ? `已在 ${state.externalEditor.name} 中打开` : '外部打开失败', ok ? '' : 'error');
   });
 
-  els.folderBtn?.addEventListener('click', async () => {
-    const { openNotesFolder } = await import('./notesStore.js');
-    const path = await openNotesFolder();
-    if (path) setStatus(`笔记目录：${path}`);
+  els.folderBtn?.addEventListener('click', () => void openNotesFolderSafe());
+
+  // ⋯ 菜单开关 + 点外部关闭
+  els.moreBtn?.addEventListener('click', event => {
+    event.stopPropagation();
+    toggleMenu();
+  });
+  document.addEventListener('mousedown', event => {
+    if (!state.menuOpen) return;
+    if (els.menu?.contains(event.target) || els.moreBtn?.contains(event.target)) return;
+    closeMenu();
   });
 
-  // 分栏 / 单栏切换
-  els.splitToggle?.addEventListener('click', () => {
-    const enabled = els.view.classList.toggle('is-single-pane');
-    els.splitToggle.textContent = enabled ? '显示预览' : '隐藏预览';
-    els.splitToggle.setAttribute('aria-pressed', String(enabled));
+  // 视图三态（source / preview / split）
+  els.view?.querySelectorAll('.nt-seg-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      void savePanePref(btn.dataset.paneOpt);
+    });
+  });
+
+  // 返回记录（R09）
+  els.backBtn?.addEventListener('click', goBackToRecord);
+
+  // 关联记录行：chips / 解除 / ＋挂到 / 选择器，全部委托在一个容器上
+  els.linkRow?.addEventListener('click', async event => {
+    const unlink = event.target.closest('[data-unlink-id]');
+    if (unlink) {
+      event.stopPropagation();
+      await detachRecord(Number(unlink.dataset.unlinkId));
+      return;
+    }
+    if (event.target.closest('[data-link-add]')) {
+      // 再点一次＝收起选择器
+      if (state.pickerOpen) {
+        closePicker();
+      } else {
+        state.pickerOpen = true;
+        renderLinkRow();
+        const input = els.linkRow.querySelector('[data-picker-input]');
+        input?.focus();
+        input?.addEventListener('input', () => void renderPickerResults(input.value));
+        input?.addEventListener('keydown', async ev => {
+          if (ev.key === 'Escape') {
+            ev.stopPropagation();
+            closePicker();
+            return;
+          }
+          if (ev.key !== 'Enter') return;
+          const first = els.linkRow.querySelector('[data-pick-id]');
+          if (first) await attachRecord(Number(first.dataset.pickId));
+        });
+      }
+      return;
+    }
+    if (event.target.closest('[data-pick-id]')) {
+      await attachRecord(Number(event.target.closest('[data-pick-id]').dataset.pickId));
+      return;
+    }
+    if (event.target.closest('[data-note-picker]')) return; // 选择器内部点击不外溢
+    if (event.target.closest('.nt-link-chip.is-dead')) return; // 已删除记录占位：连点也无动作（R06）
+    const chip = event.target.closest('.nt-link-chip[data-record-id]');
+    if (chip) {
+      await openRecordChip(Number(chip.dataset.recordId));
+    }
+  });
+
+  // Esc 优先级：选择器 > 菜单 > 返回记录。抽屉开着时不动（抽屉自己管 Esc）。
+  document.addEventListener('keydown', event => {
+    if (event.key !== 'Escape') return;
+    if (!els.view || els.view.style.display === 'none') return;
+    if (state.pickerOpen) {
+      event.preventDefault();
+      closePicker();
+      return;
+    }
+    if (state.menuOpen) {
+      event.preventDefault();
+      closeMenu();
+      return;
+    }
+    if (state.origin) {
+      event.preventDefault();
+      void (async () => {
+        const drawer = await import('./rowDrawer.js');
+        if (drawer.isDrawerOpen?.()) return;
+        goBackToRecord();
+      })();
+    }
   });
 
   // 快捷键：Ctrl+S 保存，Ctrl+N 新建
@@ -638,13 +1047,23 @@ function bindEvents() {
       el.dispatchEvent(new Event('input', { bubbles: true }));
     }
   });
+}
 
-  // 窗口关闭前兜底保存
-  window.addEventListener('beforeunload', () => {
-    if (!state.dirty || !state.doc) return;
-    // beforeunload 里无法 await，只能用同步手段提示
-    // 这里依赖自动保存已经落盘，因此不再阻塞关闭
-  });
+async function openNotesFolderSafe() {
+  const { openNotesFolder } = await import('./notesStore.js');
+  const path = await openNotesFolder();
+  if (path) setStatus(`笔记目录：${path}`);
+}
+
+/** 点关联 chip：抽屉盖在笔记页上，关闭抽屉后仍停在本笔记（R03）。 */
+async function openRecordChip(recordId) {
+  try {
+    const drawer = await import('./rowDrawer.js');
+    drawer.openRowDrawer({ recordId });
+  } catch (error) {
+    console.error('打开记录失败:', error);
+    setStatus('打开记录失败', 'error');
+  }
 }
 
 /** 导出当前是否有未保存内容，供路由切换时判断。 */

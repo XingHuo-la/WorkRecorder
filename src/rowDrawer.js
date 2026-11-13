@@ -1459,7 +1459,8 @@ async function openLinkedNote(ctx, relPath) {
   // 这里，就是文件头禁令里那种 ESM 循环（openDrawer 落进 TDZ，抽屉偶发打不开）。
   try {
     const { openNote } = await import('./notesEditor.js');
-    await openNote(rel);
+    // 带上来源：笔记页顶栏出现「← 记录标题」，写完一键回本抽屉（R09）。
+    await openNote(rel, { fromRecordId: ctx.recordId });
   } catch (error) {
     // 抽屉已经关了，没有提示条可用；留日志（GUI 应用没有控制台，这是唯一的现场）
     const message = error?.message || String(error);

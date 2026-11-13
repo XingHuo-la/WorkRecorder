@@ -405,63 +405,79 @@
           <div id="history-list-container" class="legacy-hidden-list"></div>
         </div>
 
-        <div id="subview-notes" class="subview" style="display: none;">
-          <header class="subview-page-head notes-page-head">
-            <div>
-              <span class="subview-kicker">NOTES</span>
-              <h1>笔记</h1>
-              <p>以 Markdown 文件保存，可用任意编辑器打开。</p>
-            </div>
-            <div class="notes-head-actions">
-              <button id="note-open-folder-btn" type="button" class="icon-btn">打开文件夹</button>
-              <button id="note-new-btn" type="button" class="primary-btn">新建笔记</button>
-            </div>
-          </header>
-
+        <div id="subview-notes" class="subview" data-pane="source" style="display: none;">
+          <!-- v1.2 重排（docs/design-v1.2.md §3）：页头一行化；打开即写；
+               关联记录 chips 一行；元数据折叠；源码/预览/双栏三态（data-pane）。
+               旧结构（kicker + 三下拉常驻 + 保存按钮 + 双栏小标签）整体废弃。 -->
           <div class="notes-workbench">
             <aside class="notes-list-pane" aria-label="笔记列表">
-              <div class="notes-list-head">
-                <input id="notes-filter-input" type="search" class="hero-input notes-filter-input" placeholder="筛选笔记..." autocomplete="off" />
+              <div class="nt-list-head">
+                <span class="nt-list-title">全部笔记</span>
                 <span id="notes-list-meta" class="notes-list-meta">0 篇</span>
+                <span class="nt-list-gap"></span>
+                <button id="note-search-toggle" type="button" class="nt-icon-btn" title="筛选" aria-label="筛选笔记">⌕</button>
+                <button id="note-open-folder-btn" type="button" class="nt-icon-btn" title="打开文件夹">⌂</button>
+                <button id="note-new-btn" type="button" class="nt-icon-btn nt-new-btn" title="新建笔记">＋</button>
+              </div>
+              <div class="nt-search-row" data-search-row hidden>
+                <input id="notes-filter-input" type="search" class="nt-search-input" placeholder="筛选笔记..." autocomplete="off" />
               </div>
               <div id="notes-list-pane" class="notes-list-scroll"></div>
             </aside>
 
             <section class="note-editor-pane">
               <div id="note-editor-empty" class="note-editor-empty">
-                <strong>选择或新建一篇笔记</strong>
-                <span>笔记以 .md 文件存放在数据目录的 notes 文件夹里。</span>
+                <button id="note-empty-new-btn" type="button" class="primary-btn nt-empty-new">新建笔记</button>
+                <span class="nt-empty-hint">笔记是 .md 文件，可以挂到多条记录上。</span>
               </div>
 
               <div id="note-editor-pane" class="note-editor-pane-inner" hidden>
-                <div class="note-editor-toolbar">
-                  <input id="note-title-input" type="text" class="note-title-input" placeholder="笔记标题（留空则取正文首行）" />
-                  <div class="note-editor-toolbar-right">
-                    <select id="note-editor-type" class="note-meta-select" aria-label="笔记类型"></select>
-                    <select id="note-editor-tag" class="note-meta-select" aria-label="主分类"></select>
-                    <select id="note-editor-subtag" class="note-meta-select" aria-label="子项目"></select>
+                <div class="nt-doc-head">
+                  <button id="note-back-btn" type="button" class="nt-back" data-note-back hidden></button>
+                  <input id="note-title-input" type="text" class="nt-title-input" placeholder="笔记标题（留空则取正文首行）" />
+                  <div class="nt-doc-head-right">
+                    <span id="note-editor-status" class="note-editor-status" aria-live="polite"></span>
+                    <div class="nt-seg" role="group" aria-label="视图切换">
+                      <button type="button" class="nt-seg-btn" data-pane-opt="source" aria-pressed="true">源码</button>
+                      <button type="button" class="nt-seg-btn" data-pane-opt="preview" aria-pressed="false">预览</button>
+                      <button type="button" class="nt-seg-btn" data-pane-opt="split" aria-pressed="false" data-pane-split hidden>双栏</button>
+                    </div>
+                    <div class="nt-more-wrap">
+                      <button id="note-more-btn" type="button" class="nt-icon-btn" data-note-more aria-haspopup="true" aria-expanded="false">⋯</button>
+                      <div class="nt-menu" data-note-menu hidden role="menu">
+                        <button type="button" class="nt-menu-item" id="note-open-external-btn" role="menuitem" hidden>在外部打开</button>
+                        <button type="button" class="nt-menu-item" id="note-open-folder-btn-menu" role="menuitem">打开文件夹</button>
+                        <div class="nt-menu-sep"></div>
+                        <button type="button" class="nt-menu-item is-danger" id="note-delete-btn" role="menuitem">删除笔记</button>
+                      </div>
+                    </div>
                   </div>
                 </div>
 
-                <div class="note-editor-actions">
-                  <span id="note-editor-status" class="note-editor-status" aria-live="polite">就绪</span>
-                  <div class="note-editor-action-btns">
-                    <button id="note-split-toggle" type="button" class="icon-btn" aria-pressed="false">隐藏预览</button>
-                    <button id="note-open-external-btn" type="button" class="icon-btn" hidden>在外部打开</button>
-                    <button id="note-delete-btn" type="button" class="icon-btn note-delete-btn">删除</button>
-                    <button id="note-save-btn" type="button" class="primary-btn">保存</button>
-                  </div>
+                <div class="nt-sub-row">
+                  <div class="nt-link-row" data-link-row></div>
+                  <span class="nt-sub-gap"></span>
+                  <button type="button" class="nt-meta-toggle" data-meta-toggle hidden></button>
+                </div>
+                <div class="nt-meta-edit" data-meta-edit hidden>
+                  <label class="nt-meta-field">类型<select id="note-editor-type" class="nt-meta-select" aria-label="笔记类型"></select></label>
+                  <label class="nt-meta-field">主分类<select id="note-editor-tag" class="nt-meta-select" aria-label="主分类"></select></label>
+                  <label class="nt-meta-field">子项目<select id="note-editor-subtag" class="nt-meta-select" aria-label="子项目"></select></label>
                 </div>
 
                 <div class="note-split">
                   <div class="note-split-half note-split-source">
-                    <div class="note-split-label">Markdown</div>
                     <textarea id="note-source-input" class="note-source-input" spellcheck="false" placeholder="# 标题&#10;&#10;支持 **加粗**、`代码`、表格、公式 $E=mc^2$&#10;&#10;$$&#10;\int_0^1 x^2 dx = \frac{1}{3}&#10;$$"></textarea>
                   </div>
                   <div class="note-split-half note-split-preview">
-                    <div class="note-split-label">预览</div>
                     <div id="note-preview" class="note-preview markdown-body"></div>
                   </div>
+                </div>
+
+                <div class="nt-doc-foot">
+                  <span id="nt-wordcount" class="nt-foot-item"></span>
+                  <span class="nt-foot-gap"></span>
+                  <span id="nt-updated" class="nt-foot-item"></span>
                 </div>
               </div>
             </section>
