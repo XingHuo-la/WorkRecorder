@@ -16,7 +16,18 @@ function fakeInvoke(cmd, args = {}) {
 
   if (cmd === 'get_current_path') return 'C:/data/recorder.db';
   if (cmd === 'notes_ensure_root') return 'C:/data/notes';
-  if (cmd === 'notes_write' || cmd === 'notes_update_meta' || cmd === 'notes_set_record') {
+  if (cmd === 'notes_read') {
+    // 已落盘的笔记默认挂 12、13 两条；writeNote 的过渡保护会读它
+    return { rel_path: args?.relPath, record_ids: [12, 13], record_id: 12 };
+  }
+  if (
+    cmd === 'notes_write'
+    || cmd === 'notes_update_meta'
+    || cmd === 'notes_set_record'
+    || cmd === 'notes_add_record'
+    || cmd === 'notes_remove_record'
+    || cmd === 'notes_set_records'
+  ) {
     return {
       ...(args?.doc || {}),
       rel_path: '工作/A项目/2026-09-20-设计评审.md',
@@ -61,6 +72,7 @@ const NOTE_DOC_KEYS = [
   'id',
   'note_type',
   'record_id',
+  'record_ids',
   'rel_path',
   'status',
   'sub_tag',
@@ -71,7 +83,16 @@ const NOTE_DOC_KEYS = [
 
 const FORBIDDEN_KEYS = ['noteType', 'subTag', 'createdAt', 'updatedAt', 'relPath', 'absPath'];
 
-const { writeNote, updateNoteMeta, setNoteRecord } = await import('../src/notesStore.js');
+const {
+  writeNote,
+  updateNoteMeta,
+  setNoteRecord,
+  addNoteRecord,
+  removeNoteRecord,
+  setNoteRecords,
+  syncNoteIndex,
+  normalizeRecordIds,
+} = await import('../src/notesStore.js');
 
 console.log('\n[1] writeNote 发出的 doc 键名是 snake_case');
 {
@@ -153,6 +174,115 @@ console.log('\n[5] setNoteRecord：挂载与解除关联');
   await setNoteRecord('工作/A项目/2026-09-20-设计评审.md', '');
   call = lastCall('notes_set_record');
   check('解除：空串也归一成 null', call?.args?.recordId === null, String(call?.args?.recordId));
+}
+
+console.log('\n[6] normalizeRecordIds：脏值全部挡在门外');
+{
+  const cases = [
+    [undefined, []],
+    [null, []],
+    ['', []],
+    ['null', []],          // params.map(String) 留下的幽灵值
+    [0, []],
+    [-3, []],
+    ['12abc', []],
+    [12, [12]],
+    ['12', [12]],
+    [' 12 ', [12]],
+    ['12.9', [12]],        // trunc 而非 round：id 不能四舍五入到别的记录上
+    [[13, 12, 12], [12, 13]],
+    [['12', '13', '12'], [12, 13]],
+    [[12, 'null', 0, null, 13], [12, 13]],
+    [[12, undefined, NaN], [12]],
+  ];
+  for (const [input, expected] of cases) {
+    const actual = normalizeRecordIds(input);
+    check(
+      `normalize(${JSON.stringify(input)}) → ${JSON.stringify(expected)}`,
+      JSON.stringify(actual) === JSON.stringify(expected),
+      JSON.stringify(actual)
+    );
+  }
+}
+
+console.log('\n[7] 三个多值关联封装：命令名 / 参数 / 收口');
+{
+  await addNoteRecord('工作/A项目/2026-09-20-设计评审.md', 12);
+  let call = lastCall('notes_add_record');
+  check('add：走 notes_add_record', Boolean(call), call?.cmd);
+  check('add：relPath 正确', call?.args?.relPath === '工作/A项目/2026-09-20-设计评审.md', call?.args?.relPath);
+  check('add：recordId 是数字', call?.args?.recordId === 12, String(call?.args?.recordId));
+  check('add：没有 doc 包装（平铺三个参数）', !('doc' in (call?.args || {})), Object.keys(call?.args || {}).join(','));
+
+  await addNoteRecord('工作/A项目/2026-09-20-设计评审.md', ' 13 ');
+  call = lastCall('notes_add_record');
+  check('add：脏字符串归一成 13', call?.args?.recordId === 13, String(call?.args?.recordId));
+
+  let threw = false;
+  try {
+    await addNoteRecord('工作/A项目/2026-09-20-设计评审.md', 'abc');
+  } catch (error) {
+    threw = true;
+  }
+  check('add：非法 id 抛错（不静默发出去）', threw);
+
+  await removeNoteRecord('工作/A项目/2026-09-20-设计评审.md', 12);
+  call = lastCall('notes_remove_record');
+  check('remove：走 notes_remove_record', Boolean(call), call?.cmd);
+  check('remove：recordId 是数字 12', call?.args?.recordId === 12, String(call?.args?.recordId));
+
+  await setNoteRecords('工作/A项目/2026-09-20-设计评审.md', [13, 12, 12, 'null']);
+  call = lastCall('notes_set_records');
+  check('set：走 notes_set_records', Boolean(call), call?.cmd);
+  check('set：recordIds 是去重升序的数字数组', JSON.stringify(call?.args?.recordIds) === JSON.stringify([12, 13]), JSON.stringify(call?.args?.recordIds));
+
+  await setNoteRecords('工作/A项目/2026-09-20-设计评审.md', []);
+  call = lastCall('notes_set_records');
+  check('set([])：显式空数组（清空入口）', JSON.stringify(call?.args?.recordIds) === '[]', JSON.stringify(call?.args?.recordIds));
+}
+
+console.log('\n[8] syncNoteIndex：note_record 多值 + note_index.record_id 只是投影');
+{
+  const sqls = [];
+  const fakeExecute = async (sql, params = []) => {
+    sqls.push({ sql, params });
+    return 1;
+  };
+
+  await syncNoteIndex(
+    [
+      { rel_path: '工作/甲.md', title: '甲', record_ids: [13, 12], record_id: 12 },
+      { rel_path: '工作/乙.md', title: '乙', record_ids: [] },
+      { rel_path: '', title: '没有路径的跳过', record_ids: [99] },
+    ],
+    fakeExecute
+  );
+
+  const byPrefix = prefix => sqls.filter(s => s.sql.includes(prefix));
+
+  check('先清空两张表', byPrefix('DELETE FROM note_index').length === 1 && byPrefix('DELETE FROM note_record').length === 1);
+
+  const indexInserts = byPrefix('INSERT OR REPLACE INTO note_index');
+  check('note_index 写入两篇（空路径的跳过）', indexInserts.length === 2, String(indexInserts.length));
+
+  // 甲的 record_id 必须是 record_ids 里最小的那个（兼容投影 = record_ids[0]）
+  const jia = indexInserts.find(s => s.params[0] === '工作/甲.md');
+  check('甲：note_index.record_id 投影为最小 id 12', Number(jia?.params[6]) === 12, String(jia?.params[6]));
+  check('甲：SQL 里是占位符而不是 NULL', jia?.sql.includes('?, ?, ?, ?, ?, ?, ?, ?, ?'), jia?.sql);
+
+  // 乙没有关联：必须走 SQL 字面量 NULL，绝不把 null 放进 params
+  const yi = indexInserts.find(s => s.params[0] === '工作/乙.md');
+  check('乙：SQL 里是字面量 NULL', /VALUES \(\?, \?, \?, \?, \?, \?, NULL, \?, \?\)/.test(yi?.sql || ''), yi?.sql);
+  check('乙：params 里没有 null/字符串 null', yi?.params.every(v => v !== null && v !== 'null'), JSON.stringify(yi?.params));
+
+  // note_record 一篇一次多值 INSERT，值顺序是 [rel, id, rel, id]
+  const relInserts = byPrefix('INSERT OR IGNORE INTO note_record');
+  check('note_record 只为一篇有关联的笔记写一次', relInserts.length === 1, String(relInserts.length));
+  check(
+    'note_record 的值成对且已升序',
+    JSON.stringify(relInserts[0]?.params) === JSON.stringify(['工作/甲.md', 12, '工作/甲.md', 13]),
+    JSON.stringify(relInserts[0]?.params)
+  );
 }
 
 console.log(`\n结果：${passed} 通过 / ${failed} 失败`);

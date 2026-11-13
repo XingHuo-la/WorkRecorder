@@ -298,6 +298,69 @@ export async function setParent(childId, parentId) {
 }
 
 /**
+ * 按关键字搜记录，供「把笔记挂到记录上」的搜索框（R03）使用。
+ *
+ * 两条匹配规则刻意不对称：
+ *  - **标题**用 `LIKE '%kw%'`（模糊，用户记得半个词）
+ *  - **id** 用等值 `id = ?`（精确，不能写 `'%12%'` —— 那会把 #123、#120 一起命中
+ *    并且看起来「搜 12 出现了三条」，用户选哪条都可能挂错）
+ *
+ * LIKE 里的 `%` / `_` / `\` 会被转义（`ESCAPE '\'`）：标题里带「50%」时
+ * 不加转义搜不到；而 `%` 当通配符会让「搜 %」返回全部记录。
+ *
+ * limit 直接拼进 SQL（不参数化）：它是本函数夹紧后的整数，不是外部字符串，
+ * 参数化反而要过一遍 params.map(String)，LIMIT '20' 的类型转换没必要赌。
+ *
+ * @param {string} keyword 关键字（标题片段或记录 id）
+ * @param {{limit?: number, excludeIds?: Array<number|string>}} [opts]
+ *        limit 默认 20、上限 50；excludeIds 里的 id 不返回（「已挂的」不用再列）
+ * @returns {Promise<Array<{id:number, title:string, kind:string}>>} 按 updated_at 倒序
+ */
+export async function searchRecords(keyword, opts = {}) {
+  const raw = String(keyword ?? '').trim();
+  const limit = Math.min(50, Math.max(1, Math.trunc(Number(opts.limit)) || 20));
+  const exclude = (Array.isArray(opts.excludeIds) ? opts.excludeIds : [])
+    .map(toId)
+    .filter(v => v !== null);
+
+  const params = [];
+  const where = [];
+
+  if (raw) {
+    // 「标题模糊」与「id 精确」是**并列的两个 OR 分支**，不能 join 成 AND ——
+    // 写成 AND 的话 `id = 15` 会要求标题里也含 "15"，搜 id 永远返回空。
+    const orParts = [];
+    // 转义后再套 %：顺序不能反（先套 % 会把用户输入里的 % 当通配符）
+    const escaped = raw.replace(/[\\%_]/g, ch => `\\${ch}`);
+    orParts.push("title LIKE ? ESCAPE '\\'");
+    params.push(`%${escaped}%`);
+
+    // 纯数字才追加 id 等值匹配；'12abc' / '2 号机组' 不该被当成 id
+    if (/^\d+$/.test(raw)) {
+      const id = toId(raw);
+      if (id !== null && id > 0) {
+        orParts.push('id = ?');
+        params.push(id);
+      }
+    }
+    where.push(`(${orParts.join(' OR ')})`);
+  }
+
+  if (exclude.length) {
+    where.push(`id NOT IN (${exclude.map(() => '?').join(', ')})`);
+    params.push(...exclude);
+  }
+
+  // 关键字为空且没有排除项时，where 为空 —— 返回最近的 N 条（等价于「随便挑」）
+  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  const rows = await db().dbQuery(
+    `SELECT id, title, kind FROM record ${whereSql} ORDER BY updated_at DESC, id DESC LIMIT ${limit}`,
+    params
+  );
+  return rows || [];
+}
+
+/**
  * 删除一条记录。三件事，顺序固定：
  *   1) 子项 parent_id 提到祖父 —— 父子是「拆步骤」，不是「依附」，不级联删
  *      （用户建的是「第 1 步 / 第 2 步」，删掉第 2 步不等于第 3 步作废）

@@ -32,11 +32,19 @@ pub struct NoteDoc {
     pub tag: String,
     #[serde(default)]
     pub sub_tag: String,
-    /// 关联的 record id：这份长文是在哪一行的详情里挂上来的。None = 独立笔记。
+    /// 关联的 record id 集合（v1.2 新口径）。文件里写成 `record_ids: 12,13`。
     ///
+    /// 空 vec = 独立笔记。这是**内存里的唯一表示**，任何读路径都以它为准。
     /// 只是**元数据**，不是从属关系：笔记始终以 `.md` 文件为唯一真相，
-    /// 可以脱离记录独立存在；删记录时笔记不动，只是变成 `record_id` 悬空的孤儿笔记
-    /// （在笔记页照常可见，`note_index.record_id` 查不到而已）。
+    /// 可以脱离记录独立存在；删记录时笔记不动，只是变成 record id 悬空的孤儿笔记
+    /// （在笔记页照常可见，`note_record` 里查不到而已）。
+    #[serde(default)]
+    pub record_ids: Vec<i64>,
+
+    /// 旧口径单值，**只读兼容字段**：解析时并进 `record_ids`；写入时永不输出。
+    ///
+    /// 保留它只为一个用途 —— 让 v1.1 前端（回滚场景）继续能收到 `record_id`。
+    /// 不要让任何新代码把它当真相：改关联只走 `record_ids`。
     #[serde(default)]
     pub record_id: Option<i64>,
     #[serde(default)]
@@ -215,6 +223,41 @@ fn unquote_yaml_value(raw: &str) -> String {
     }
 }
 
+/// 解析 front-matter 里的关联 id 串。
+///
+/// 为什么是**逗号串**而不是 YAML 块列表：本文件的 front-matter 解析器是手写逐行
+/// `line.find(':')`，块列表（`record_ids:` 后换行 + `- 12`）根本读不回来 ——
+/// 那会得到一个「应用自己写得出来、自己读不回来」的格式，第一次保存后关联全丢，
+/// 而文件看起来完全正常。逗号串在现有解析器里只是 `value.split(',')`。
+///
+/// 读时宽容：`"12,13"` / `"12, 13"` / `"[12, 13]"` / `"[12,13]"` / `" 12 "` 全部接受，
+/// 非数字片段与 `<= 0` 的值一律丢弃（手写出 `record_ids: 12, 待定` 时退化为只有 12）。
+fn parse_id_list(raw: &str) -> Vec<i64> {
+    raw.trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .split(|c: char| c == ',' || c.is_ascii_whitespace())
+        .filter_map(|part| {
+            part.trim()
+                .trim_matches(|c| c == '"' || c == '\'')
+                .parse::<i64>()
+                .ok()
+        })
+        .filter(|id| *id > 0)
+        .collect()
+}
+
+/// 收口关联 id 集合：只留正整数、升序、去重。
+///
+/// 三个写入路径（`notes_write` / `mutate_records` / `notes_update_meta`）都调它，
+/// 保证「文件里的 id 一定干净」。不这么做的话，一次手写的 `record_ids: 12,12,0`
+/// 会永远留在文件里，并被每次全量同步带进 `note_record`。
+fn sort_dedup_ids(ids: &mut Vec<i64>) {
+    ids.retain(|id| *id > 0);
+    ids.sort_unstable();
+    ids.dedup();
+}
+
 /// 生成完整的 `.md` 文件文本：YAML front-matter + 正文。
 pub fn render_markdown(doc: &NoteDoc) -> String {
     let mut out = String::new();
@@ -222,9 +265,22 @@ pub fn render_markdown(doc: &NoteDoc) -> String {
     if let Some(id) = doc.id {
         out.push_str(&format!("id: {}\n", id));
     }
-    // 只写有值的记录：独立笔记不产生这一行，老文件重写后也不会多出 `record_id:` 空行。
-    if let Some(record_id) = doc.record_id {
-        out.push_str(&format!("record_id: {}\n", record_id));
+    // 只写有值的记录：独立笔记不产生这一行。
+    // 注意这里**只输出 record_ids，永不输出 record_id** —— 旧文件在第一次保存时
+    // 自动完成迁移，不需要单独的 migrate 命令（也没法保证用户会去点它）。
+    //
+    // ⚠️ 这个函数是**整份覆盖**：front-matter 完全由 doc 重建。所以任何调用方
+    //    （notes_write / notes_update_meta / 三个关联命令 / notes_migrate_legacy）
+    //    只要手里有 record_ids 就必须传全，漏传等于把关联清空且零报错。
+    if !doc.record_ids.is_empty() {
+        let list = doc
+            .record_ids
+            .iter()
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        // 逗号串只含数字与逗号，不触发 escape_yaml_value 的引号分支（少一条会被引号搞坏的路）。
+        out.push_str(&format!("record_ids: {}\n", list));
     }
     out.push_str(&format!("title: {}\n", escape_yaml_value(&doc.title)));
     out.push_str(&format!(
@@ -303,6 +359,11 @@ pub fn parse_markdown(text: &str, fallback_title: &str) -> NoteDoc {
     // 去掉 front-matter 与正文之间可能存在的空行，只保留正文自身结构
     let body = body.strip_prefix('\n').unwrap_or(body);
 
+    // 旧口径的单值先攒在局部变量里，循环结束后统一裁决。
+    // 必须两段式：文件里 `record_id` 可能出现在 `record_ids` **之前**，边读边定会误判。
+    let mut legacy_single: Option<i64> = None;
+    let mut saw_multi = false;
+
     for line in front_matter.split('\n') {
         let Some(colon) = line.find(':') else {
             continue;
@@ -311,9 +372,14 @@ pub fn parse_markdown(text: &str, fallback_title: &str) -> NoteDoc {
         let value = unquote_yaml_value(&line[colon + 1..]);
         match key {
             "id" => doc.id = value.parse::<i64>().ok(),
+            "record_ids" => {
+                doc.record_ids = parse_id_list(&value);
+                saw_multi = true;
+            }
             "record_id" => {
-                // 解析失败（手写成了 record_id: 待定）时保持 None，不让整份笔记失效
-                doc.record_id = value.parse::<i64>().ok();
+                // 不再直接写进 doc：等循环结束再决定它是否生效。
+                // 解析失败（手写成了 record_id: 待定）时保持 None，不让整份笔记失效。
+                legacy_single = value.parse::<i64>().ok();
             }
             "title" => {
                 if !value.is_empty() {
@@ -337,6 +403,26 @@ pub fn parse_markdown(text: &str, fallback_title: &str) -> NoteDoc {
             _ => {}
         }
     }
+
+    // 只有**完全没有** `record_ids` 这一行时，旧单值才生效（QA #1「旧文件无需手工迁移」）。
+    //
+    // 两个键同时存在时 `record_ids` 赢、`record_id` 整行忽略（不求并集）。
+    // 求并集看着更「不丢数据」，但会造出**删不掉的关联**：用户在笔记页点 × 摘掉 #12
+    // → 写回 `record_ids: 13`，可文件里那行 `record_id: 12` 还在 → 下次读盘又被并回来
+    // → 12 复活。点五次 × 五次都「成功了」关联还在，比丢一条关联更伤信任。
+    // 而「两个键同时存在」只可能来自手写：render_markdown 整份重写 front-matter，
+    // 新代码保存过一次的文件里就没有 record_id 这一行了。
+    if !saw_multi {
+        if let Some(id) = legacy_single {
+            doc.record_ids.push(id);
+        }
+    } else if legacy_single.is_some() {
+        // 数据矛盾要留痕（§8.5）：只写路径与结论，不写正文。
+        eprintln!("笔记 front-matter 同时含 record_ids 与 record_id，以 record_ids 为准");
+    }
+    sort_dedup_ids(&mut doc.record_ids);
+    // 兼容投影：供 v1.1 前端（回滚场景）继续读到「第一条关联」（最小 id）。
+    doc.record_id = doc.record_ids.first().copied();
 
     doc.content = body.trim_end_matches('\n').to_string();
     doc
@@ -488,8 +574,15 @@ pub async fn notes_read(data_file_path: String, rel_path: String) -> Result<Note
 ///
 /// - `rel_path` 为空表示新建。
 /// - 内容变化时会自动改名以匹配新的标题，并删除旧文件。
+///
+/// ⚠️ **整份覆盖**：`render_markdown` 从 `doc` 重建全部 front-matter，
+/// 所以 `doc.record_ids` 必须由调用方传全。漏传（传空 vec）等于把关联清空，
+/// 文件里 `record_ids` 行消失，而界面上什么都不报 —— 这是本轮最容易翻车的一条。
+/// 需要「清空关联」时走 `notes_set_records([])`，不要靠漏传。
 #[tauri::command]
-pub async fn notes_write(data_file_path: String, doc: NoteDoc) -> Result<NoteDoc, String> {
+pub async fn notes_write(data_file_path: String, mut doc: NoteDoc) -> Result<NoteDoc, String> {
+    // 写入前收口：文件里的 record_ids 永远是「正整数、升序、去重」。
+    sort_dedup_ids(&mut doc.record_ids);
     let root = notes_root(&data_file_path);
     let target_dir = root.join(relative_dir(&doc.tag, &doc.sub_tag));
     fs::create_dir_all(&target_dir)
@@ -549,6 +642,8 @@ pub async fn notes_write(data_file_path: String, doc: NoteDoc) -> Result<NoteDoc
     let mut saved = doc.clone();
     saved.rel_path = rel;
     saved.abs_path = final_path.to_string_lossy().to_string();
+    // 返回值的 record_id 是 record_ids 的兼容投影（最小 id），与 parse_markdown 一致。
+    saved.record_id = saved.record_ids.first().copied();
     Ok(saved)
 }
 
@@ -586,29 +681,40 @@ pub async fn notes_update_meta(
     if !doc.updated_at.trim().is_empty() {
         parsed.updated_at = doc.updated_at;
     }
-    // 传了 record_id 就一并挂上。要**解除**关联必须用 notes_set_record（见下），
-    // 因为这里无法区分「没传这个字段」和「要清空」。
-    if doc.record_id.is_some() {
-        parsed.record_id = doc.record_id;
+    // 关联一律走 record_ids，规则与 title 相同：**非空才覆盖**。
+    // 空 Vec 表示「调用方不想改关联」，不是「清空关联」——清空必须走 notes_set_records([])。
+    // 旧字段 record_id 在这里被忽略：它的语义已被 add/remove 覆盖，
+    // 且 Option<i64> 区分不了「没传」和「要清空」（§8.7 第 3 条）。
+    if !doc.record_ids.is_empty() {
+        parsed.record_ids = doc.record_ids.clone();
+        sort_dedup_ids(&mut parsed.record_ids);
     }
     parsed.rel_path = rel_path;
 
     notes_write(data_file_path, parsed).await
 }
 
-/// 设置或解除笔记与 record 的关联。
+/// 读文件 → 解析 → 改 record_ids → 写回。三个关联命令的唯一内部入口。
 ///
-/// 为什么单独一个命令、不并进 `notes_update_meta`：那里的 `record_id: Option<i64>`
-/// 分不清「调用方没传」和「调用方要清空」，靠 serde 的 double-option 技巧能把人绕晕。
-/// 这里语义唯一 —— `record_id = None` 就是显式解除。
-#[tauri::command]
-pub async fn notes_set_record(
-    data_file_path: String,
-    rel_path: String,
-    record_id: Option<i64>,
-) -> Result<NoteDoc, String> {
-    let root = notes_root(&data_file_path);
-    let existing = safe_join(&root, &rel_path)?;
+/// 为什么必须共用一个实现：三份「读—改—写」分叉之后，总有一份会忘掉
+/// `retain(>0) + sort + dedup`，然后全量同步把脏 id 带进 `note_record`。
+///
+/// 终点是 `notes_write` → `render_markdown` → 写文件：关联的真相永远在 `.md` 里，
+/// `note_record` 只是可随时重建的派生表。
+async fn mutate_records<F>(
+    data_file_path: &str,
+    rel_path: &str,
+    f: F,
+) -> Result<NoteDoc, String>
+where
+    F: FnOnce(&mut Vec<i64>),
+{
+    if rel_path.trim().is_empty() {
+        return Err("笔记路径为空".to_string());
+    }
+    let root = notes_root(data_file_path);
+    // safe_join 负责「含 .. / 越出笔记根」的校验，错误信息原样上抛
+    let existing = safe_join(&root, rel_path)?;
     let text = fs::read_to_string(&existing)
         .map_err(|e| format!("读取笔记失败 {}: {}", rel_path, e))?;
     let file_name = existing
@@ -617,10 +723,83 @@ pub async fn notes_set_record(
         .unwrap_or_default();
 
     let mut parsed = parse_markdown(&text, &title_from_file_name(&file_name));
-    parsed.record_id = record_id;
-    parsed.rel_path = rel_path;
+    let mut ids = parsed.record_ids.clone();
+    f(&mut ids);
+    sort_dedup_ids(&mut ids);
+    parsed.record_ids = ids;
+    parsed.rel_path = rel_path.to_string();
 
-    notes_write(data_file_path, parsed).await
+    notes_write(data_file_path.to_string(), parsed).await
+}
+
+/// 给笔记追加一条关联。**幂等**：已存在则原样返回，不报错、不重复写。
+///
+/// 不校验 record 是否存在：记录可能已被删（R06 要求保留悬空 id 并显示灰色占位），
+/// 把校验放在这里会让「先删记录、后挂笔记」这种操作直接失败。
+#[tauri::command]
+pub async fn notes_add_record(
+    data_file_path: String,
+    rel_path: String,
+    record_id: i64,
+) -> Result<NoteDoc, String> {
+    if record_id <= 0 {
+        return Err(format!("record_id 非法: {}", record_id));
+    }
+    mutate_records(&data_file_path, &rel_path, move |ids| ids.push(record_id)).await
+}
+
+/// 解除一条关联。**幂等**：本来就没有则原样返回。
+///
+/// 只改 front-matter，**永远不删笔记文件**（文件是独立存在的，解除只是少一行元数据）。
+#[tauri::command]
+pub async fn notes_remove_record(
+    data_file_path: String,
+    rel_path: String,
+    record_id: i64,
+) -> Result<NoteDoc, String> {
+    mutate_records(&data_file_path, &rel_path, move |ids| {
+        ids.retain(|id| *id != record_id)
+    })
+    .await
+}
+
+/// 整组替换。空数组 = 显式清空（这是**唯一**能把关联清成 0 的入口）。
+#[tauri::command]
+pub async fn notes_set_records(
+    data_file_path: String,
+    rel_path: String,
+    record_ids: Vec<i64>,
+) -> Result<NoteDoc, String> {
+    mutate_records(&data_file_path, &rel_path, move |ids| {
+        ids.clear();
+        ids.extend(record_ids);
+    })
+    .await
+}
+
+/// 【保留，语义收窄】设置或解除**单值**关联。
+///
+/// v1.1 的两个调用点（notesStore.setNoteRecord → 抽屉的挂上 / 解除）继续可用：
+/// `Some(id)` 等价于 `notes_set_records([id])`，`None` 等价于 `notes_set_records([])`。
+/// 新代码不要用它 —— 它会把已有的其它关联一起清掉，那正是 R01 要消灭的语义。
+#[tauri::command]
+pub async fn notes_set_record(
+    data_file_path: String,
+    rel_path: String,
+    record_id: Option<i64>,
+) -> Result<NoteDoc, String> {
+    if let Some(id) = record_id {
+        if id <= 0 {
+            return Err(format!("record_id 非法: {}", id));
+        }
+    }
+    mutate_records(&data_file_path, &rel_path, move |ids| {
+        ids.clear();
+        if let Some(id) = record_id {
+            ids.push(id);
+        }
+    })
+    .await
 }
 
 /// 删除笔记文件。文件不存在时视为已完成（幂等）。
@@ -722,6 +901,7 @@ pub async fn notes_migrate_legacy(data_file_path: String, force: Option<bool>) -
                 tag: row.get::<_, Option<String>>(5)?.unwrap_or_default(),
                 sub_tag: row.get::<_, Option<String>>(6)?.unwrap_or_default(),
                 // 旧 notes 表没有「挂在哪一行」的概念，迁移过来的笔记一律是独立笔记
+                record_ids: Vec::new(),
                 record_id: None,
                 created_at: row.get::<_, Option<String>>(7)?.unwrap_or_default(),
                 updated_at: row.get::<_, Option<String>>(8)?.unwrap_or_default(),
@@ -1018,6 +1198,9 @@ pub async fn notes_open_root(data_file_path: String) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // 关联命令是 async（Tauri 命令签名），单测里用 tauri 自带的运行时驱动，
+    // 不为测试单独引一个 executor 依赖。
+    use tauri::async_runtime::block_on;
 
     #[test]
     fn sanitize_strips_illegal_characters() {
@@ -1031,6 +1214,8 @@ mod tests {
     fn front_matter_round_trip() {
         let doc = NoteDoc {
             id: Some(7),
+            // 多值关联：写 → 读 必须相等（逗号串格式的核心保证）
+            record_ids: vec![12, 13],
             title: "带: 冒号 的标题".to_string(),
             content: "# 标题\n\n正文公式 $a^2+b^2=c^2$\n".to_string(),
             note_type: "method".to_string(),
@@ -1043,9 +1228,21 @@ mod tests {
         };
 
         let text = render_markdown(&doc);
+        // 断言必须带冒号：`"record_ids:"` 本身包含 `"record_id"` 子串，
+        // 少了冒号这条断言永远为假。
+        assert!(
+            !text.contains("record_id:"),
+            "render_markdown 不许再输出 record_id 行：\n{}",
+            text
+        );
+        assert!(text.contains("record_ids: 12,13"), "关联没写成逗号串：\n{}", text);
+
         let parsed = parse_markdown(&text, "fallback");
 
         assert_eq!(parsed.id, Some(7));
+        assert_eq!(parsed.record_ids, vec![12, 13]);
+        // 兼容投影：v1.1 前端还能读到第一条
+        assert_eq!(parsed.record_id, Some(12));
         assert_eq!(parsed.title, "带: 冒号 的标题");
         assert_eq!(parsed.note_type, "method");
         assert_eq!(parsed.tag, "工作");
@@ -1055,6 +1252,105 @@ mod tests {
             parsed.content.trim(),
             "# 标题\n\n正文公式 $a^2+b^2=c^2$".trim()
         );
+    }
+
+    // QA #1「旧文件无需手工迁移」的单元级判据：只含 record_id 的文件照样读出关联。
+    #[test]
+    fn legacy_record_id_merges_into_record_ids() {
+        let parsed = parse_markdown("---\nrecord_id: 12\ntitle: T\n---\n", "回退");
+        assert_eq!(parsed.record_ids, vec![12], "旧单值没并进 record_ids");
+        assert_eq!(parsed.record_id, Some(12));
+    }
+
+    // 两个键同时存在：record_ids 赢，不求并集（求并集 → 删不掉的关联会「复活」）。
+    // 两个顺序都要测 —— 这正是必须有「两段式裁决」的原因：
+    // 边读边定的话，record_id 在前的那份文件会先写进 doc，再被 record_ids 覆盖，
+    // 看起来对；但换成「只有 record_id」时就分不清了。顺序反过来才会暴露真问题。
+    #[test]
+    fn record_ids_wins_over_record_id() {
+        let after = parse_markdown("---\nrecord_ids: 13\nrecord_id: 12\ntitle: T\n---\n", "回退");
+        assert_eq!(after.record_ids, vec![13], "record_id 在后时仍不许并进来");
+
+        let before = parse_markdown("---\nrecord_id: 12\nrecord_ids: 13\ntitle: T\n---\n", "回退");
+        assert_eq!(before.record_ids, vec![13], "record_id 在前时也不许并进来");
+        assert_eq!(before.record_id, Some(13), "兼容投影应取 record_ids 的第一条");
+    }
+
+    #[test]
+    fn parse_id_list_tolerates_junk() {
+        assert_eq!(parse_id_list("12, 13"), vec![12, 13]);
+        assert_eq!(parse_id_list("[12,13]"), vec![12, 13]);
+        assert_eq!(parse_id_list("[12, 13]"), vec![12, 13]);
+        assert_eq!(parse_id_list(" 12 "), vec![12]);
+        // 手写脏值：非数字片段、负数、0 全部丢弃，剩下的照常生效
+        assert_eq!(parse_id_list("12,待定,-3,0"), vec![12]);
+        assert_eq!(parse_id_list(""), Vec::<i64>::new());
+    }
+
+    // 三个命令的行为契约：幂等 + 清空是唯一入口 + 清空后文件里不留空行。
+    // 走真文件：这些命令的终点是 fs::write，用假对象测不出「文件里到底写了什么」。
+    #[test]
+    fn add_remove_set_are_idempotent() {
+        let tmp = std::env::temp_dir().join("wr-note-record-mutate");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).expect("创建临时目录失败");
+
+        let data_file = tmp.join("t.json").to_string_lossy().to_string();
+        let root = notes_root(&data_file);
+        let dir = root.join(DEFAULT_TAG);
+        fs::create_dir_all(&dir).expect("创建分类目录失败");
+
+        let rel = format!("{}/2026-09-20-关联探针.md", DEFAULT_TAG);
+        let abs = root.join(&rel);
+        fs::write(
+            &abs,
+            "---\nid: 3\nrecord_ids: 5\ntitle: 关联探针\ntag: 未分类\n\
+             created_at: 2026-09-20 10:00:00\nupdated_at: 2026-09-20 10:00:00\n---\n\n正文\n",
+        )
+        .expect("写探针笔记失败");
+
+        // add：并集里加一个，且升序
+        let added = block_on(notes_add_record(data_file.clone(), rel.clone(), 12)).expect("add 失败");
+        assert_eq!(added.record_ids, vec![5, 12]);
+        assert_eq!(added.record_id, Some(5), "兼容投影应是最小 id");
+        let text = fs::read_to_string(&abs).unwrap();
+        assert!(text.contains("record_ids: 5,12"), "文件内容不对：\n{}", text);
+
+        // add 幂等：再来一次还是一条，文件里不会出现第二行 record_ids
+        let again = block_on(notes_add_record(data_file.clone(), rel.clone(), 12)).expect("add 重入失败");
+        assert_eq!(again.record_ids, vec![5, 12], "add 不幂等");
+        let text = fs::read_to_string(&abs).unwrap();
+        assert_eq!(
+            text.matches("record_ids:").count(),
+            1,
+            "重复写入了 record_ids 行：\n{}",
+            text
+        );
+
+        // remove 一条不存在的：原样返回，不报错
+        let same = block_on(notes_remove_record(data_file.clone(), rel.clone(), 999)).expect("remove 不存在的失败");
+        assert_eq!(same.record_ids, vec![5, 12], "remove 不存在的却改了集合");
+
+        // remove 一条存在的
+        let removed = block_on(notes_remove_record(data_file.clone(), rel.clone(), 5)).expect("remove 失败");
+        assert_eq!(removed.record_ids, vec![12]);
+
+        // set([]) 是唯一的清空入口：集合清空 + 文件里整行消失
+        let cleared = block_on(notes_set_records(data_file.clone(), rel.clone(), Vec::new())).expect("set([]) 失败");
+        assert!(cleared.record_ids.is_empty(), "set([]) 没清空");
+        assert_eq!(cleared.record_id, None, "清空后兼容投影应为 None");
+        let text = fs::read_to_string(&abs).unwrap();
+        assert!(
+            !text.contains("record_ids:"),
+            "清空后文件里不许留 record_ids 行：\n{}",
+            text
+        );
+
+        // set([id]) 是单值别名（notes_set_record 收窄后的语义）
+        let single = block_on(notes_set_record(data_file.clone(), rel.clone(), Some(21))).expect("set_record 失败");
+        assert_eq!(single.record_ids, vec![21]);
+
+        let _ = fs::remove_dir_all(&tmp);
     }
 
     #[test]

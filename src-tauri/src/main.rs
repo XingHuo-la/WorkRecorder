@@ -543,6 +543,41 @@ fn init_and_migrate_db_at(db_path: &str, json_path: &str) -> Result<(), String> 
             .map_err(|e| format!("数据库升级到 v11 失败: {}", e))?;
     }
 
+    // v12：笔记 ↔ 记录改为多对多。**只加一张派生表，一个字符都不碰 record / 视图 / 触发器。**
+    //
+    // 这张表不是真相：真相在 .md 的 front-matter 里（record_ids）。表随时可以
+    // DROP TABLE 重建，重建的输入永远是文件（notes_list）。所以要保证的是
+    // 「重建得回来」，而不是「写进去不丢」。
+    // 视图与触发器一动就漏列：三个 INSTEAD OF UPDATE 触发器是全列 NEW.* 覆写，
+    // 漏写一列 → 那列被 COALESCE(NEW.x,'') 静默抹成空（见 v10 的注释）。本轮没有任何理由去动它。
+    if schema_version < 12 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS note_record (
+                 rel_path  TEXT    NOT NULL,
+                 record_id INTEGER NOT NULL,
+                 PRIMARY KEY (rel_path, record_id)
+             ) WITHOUT ROWID;
+             CREATE INDEX IF NOT EXISTS idx_note_record_record ON note_record(record_id);",
+        )
+        .map_err(|e| format!("创建 note_record 失败: {}", e))?;
+
+        // 把 v11 的 note_index.record_id 搬成关联行。
+        // typeof() 那个条件是必须的：历史上 params.map(String) 把 null 写成了字符串
+        // 'null'（notesStore.js 的注释记着这个坑），存成 TEXT 的幽灵值
+        // 会让「已关联但查不到」的条目永远清不掉。
+        conn.execute_batch(
+            "INSERT OR IGNORE INTO note_record (rel_path, record_id)
+               SELECT rel_path, record_id FROM note_index
+                WHERE record_id IS NOT NULL
+                  AND typeof(record_id) = 'integer'
+                  AND record_id > 0;",
+        )
+        .map_err(|e| format!("搬迁 note_index.record_id 失败: {}", e))?;
+
+        conn.execute_batch("PRAGMA user_version = 12;")
+            .map_err(|e| format!("数据库升级到 v12 失败: {}", e))?;
+    }
+
     let json_exists = Path::new(json_path).exists();
     // ✅ 修复了之前的借用检查器报错，一步到位！
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM tags", [], |row| row.get(0)).unwrap_or(0);
@@ -1062,6 +1097,9 @@ fn main() {
             notes_fs::notes_write,
             notes_fs::notes_update_meta,
             notes_fs::notes_set_record,
+            notes_fs::notes_add_record,
+            notes_fs::notes_remove_record,
+            notes_fs::notes_set_records,
             notes_fs::notes_delete,
             notes_fs::notes_ensure_tag_dir,
             notes_fs::notes_open_root,
@@ -1370,7 +1408,9 @@ mod tests {
 
         let conn = Connection::open(&db).unwrap();
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(version, 11, "全新库版本号应为 11");
+        // 这里只断言「至少到 11」：v12 及以后会在全新库上继续往上推版本号，
+        // 写死 11 会让每加一次迁移就要来改这条 v11 的用例。
+        assert!(version >= 11, "全新库版本号应为 11 及以上，实际 {}", version);
 
         // ① 索引与列
         for idx in [
@@ -1451,6 +1491,125 @@ mod tests {
         assert_eq!(body, "正文必须存活", "视图 UPDATE 把 body 抹掉了（触发器漏列）");
         assert_eq!(parent, Some(4242), "视图 UPDATE 把 parent_id 抹掉了（触发器漏列）");
         assert!(custom.contains("\"a\":2"), "视图 UPDATE 没写进 custom：{}", custom);
+
+        drop(conn);
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    // v12 只加一张派生表 note_record。它最大的风险同样不是「加不上」，而是
+    // 有人顺手在 v12 段里给视图补一列 / 重建触发器（理由见上面 v11 用例的注释）。
+    // 这里断言四件事：
+    //   ①版本号 12、note_record 表与反向索引都在
+    //   ②搬迁只搬 typeof(record_id)='integer' 且 >0 的行（'null' 幽灵值不许进）
+    //   ③把版本退回 11 重跑一次，视图与触发器的 SQL 与上一次逐字一致
+    //   ④note_record 里没有 <=0 的 id、没有文本型 id
+    #[test]
+    fn v12_adds_note_record_without_touching_views() {
+        let tmp = std::env::temp_dir().join("wr-v12-note-record");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).expect("创建临时目录失败");
+        let db = tmp.join("t.db");
+        let json = tmp.join("t.json");
+        let db_str = db.to_string_lossy().to_string();
+        let json_str = json.to_string_lossy().to_string();
+
+        // 全新库跑一遍：验证 0 → 12 这条路径
+        init_and_migrate_db_at(&db_str, &json_str).expect("全新库迁移失败");
+
+        let conn = Connection::open(&db).unwrap();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 12, "全新库版本号应为 12，实际 {}", version);
+
+        // ① 表与索引
+        for name in ["note_record", "idx_note_record_record"] {
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE name = ?1",
+                    [name],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 1, "缺少 {}（v12 未生效）", name);
+        }
+
+        // 造 v11 遗留数据：一条正常的整数关联 + 一条 params.map(String) 留下的 'null' 幽灵值
+        conn.execute(
+            "INSERT INTO note_index (rel_path, title, note_type, status, tag, sub_tag, record_id, created_at, updated_at) \
+             VALUES ('工作/2026-09-20-甲.md', '甲', 'idea', 'usable', '工作', '', 12, '', '')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO note_index (rel_path, title, note_type, status, tag, sub_tag, record_id, created_at, updated_at) \
+             VALUES ('工作/2026-09-20-乙.md', '乙', 'idea', 'usable', '工作', '', 'null', '', '')",
+            [],
+        )
+        .unwrap();
+        let ghost_type: String = conn
+            .query_row(
+                "SELECT typeof(record_id) FROM note_index WHERE rel_path = '工作/2026-09-20-乙.md'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(ghost_type, "text", "探针没复现出 'null' 幽灵值，用例失真");
+
+        // ③ 冻结快照
+        let snapshot = |c: &Connection| -> Vec<(String, String)> {
+            let mut stmt = c
+                .prepare(
+                    "SELECT name, sql FROM sqlite_master \
+                     WHERE type IN ('view','trigger') AND sql IS NOT NULL ORDER BY name",
+                )
+                .unwrap();
+            let rows = stmt
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+                .unwrap()
+                .filter_map(|x| x.ok())
+                .collect();
+            rows
+        };
+        let before_sql = snapshot(&conn);
+        assert!(!before_sql.is_empty(), "没有视图/触发器，说明 v10 没跑");
+
+        conn.execute_batch("PRAGMA user_version = 11;").unwrap();
+        drop(conn);
+        init_and_migrate_db_at(&db_str, &json_str).expect("v12 重跑失败");
+        let conn = Connection::open(&db).unwrap();
+        assert_eq!(snapshot(&conn), before_sql, "v12 改动了视图或触发器定义");
+
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 12, "v12 重跑后版本号应为 12");
+
+        // ② + ④ 搬迁范围：只有整数那一行进来
+        let rows: Vec<(String, i64)> = {
+            let mut stmt = conn
+                .prepare("SELECT rel_path, record_id FROM note_record ORDER BY rel_path")
+                .unwrap();
+            let rows = stmt
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+                .unwrap()
+                .filter_map(|x| x.ok())
+                .collect();
+            rows
+        };
+        assert_eq!(rows.len(), 1, "只该搬进 1 行整数关联，实际 {:?}", rows);
+        assert_eq!(rows[0].0, "工作/2026-09-20-甲.md", "搬错了 rel_path");
+        assert_eq!(rows[0].1, 12, "搬错了 record_id");
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM note_record WHERE typeof(record_id) != 'integer' OR record_id <= 0",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap(),
+            0,
+            "note_record 里混进了非整数或非正数 id"
+        );
 
         drop(conn);
         let _ = fs::remove_dir_all(&tmp);

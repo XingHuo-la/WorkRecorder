@@ -16,6 +16,7 @@ import {
   deleteRecord,
   moveRecordToSheet,
   removeRecordFromSheet,
+  searchRecords,
 } from '../src/recordStore.js';
 
 const db = new DatabaseSync(':memory:');
@@ -196,6 +197,41 @@ db.exec("INSERT INTO sheet (name, task_id, sort) VALUES ('又挂回来', " + D +
 const mounted = await listChildSheets(D);
 eq('查到挂载在该行的表', mounted.map(s => s.name), ['又挂回来']);
 eq('返回 anchor_record_id 别名', Number(mounted[0].anchor_record_id), Number(D));
+
+console.log('\n[9] searchRecords：标题 LIKE、id 等值（不许 %12% 命中 123）');
+{
+  db.exec("INSERT INTO record (kind, title, updated_at) VALUES ('log', '泵 12 号', '2026-11-01 10:00:00')");
+  db.exec("INSERT INTO record (kind, title, updated_at) VALUES ('log', '泵 123 号', '2026-11-02 10:00:00')");
+  db.exec("INSERT INTO record (kind, title, updated_at) VALUES ('log', '50% 负荷试验', '2026-11-03 10:00:00')");
+
+  const id12 = db.prepare("SELECT id FROM record WHERE title = '泵 12 号'").get().id;
+  const id123 = db.prepare("SELECT id FROM record WHERE title = '泵 123 号'").get().id;
+
+  // 搜 id：只允许精确命中，123 不许被带出来
+  const byId = await searchRecords(String(id12));
+  eq('搜 id 只命中一条', byId.map(r => r.id), [id12]);
+  ok('123 没被 %12% 带出来', !byId.some(r => r.id === id123), byId.map(r => r.id).join(','));
+
+  // 搜标题：模糊
+  const byTitle = await searchRecords('泵 12');
+  ok('标题模糊命中 12 与 123 两条', byTitle.length === 2, String(byTitle.length));
+  eq('按 updated_at 倒序（123 更新更近）', byTitle.map(r => r.title), ['泵 123 号', '泵 12 号']);
+
+  // % 必须被转义：否则「搜 50%」用通配符会返回全部记录
+  const byPercent = await searchRecords('50%');
+  eq('百分号当字面量，不当通配符', byPercent.map(r => r.title), ['50% 负荷试验']);
+
+  // 排除已挂的
+  const excluded = await searchRecords('泵 12', { excludeIds: [id12] });
+  eq('excludeIds 生效', excluded.map(r => r.id), [id123]);
+
+  // limit 夹紧
+  const limited = await searchRecords('泵', { limit: 1 });
+  eq('limit 生效', limited.length, 1);
+
+  // 返回列只用 id/title/kind（不带 body/custom，避免拖大字段）
+  eq('返回列固定为 id,title,kind', Object.keys(byId[0]).sort(), ['id', 'kind', 'title']);
+}
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);
