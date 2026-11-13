@@ -1559,4 +1559,61 @@ mod tests {
         drop(conn);
         let _ = fs::remove_dir_all(&tmp);
     }
+
+    // recordStore.createRecord 用 `INSERT ... RETURNING id` 拿新 id，不用 MAX(id)：
+    // MAX(id) 在插入失败时会返回「上一条记录的 id」，调用方拿去打开就是错的记录。
+    // 但这条语句走的是 db_query（prepare → query_map → 逐行取列），
+    // 必须确认它对**写语句**真的会 step 并返回行 —— 只准备不执行的话，这里会拿到空结果，
+    // 而 createRecord 会把空当成「新建失败」抛错（那还算好的），
+    // 更糟的是若被当成 0 继续，后续 patch 全会打到 id=0 上。
+    #[test]
+    fn insert_returning_id_works_through_db_query_path() {
+        let tmp = std::env::temp_dir().join("wr-t03-returning");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).expect("创建临时目录失败");
+        let db = tmp.join("t.db");
+        let json = tmp.join("t.json");
+        init_and_migrate_db_at(&db.to_string_lossy(), &json.to_string_lossy()).expect("迁移失败");
+
+        let conn = Connection::open(&db).unwrap();
+
+        let sql = "INSERT INTO record (kind, title, sheet_id, parent_id) \
+                   VALUES ('log', 'RETURNING 探针', NULL, NULL) RETURNING id";
+        let mut stmt = conn.prepare(sql).expect("INSERT ... RETURNING 无法 prepare");
+        let names: Vec<String> = stmt.column_names().into_iter().map(|s| s.to_string()).collect();
+        assert_eq!(names, vec!["id".to_string()], "RETURNING 没有返回 id 列");
+        let first: i64 = stmt.query_row([], |r| r.get(0)).expect("RETURNING 没有返回行，createRecord 会拿不到 id");
+        assert!(first > 0, "拿到的 id 不是正数：{}", first);
+        drop(stmt);
+
+        // 连插两条必须拿到两个不同的 id（防止拿到常量 / 上一次的缓存）
+        let second: i64 = conn
+            .query_row(
+                "INSERT INTO record (kind, title) VALUES ('log', 'RETURNING 探针2') RETURNING id",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_ne!(first, second, "两次插入拿到同一个 id");
+
+        // 字面量 NULL 必须落成真正的 NULL，不是字符串 'null'
+        let (sheet, parent, title): (Option<i64>, Option<i64>, String) = conn
+            .query_row(
+                "SELECT sheet_id, parent_id, title FROM record WHERE id = ?1",
+                [first],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(sheet, None, "sheet_id 应为 NULL");
+        assert_eq!(parent, None, "parent_id 应为 NULL");
+        assert_eq!(title, "RETURNING 探针");
+
+        let typeof_parent: String = conn
+            .query_row("SELECT typeof(parent_id) FROM record WHERE id = ?1", [first], |r| r.get(0))
+            .unwrap();
+        assert_eq!(typeof_parent, "null", "parent_id 的存储类型是 {}，应为 null", typeof_parent);
+
+        drop(conn);
+        let _ = fs::remove_dir_all(&tmp);
+    }
 }

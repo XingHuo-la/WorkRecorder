@@ -13,6 +13,7 @@ import { initNotesModule } from './notes.js';
 import { setNotesDataPathProvider } from './notesStore.js';
 import { initSheetPage } from './sheetPage.js';
 import { setSheetAdapter } from './sheetStore.js';
+import { setRecordAdapter } from './recordStore.js';
 import { initCommandPalette } from './commandPalette.js';
 
 // Tauri 全局对象由 withGlobalTauri 同步注入，正常情况可直接取用。
@@ -83,6 +84,10 @@ async function initApp() {
   // 调试壳（_debug/sheet-review.html）可绕过 Tauri 直接复用同一套渲染与交互。
   // 这里用严格版：写库失败必须抛，不能让「保存不动」被静默吞掉。
   setSheetAdapter({ dbQuery: dbQueryStrict, dbExecute: dbExecuteStrict });
+  // record 统一读写层用同一套 adapter：新代码（行详情抽屉 / 层级 / 关联字段）
+  // 一律走 recordStore，不要在 UI 里自己拼 SQL —— 可空列的 null 陷阱
+  // 与「删记录三步」都在那一层兜住了。
+  setRecordAdapter({ dbQuery: dbQueryStrict, dbExecute: dbExecuteStrict });
 
   await import('./settings.js').then(async (m) => {
       await m.applySavedThemeFromDB();
