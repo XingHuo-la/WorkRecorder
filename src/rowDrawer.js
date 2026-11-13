@@ -28,6 +28,7 @@ import {
   patchRecord,
   isRecordStoreReady,
 } from './recordStore.js';
+import { listNotes, setNoteRecord, writeNote } from './notesStore.js';
 import { renderMarkdown } from './markdown.js';
 import { logToFile } from './logger.js';
 
@@ -148,6 +149,27 @@ export function openRowDrawer(opts = {}) {
     bodyEditOriginal: '',
     // 编辑态挂的 window 捕获监听器，退出时必须摘掉（见 teardownBodyEditor）
     bodyKeyCapture: null,
+    // ---- 关联笔记 ----
+    // notesReady 与 recordReady 是**两件独立的事**：正文走 recordStore，笔记走文件系统，
+    // 谁先回来不一定。共用一个标志会让「笔记已经到了但正文没到」时笔记区点不动。
+    // 语义同样统一：false = 数据还没到，此时**任何**笔记操作都直接 return（不猜、不跳空页）。
+    notesReady: false,
+    // 当前记录挂着的笔记（notes_list 里 record_id === 本记录的那批）
+    notes: [],
+    // 面板态：'' = 收起 / 'create' = 新建 / 'link' = 关联已有
+    notePanel: '',
+    // 关联已有面板的数据源（全量笔记）。只在面板打开时取一次，关掉即丢弃。
+    noteCandidates: null,
+    // 关联已有面板的筛选词
+    noteFilter: '',
+    // 待确认「改挂」的笔记（已关联到别的记录，需要用户点一下确认）
+    noteMoving: null,
+    // 面板打开时挂的 window 捕获 Esc 监听器
+    noteKeyCapture: null,
+    // 新建中的防连点闸
+    noteCreating: false,
+    // 成功类提示条的自动收起定时器（关抽屉时必须清掉）
+    hintTimer: null,
   };
 
   const initialTitle = resolveTitle(ctx);
@@ -171,8 +193,15 @@ export function openRowDrawer(opts = {}) {
         <div class="rd-body markdown-body" data-body></div>
       </section>
       <section class="rd-block" data-section="notes">
-        <h3 class="rd-h">关联笔记</h3>
-        <div class="rd-notes"><span class="rd-empty">暂无关联笔记</span></div>
+        <h3 class="rd-h">关联笔记<span class="rd-h-count" data-notes-count hidden></span></h3>
+        <div class="rd-notes" data-notes>
+          <span class="rd-empty">加载中…</span>
+        </div>
+        <div class="rd-note-panel" data-notes-panel hidden></div>
+        <div class="rd-notes-foot" data-notes-foot hidden>
+          <button type="button" class="rd-link-btn" data-note-create>新建笔记</button>
+          <button type="button" class="rd-link-btn" data-note-pick-link>关联已有</button>
+        </div>
       </section>
       <section class="rd-block" data-section="backlinks">
         <h3 class="rd-h">被引用于</h3>
@@ -194,6 +223,7 @@ export function openRowDrawer(opts = {}) {
       // querySelector 照样能取到编辑框的值，草稿不会丢。
       void flushDrawerBody();
       teardownBodyEditor(ctx);
+      teardownNotePanel(ctx);
       state.open = false;
       state.el = null;
       handlers.onClose?.();
@@ -413,6 +443,11 @@ async function hydrate(ctx, token) {
   // recordReady 也要放开 —— 这条路上不会有人再来补正文，不放开就永远不能编辑。
   if (ctx.recordId === null || !isRecordStoreReady()) {
     ctx.recordReady = true;
+    // 没有记录 id 就没有「关联到哪条记录」这件事。整块藏掉，而不是留一个永远点不动的
+    // 「新建笔记 / 关联已有」—— 点了没反应比不显示更让人困惑。
+    const block = section(ctx, 'notes');
+    if (block) block.hidden = true;
+    ctx.notesReady = true;
     return;
   }
 
@@ -426,6 +461,7 @@ async function hydrate(ctx, token) {
     loadCrumbs(ctx, token),
     loadChildren(ctx, token),
     loadChildSheets(ctx, token),
+    loadNotes(ctx, token),
   ];
 
   const results = await Promise.allSettled(jobs);
@@ -608,6 +644,9 @@ function bindEvents(ctx) {
   const drawer = ctx.el;
   const bodyEl = drawer.querySelector('.sh-drawer-body');
   bodyEl?.addEventListener('click', event => onBodyClick(ctx, event));
+  // 笔记面板的输入框是动态换进来的，用委托绑定（面板重绘后不需要重挂）
+  bodyEl?.addEventListener('input', event => onBodyInput(ctx, event));
+  bodyEl?.addEventListener('keydown', event => onBodyKeydown(ctx, event));
 
   drawer.querySelector('[data-del]')?.addEventListener('click', () => ctx.handlers.onDelete?.(ctx.row));
   drawer.querySelector('[data-prev]')?.addEventListener('click', () => ctx.handlers.onPrev?.(ctx.row));
@@ -660,11 +699,76 @@ function onBodyClick(ctx, event) {
     return;
   }
 
-  // ⑥ 字段单元格 → 交给 sheetPage 挂上单元格编辑器
+  // ⑥ 关联笔记：打开 / 解除关联 / 新建 / 关联已有 / 改挂确认
+  const noteOpen = event.target.closest('[data-note-open]');
+  if (noteOpen) {
+    void openLinkedNote(ctx, noteOpen.dataset.noteOpen);
+    return;
+  }
+
+  const noteUnlink = event.target.closest('[data-note-unlink]');
+  if (noteUnlink) {
+    void unlinkNote(ctx, noteUnlink.dataset.noteUnlink);
+    return;
+  }
+
+  const noteCreate = event.target.closest('[data-note-create]');
+  if (noteCreate) {
+    openNotePanel(ctx, 'create');
+    return;
+  }
+
+  // 底部「关联已有」入口（注意别和候选项的 data-note-pick 撞名）
+  if (event.target.closest('[data-note-pick-link]')) {
+    openNotePanel(ctx, 'link');
+    return;
+  }
+
+  const notePick = event.target.closest('[data-note-pick]');
+  if (notePick) {
+    void pickCandidate(ctx, notePick.dataset.notePick);
+    return;
+  }
+
+  if (event.target.closest('[data-note-submit]')) {
+    void createNoteFromDrawer(ctx);
+    return;
+  }
+
+  if (event.target.closest('[data-note-move]')) {
+    const moving = ctx.noteMoving;
+    if (moving) void linkNote(ctx, moving.rel);
+    return;
+  }
+
+  if (event.target.closest('[data-note-cancel]')) {
+    closeNotePanel(ctx);
+    return;
+  }
+
+  // ⑦ 字段单元格 → 交给 sheetPage 挂上单元格编辑器
   const cell = event.target.closest('.sh-cell');
   if (!cell) return;
   const field = ctx.fields.find(item => item.key === cell.dataset.key);
   if (field) ctx.handlers.onCellClick?.(field, cell, ctx.row);
+}
+
+function onBodyInput(ctx, event) {
+  const target = event.target;
+  if (!target || typeof target.matches !== 'function' || !target.matches('[data-note-filter]')) return;
+  // 只重画候选列表，不重画整个面板 —— 否则输入框节点被替换，光标当场丢
+  ctx.noteFilter = String(target.value ?? '');
+  renderPickList(ctx);
+}
+
+function onBodyKeydown(ctx, event) {
+  const target = event.target;
+  if (!target || typeof target.matches !== 'function') return;
+  // 新建面板：回车 = 创建（和「创建并打开」按钮同一条路径）
+  if (target.matches('[data-note-title]') && event.key === 'Enter') {
+    event.preventDefault();
+    void createNoteFromDrawer(ctx);
+  }
 }
 
 function runAction(ctx, key) {
@@ -691,6 +795,476 @@ function openChildDrawer(ctx, childId) {
       onClose: ctx.handlers.onClose,
     },
   });
+}
+
+// ==========================================
+// 关联笔记（T05b）
+//
+// 关系定义：笔记**永远**以磁盘上的 .md 为唯一真相源，`record_id` 只是 front-matter
+// 里的一行元数据。所以这里只有「挂上 / 解开」两个动作：
+//   ① 不提供「删记录顺带删笔记」；解除关联只改元数据，文件一个字不动。
+//   ② 不把笔记正文渲染进抽屉 —— 抽屉里的「正文」只属于 record.body，
+//      两段正文并排出现的话，用户根本分不清自己在改哪一份。
+//
+// 时序：notesReady 与 recordReady 是两件独立的事（正文走 recordStore，笔记走文件系统，
+// 谁先回来不一定），所以各有各的标志。notesReady=false 期间列表显示「加载中…」、
+// 底部入口是 hidden —— 用户**点不到**任何东西，也就不存在「点了但数据没到」的中间态。
+// ==========================================
+
+/** 笔记时间戳，格式与 notesEditor.nowString 一致（文件名日期前缀靠它）。 */
+function noteTimestamp() {
+  const now = new Date();
+  const pad = value => String(value).padStart(2, '0');
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(
+    now.getHours()
+  )}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+}
+
+async function loadNotes(ctx, token) {
+  let all = [];
+  try {
+    all = await listNotes();
+  } catch (error) {
+    // notesStore.listNotes 内部已经 catch 过并打了日志，这里只是兜底：
+    // 笔记区读挂了不能连累抽屉其它分区。
+    console.warn('[rowDrawer] 笔记列表读取失败', error);
+    all = [];
+  }
+  if (!alive(token)) return;
+
+  const list = Array.isArray(all) ? all : [];
+  ctx.notes = list.filter(note => toId(note?.record_id) === ctx.recordId);
+  // 数据就位之后才放开标志（顺序反了，用户就有机会在空列表上点「关联已有」）
+  ctx.notesReady = true;
+  renderNotes(ctx);
+}
+
+function renderNotes(ctx) {
+  const host = section(ctx, 'notes');
+  if (!host) return;
+  const list = host.querySelector('[data-notes]');
+  const foot = host.querySelector('[data-notes-foot]');
+  const count = host.querySelector('[data-notes-count]');
+  if (!list) return;
+
+  if (!ctx.notesReady) {
+    list.innerHTML = '<span class="rd-empty">加载中…</span>';
+    if (foot) foot.hidden = true;
+    return;
+  }
+
+  if (count) {
+    count.textContent = ctx.notes.length ? ` · ${ctx.notes.length}` : '';
+    count.hidden = !ctx.notes.length;
+  }
+
+  list.innerHTML = ctx.notes.length
+    ? ctx.notes.map(noteRowHtml).join('')
+    : '<span class="rd-empty">还没有关联笔记</span>';
+
+  // 面板开着时底部入口收起：面板自带「取消」，看着两组按钮会以为其中一组是多余的
+  if (foot) foot.hidden = Boolean(ctx.notePanel);
+}
+
+function noteRowHtml(note) {
+  const rel = String(note?.rel_path ?? '');
+  const title = String(note?.title ?? '').trim() || '未命名笔记';
+  const meta = noteMetaText(note);
+  return `<div class="rd-note-item">
+      <button type="button" class="rd-row-item rd-note-open" data-note-open="${escapeHtml(
+        rel
+      )}" title="${escapeHtml(title)}">
+        <span class="rd-row-title">${escapeHtml(title)}</span>
+        ${meta ? `<span class="rd-row-meta">${escapeHtml(meta)}</span>` : ''}
+      </button>
+      <button type="button" class="rd-note-unlink" data-note-unlink="${escapeHtml(
+        rel
+      )}" title="解除关联（只解挂，笔记文件保留）" aria-label="解除关联">解除关联</button>
+    </div>`;
+}
+
+/** 一行里只放得下日期：同名笔记靠日期就能分辨，时刻在抽屉里纯属噪音。 */
+function noteMetaText(note) {
+  const created = String(note?.created_at ?? '').trim();
+  return created.length >= 10 ? created.slice(0, 10) : created;
+}
+
+// ---- 打开 / 解除关联 ----
+
+async function openLinkedNote(ctx, relPath) {
+  if (!ctx.notesReady) return;
+  const rel = String(relPath ?? '');
+  if (!rel) return;
+
+  // 正文草稿必须先落库：closeRowDrawer 会同步销毁抽屉 DOM，之后再读编辑框只剩空串
+  await flushDrawerBody();
+  closeRowDrawer();
+
+  // 先切页再开笔记：笔记页是 display:none 的子视图，视图没显示就 openNote 只是白读一遍。
+  // 路由 id 是 'nav-notes'（main.js 的路由表里就叫这个；'nav-note' 会让 show() 静默 return）。
+  try {
+    await window.__wrRouteTo?.('nav-notes');
+  } catch (error) {
+    console.warn('[rowDrawer] 切换到笔记页失败', error);
+  }
+
+  // 动态 import 是硬性要求：本模块被全应用复用，顶层静态引 notesEditor 会把
+  // notesEditor 的整条依赖链拉到抽屉的模块求值路径上，一旦哪天后者的依赖回头引到
+  // 这里，就是文件头禁令里那种 ESM 循环（openDrawer 落进 TDZ，抽屉偶发打不开）。
+  try {
+    const { openNote } = await import('./notesEditor.js');
+    await openNote(rel);
+  } catch (error) {
+    // 抽屉已经关了，没有提示条可用；留日志（GUI 应用没有控制台，这是唯一的现场）
+    const message = error?.message || String(error);
+    console.error('[rowDrawer] 打开笔记失败', error);
+    logToFile('error', `[rowDrawer] 打开关联笔记失败 rel=${rel}: ${message}`);
+  }
+}
+
+async function unlinkNote(ctx, relPath) {
+  if (!ctx.notesReady) return;
+  const rel = String(relPath ?? '');
+  if (!rel) return;
+
+  const note = ctx.notes.find(item => String(item?.rel_path ?? '') === rel) || null;
+  const title = String(note?.title ?? '').trim() || '这篇笔记';
+
+  try {
+    // 显式传 null 才是「解除」；只解挂，不删文件
+    await setNoteRecord(rel, null);
+  } catch (error) {
+    const message = error?.message || String(error);
+    console.error('[rowDrawer] 解除关联失败', error);
+    logToFile('error', `[rowDrawer] 解除笔记关联失败 rel=${rel}: ${message}`);
+    showHint(ctx, `解除关联失败：${message}`);
+    return;
+  }
+
+  ctx.notes = ctx.notes.filter(item => String(item?.rel_path ?? '') !== rel);
+  renderNotes(ctx);
+  showHint(ctx, `已解除关联：${title}（笔记仍在笔记页）`);
+  scheduleHintClear(ctx);
+}
+
+/** 成功类提示不常驻：3.5 秒后收掉，免得抽屉开着时一直挂一行「已解除关联」。 */
+function scheduleHintClear(ctx) {
+  if (ctx.hintTimer) clearTimeout(ctx.hintTimer);
+  ctx.hintTimer = setTimeout(() => {
+    ctx.hintTimer = null;
+    if (ctx.el?.isConnected) showHint(ctx, '');
+  }, 3500);
+}
+
+// ---- 面板：新建 / 关联已有（不新开弹层，就地在笔记区里展开） ----
+
+function openNotePanel(ctx, mode) {
+  // 数据没到就别开面板：开出来也是空列表，还不如让按钮先别出现
+  if (!ctx.notesReady || ctx.recordId === null) return;
+  const panel = section(ctx, 'notes')?.querySelector('[data-notes-panel]');
+  if (!panel) return;
+
+  ctx.notePanel = mode;
+  ctx.noteMoving = null;
+  ctx.noteCandidates = null;
+  ctx.noteFilter = '';
+  panel.hidden = false;
+
+  if (mode === 'create') {
+    panel.innerHTML = createFormHtml();
+    panel.querySelector('[data-note-title]')?.focus();
+  } else {
+    panel.innerHTML = pickerHtml();
+    void fillNoteCandidates(ctx);
+  }
+
+  bindNotePanelKeys(ctx);
+  renderNotes(ctx);
+}
+
+function closeNotePanel(ctx) {
+  const panel = section(ctx, 'notes')?.querySelector('[data-notes-panel]');
+  if (panel) {
+    panel.hidden = true;
+    panel.innerHTML = '';
+  }
+  ctx.notePanel = '';
+  ctx.noteCandidates = null;
+  ctx.noteMoving = null;
+  ctx.noteFilter = '';
+  ctx.noteCreating = false;
+  teardownNotePanelKeys(ctx);
+  renderNotes(ctx);
+}
+
+function createFormHtml() {
+  return `<div class="rd-note-form">
+      <input type="text" class="rd-note-input" data-note-title placeholder="笔记标题" autocomplete="off">
+      <div class="rd-note-tip" data-note-tip hidden></div>
+      <div class="rd-note-actions">
+        <button type="button" class="rd-link-btn is-primary" data-note-submit>创建并打开</button>
+        <button type="button" class="rd-link-btn" data-note-cancel>取消</button>
+      </div>
+    </div>`;
+}
+
+function pickerHtml() {
+  return `<div class="rd-note-picker">
+      <input type="text" class="rd-note-input" data-note-filter placeholder="搜索标题 / 分类" autocomplete="off">
+      <div class="rd-note-pick-list" data-note-pick-list><span class="rd-empty">加载中…</span></div>
+      <div class="rd-note-confirm" data-note-confirm hidden></div>
+      <div class="rd-note-tip" data-note-tip hidden></div>
+      <div class="rd-note-actions">
+        <button type="button" class="rd-link-btn" data-note-cancel>取消</button>
+      </div>
+    </div>`;
+}
+
+async function fillNoteCandidates(ctx) {
+  const token = state.token;
+  let all = [];
+  try {
+    all = await listNotes();
+  } catch (error) {
+    console.warn('[rowDrawer] 读取全部笔记失败', error);
+    all = [];
+  }
+  // 面板可能在扫描期间被关掉 / 抽屉被换掉：两种情况都不该再往 DOM 里写
+  if (!alive(token) || ctx.notePanel !== 'link') return;
+
+  const linked = new Set(ctx.notes.map(item => String(item?.rel_path ?? '')));
+  const list = Array.isArray(all) ? all : [];
+  ctx.noteCandidates = list.filter(note => !linked.has(String(note?.rel_path ?? '')));
+  renderPickList(ctx);
+}
+
+function renderPickList(ctx) {
+  const panel = section(ctx, 'notes')?.querySelector('[data-notes-panel]');
+  const host = panel?.querySelector('[data-note-pick-list]');
+  if (!host) return;
+
+  if (!ctx.noteCandidates) {
+    host.innerHTML = '<span class="rd-empty">加载中…</span>';
+    return;
+  }
+
+  const keyword = String(ctx.noteFilter ?? '').trim().toLowerCase();
+  const matched = keyword
+    ? ctx.noteCandidates.filter(note => noteSearchText(note).includes(keyword))
+    : ctx.noteCandidates;
+
+  if (!matched.length) {
+    host.innerHTML = `<span class="rd-empty">${
+      ctx.noteCandidates.length ? '没有匹配的笔记' : '没有可关联的笔记了'
+    }</span>`;
+    return;
+  }
+
+  host.innerHTML = matched.map(note => pickRowHtml(note, ctx.recordId)).join('');
+}
+
+function noteSearchText(note) {
+  return [note?.title, note?.tag, note?.sub_tag, noteMetaText(note)].filter(Boolean).join(' ').toLowerCase();
+}
+
+function pickRowHtml(note, recordId) {
+  const rel = String(note?.rel_path ?? '');
+  const title = String(note?.title ?? '').trim() || '未命名笔记';
+  const owner = toId(note?.record_id);
+  const parts = [noteMetaText(note)];
+  // 挂到别的记录上的笔记允许被抢过来，但必须**先让用户看见**这件事
+  if (owner !== null && owner !== recordId) parts.push('已关联其他记录');
+  const meta = parts.filter(Boolean).join(' · ');
+
+  return `<button type="button" class="rd-row-item rd-note-pick-row" data-note-pick="${escapeHtml(
+    rel
+  )}" title="${escapeHtml(title)}">
+      <span class="rd-row-title">${escapeHtml(title)}</span>
+      ${meta ? `<span class="rd-row-meta">${escapeHtml(meta)}</span>` : ''}
+    </button>`;
+}
+
+async function pickCandidate(ctx, relPath) {
+  if (ctx.notePanel !== 'link' || !ctx.noteCandidates) return;
+  const rel = String(relPath ?? '');
+  if (!rel) return;
+
+  const note = ctx.noteCandidates.find(item => String(item?.rel_path ?? '') === rel);
+  if (!note) return;
+
+  const owner = toId(note.record_id);
+  if (owner !== null && owner !== ctx.recordId) {
+    await showMoveConfirm(ctx, note, owner);
+    return;
+  }
+  await linkNote(ctx, rel);
+}
+
+/** 改挂确认：说清「从哪来、到哪去、旧记录不会丢东西」，然后再让用户点。 */
+async function showMoveConfirm(ctx, note, ownerId) {
+  const token = state.token;
+  const title = String(note?.title ?? '').trim() || '这篇笔记';
+
+  let ownerTitle = `#${ownerId}`;
+  try {
+    const owner = await getRecord(ownerId);
+    if (owner) ownerTitle = String(owner.title ?? '').trim() || ownerTitle;
+  } catch (error) {
+    console.warn('[rowDrawer] 读取原关联记录失败', error);
+  }
+  if (!alive(token) || ctx.notePanel !== 'link') return;
+
+  const panel = section(ctx, 'notes')?.querySelector('[data-notes-panel]');
+  const box = panel?.querySelector('[data-note-confirm]');
+  if (!box) return;
+
+  ctx.noteMoving = { rel: String(note?.rel_path ?? ''), title };
+  box.innerHTML = `<div class="rd-note-confirm-text">「${escapeHtml(title)}」已关联到「${escapeHtml(
+    ownerTitle
+  )}」，改挂到当前记录？（那边只是少一条关联，笔记本身不会消失）</div>
+    <div class="rd-note-actions">
+      <button type="button" class="rd-link-btn is-primary" data-note-move>改挂过来</button>
+      <button type="button" class="rd-link-btn" data-note-cancel>取消</button>
+    </div>`;
+  box.hidden = false;
+  box.querySelector('[data-note-move]')?.focus();
+}
+
+async function linkNote(ctx, relPath) {
+  const rel = String(relPath ?? '');
+  if (!rel || ctx.recordId === null) return;
+
+  try {
+    await setNoteRecord(rel, ctx.recordId);
+  } catch (error) {
+    const message = error?.message || String(error);
+    console.error('[rowDrawer] 关联笔记失败', error);
+    logToFile('error', `[rowDrawer] 关联笔记失败 rel=${rel} record=${ctx.recordId}: ${message}`);
+    setPanelTip(ctx, `关联失败：${message}`);
+    return;
+  }
+
+  closeNotePanel(ctx);
+  // 重新扫一遍磁盘：front-matter 的最终值（尤其 rel_path）只有文件说了算，
+  // 自己拼一个对象塞进列表，一旦 Rust 侧算出的路径不同就成了假数据。
+  await loadNotes(ctx, state.token);
+  showHint(ctx, '已关联笔记');
+  scheduleHintClear(ctx);
+}
+
+async function createNoteFromDrawer(ctx) {
+  if (ctx.notePanel !== 'create') return;
+  const panel = section(ctx, 'notes')?.querySelector('[data-notes-panel]');
+  const input = panel?.querySelector('[data-note-title]');
+  const title = String(input?.value ?? '').trim();
+  if (!title) {
+    setPanelTip(ctx, '先写个标题');
+    input?.focus();
+    return;
+  }
+  // 连点两下不能建出两篇：按钮 disabled 之外再加一道闸
+  if (ctx.noteCreating) return;
+  ctx.noteCreating = true;
+  const submit = panel?.querySelector('[data-note-submit]');
+  if (submit) submit.disabled = true;
+
+  // 记录可能还没到（applyRecord 失败时 ctx.record 为 null）：等一次已发出的 promise，
+  // 不为它再查一次库。标签只是默认值，拿不到就落到「未分类」。
+  let record = ctx.record;
+  if (!record && ctx.recordPromise) {
+    record = await ctx.recordPromise.catch(() => null);
+  }
+
+  const stamp = noteTimestamp();
+  let saved = null;
+  try {
+    saved = await writeNote({
+      id: null,
+      title,
+      content: '',
+      note_type: 'idea',
+      status: 'usable',
+      tag: String(record?.tag ?? '').trim() || '未分类',
+      sub_tag: String(record?.sub_tag ?? '').trim(),
+      record_id: ctx.recordId,
+      // 空 created_at 会让文件名丢掉日期前缀（Rust 侧不做兜底），这里必须给准时间
+      created_at: stamp,
+      updated_at: stamp,
+      rel_path: '',
+      abs_path: '',
+    });
+  } catch (error) {
+    const message = error?.message || String(error);
+    console.error('[rowDrawer] 新建笔记失败', error);
+    logToFile('error', `[rowDrawer] 新建关联笔记失败 record=${ctx.recordId}: ${message}`);
+    setPanelTip(ctx, `创建失败：${message}`);
+    if (submit) submit.disabled = false;
+    ctx.noteCreating = false;
+    return;
+  }
+
+  if (!saved) {
+    setPanelTip(ctx, '创建失败：数据目录不可用');
+    if (submit) submit.disabled = false;
+    ctx.noteCreating = false;
+    return;
+  }
+
+  // 写盘期间用户按 Esc 把面板收了：文章已经落盘，这时既不能装作没发生，
+  // 也不该把他硬拽到笔记页 —— 留在这里把新笔记刷进列表，让他自己决定下一步。
+  if (ctx.notePanel !== 'create') {
+    await loadNotes(ctx, state.token);
+    showHint(ctx, `已创建笔记：${title}`);
+    scheduleHintClear(ctx);
+    ctx.noteCreating = false;
+    return;
+  }
+
+  // 建完直接把用户送进这篇笔记（新建的笔记是空的，停在抽屉里看不出「建成功了」）
+  await openLinkedNote(ctx, saved.rel_path);
+}
+
+function setPanelTip(ctx, text) {
+  const panel = section(ctx, 'notes')?.querySelector('[data-notes-panel]');
+  const tip = panel?.querySelector('[data-note-tip]');
+  if (!tip) return;
+  tip.textContent = String(text ?? '');
+  tip.hidden = !tip.textContent;
+}
+
+// ---- 面板键盘：Esc 先关面板，别让抽屉抢走 ----
+
+function bindNotePanelKeys(ctx) {
+  teardownNotePanelKeys(ctx);
+  const onKeyDown = event => {
+    if (event.key !== 'Escape' || !ctx.notePanel) return;
+    // 抽屉的 Esc 挂在 document 捕获阶段，只有 window 捕获能抢在它前面。
+    // 面板开着时 Esc 的语义是「退一层」，不是「连抽屉一起关掉」。
+    event.preventDefault();
+    event.stopPropagation();
+    closeNotePanel(ctx);
+  };
+  window.addEventListener('keydown', onKeyDown, true);
+  ctx.noteKeyCapture = onKeyDown;
+}
+
+function teardownNotePanelKeys(ctx) {
+  if (!ctx?.noteKeyCapture) return;
+  window.removeEventListener('keydown', ctx.noteKeyCapture, true);
+  ctx.noteKeyCapture = null;
+}
+
+/** 抽屉关闭时收尾：面板还开着的话监听器和定时器都得摘掉，不能留在 window 上。 */
+function teardownNotePanel(ctx) {
+  teardownNotePanelKeys(ctx);
+  if (ctx.hintTimer) {
+    clearTimeout(ctx.hintTimer);
+    ctx.hintTimer = null;
+  }
+  ctx.notePanel = '';
+  ctx.noteCandidates = null;
+  ctx.noteMoving = null;
+  ctx.noteCreating = false;
 }
 
 // ---- 标题就地编辑 ----

@@ -14973,3 +14973,211 @@ body.cmdk-open { overflow: hidden !important; }
   outline: none;
 }
 
+
+/* ==========================================================================
+   8.12 关联笔记（T05b）
+   笔记是「挂在记录上的独立文件」，不是记录的一部分：列表行只做三件事 ——
+   打开、解除关联、再挑一篇挂上来。所以这里没有删除、没有编辑框，
+   正文永远回笔记页改（抽屉里同时出现两段正文字段，用户分不清在改哪份）。
+
+   按钮照例要顶掉全局 `button { … !important }`（见 8.10 的说明），
+   这里用类选择器 + !important，只作用于抽屉内部。
+   ========================================================================== */
+
+/* 标题后面的「· 3」：小一号、常规字重，别让人以为标题被吞了 */
+.rd-h-count {
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.rd-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* 一行 = 「打开」按钮 + 悬停才出现的「解除关联」。
+   两个按钮并排而不是嵌套：<button> 里套 <button> 是非法结构，
+   浏览器会把内层挤出来，点击热区跟着乱。 */
+.rd-note-item {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border-radius: 7px;
+}
+
+.rd-note-open {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.rd-note-unlink {
+  flex: none;
+  height: 22px !important;
+  min-height: 0 !important;
+  padding: 0 8px !important;
+  border: 1px solid transparent !important;
+  border-radius: 6px !important;
+  background: transparent !important;
+  color: var(--text-muted) !important;
+  box-shadow: none !important;
+  font-family: inherit !important;
+  font-size: 11.5px !important;
+  font-weight: 400 !important;
+  line-height: 1 !important;
+  white-space: nowrap;
+  /* 隐藏态必须同时关掉 pointer-events：只写 opacity:0 的话，
+     右端 60px 变成「看不见但点得到」的区域，鼠标扫过就会误解除关联。 */
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease, color 0.12s ease, background 0.12s ease;
+}
+
+.rd-note-item:hover .rd-note-unlink,
+.rd-note-item:focus-within .rd-note-unlink {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* 键盘走到这里时也要能看见（没有 hover 的路径） */
+.rd-note-unlink:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+  outline: 2px solid var(--color-focus);
+  outline-offset: 1px;
+}
+
+.rd-note-unlink:hover {
+  background: rgba(var(--color-danger-rgb), 0.1) !important;
+  color: var(--color-danger) !important;
+}
+
+/* —— 底部两个入口 —— */
+.rd-notes-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.rd-notes-foot[hidden],
+.rd-note-panel[hidden],
+.rd-note-tip[hidden],
+.rd-note-confirm[hidden] {
+  display: none;
+}
+
+/* 文字型按钮：比动作按钮轻，看起来像「这里还有一条路」而不是「主操作」 */
+.rd-link-btn {
+  height: 26px !important;
+  min-height: 0 !important;
+  padding: 0 9px !important;
+  border: 1px solid transparent !important;
+  border-radius: 6px !important;
+  background: transparent !important;
+  color: var(--text-muted) !important;
+  box-shadow: none !important;
+  font-family: inherit !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  line-height: 1.2 !important;
+}
+
+.rd-link-btn:hover {
+  border-color: var(--border-light) !important;
+  background: rgba(127, 127, 127, 0.12) !important;
+  color: var(--text-main) !important;
+}
+
+.rd-link-btn:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 1px;
+}
+
+.rd-link-btn.is-primary {
+  border-color: rgba(var(--color-primary-rgb), 0.45) !important;
+  background: rgba(var(--color-primary-rgb), 0.12) !important;
+  color: var(--color-primary) !important;
+}
+
+.rd-link-btn.is-primary:hover {
+  background: rgba(var(--color-primary-rgb), 0.2) !important;
+  color: var(--color-primary) !important;
+}
+
+.rd-link-btn[disabled] {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* —— 就地展开的面板（新建 / 关联已有） —— */
+.rd-note-panel {
+  margin-top: 6px;
+  padding: 8px;
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  background: rgba(127, 127, 127, 0.05);
+}
+
+.rd-note-form,
+.rd-note-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* 输入框：这里**必须**带 !important。样式表里有一对全局规则
+
+     input[type="text"] { min-height: 44px !important; font-size: 14px !important;
+                          border-radius: var(--radius-sm) !important; … }
+
+   它们是属性选择器（0,1,1）且带 !important，本节的 `.rd-note-panel .rd-note-input`
+   （0,2,0、无 !important）一条也赢不了 —— 实测输入框被撑到 44px，比面板里的
+   26px 按钮高出一大截，整个面板看着像被拉长的表单。加 !important 才压得住。 */
+.rd-note-panel .rd-note-input {
+  width: 100% !important;
+  height: 30px !important;
+  min-height: 0 !important;
+  padding: 0 9px !important;
+  border-radius: 7px !important;
+  font-family: inherit !important;
+  font-size: 13px !important;
+}
+
+.rd-note-pick-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.rd-note-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* —— 改挂确认：抢别人的笔记必须先说清楚 —— */
+.rd-note-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid rgba(var(--color-warning-rgb), 0.4);
+  border-radius: 7px;
+  background: rgba(var(--color-warning-rgb), 0.08);
+}
+
+.rd-note-confirm-text {
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.rd-note-tip {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-danger);
+}
