@@ -13519,3 +13519,868 @@ input.sh-width-input { height: 24px !important; }
 }
 
 .sh-detail-cell .ft-att-add { display: none !important; }
+
+/* ==========================================================================
+   设计层 6 · UI 改造 v1.1.5（2026-11-12）
+   --------------------------------------------------------------------------
+   这一层做四件事：令牌收口、页头一行化、工作台两栏、工作台内卡片减法。
+   用 #id 前缀提高特异性，是为了让新结构能压过上面三千多条 !important；
+   批 6 清理旧层时，这一层可以整体保留，只把前缀换成普通类即可。
+   ========================================================================== */
+
+/* --- 6.1 令牌：唯一来源 ------------------------------------------------ */
+:root {
+  --fs-micro: 11px;   --lh-micro: 1.4;
+  --fs-meta: 12px;    --lh-meta: 1.5;
+  --fs-body: 13px;    --lh-body: 1.6;
+  --fs-title: 15px;   --lh-title: 1.4;
+  --fs-page: 20px;    --lh-page: 1.25;
+
+  --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px; --sp-4: 16px;
+  --sp-5: 24px; --sp-6: 32px; --sp-7: 48px;
+
+  --r-sm: 6px; --r-md: 10px; --r-lg: 14px; --r-pill: 999px;
+
+  --stroke-hair: rgba(255, 255, 255, 0.08);
+  --shadow-float: 0 14px 36px rgba(0, 0, 0, 0.42);
+
+  --row-h: 40px;
+  --card-pad: 16px;
+  --wb-side: 300px;
+}
+
+/* --- 6.2 骨架 ---------------------------------------------------------- */
+#workspace-view .main-content {
+  padding: var(--sp-5) var(--sp-6) var(--sp-7) !important;
+}
+
+#workspace-view .subview {
+  max-width: none !important;
+  margin: 0 !important;
+}
+
+/* --- 6.3 页头压成一行 -------------------------------------------------- */
+.subview-page-head {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: var(--sp-4) !important;
+  min-height: 40px !important;
+  margin: 0 0 var(--sp-5) !important;
+  padding: 0 !important;
+  border: 0 !important;
+  background: none !important;
+  box-shadow: none !important;
+}
+
+.subview-page-head h1 {
+  margin: 0 !important;
+  font-size: var(--fs-page) !important;
+  line-height: var(--lh-page) !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.01em !important;
+}
+
+.subview-page-head .subview-kicker,
+.subview-page-head > div > p {
+  display: none !important;
+}
+
+/* 时间轴筛选：从"一张卡"降为"一行工具条" */
+#subview-timeline .timeline-filter-card {
+  display: flex !important;
+  align-items: center !important;
+  gap: var(--sp-3) !important;
+  margin: 0 0 var(--sp-4) !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: none !important;
+  box-shadow: none !important;
+}
+
+#subview-timeline .timeline-filter-copy {
+  display: none !important;
+}
+
+#subview-timeline .timeline-filter-field select {
+  min-width: 150px;
+  height: 32px;
+  font-size: var(--fs-body);
+}
+
+/* --- 6.4 工作台：两栏 -------------------------------------------------- */
+#subview-dashboard.wb-v2 {
+  position: relative;
+  /* display 不能加 !important：setupRouting 用 inline style 切页，
+     inline 的 display:none 必须能压过这里，否则所有页面会叠在一起。 */
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--wb-side);
+  align-items: start !important;
+  gap: var(--sp-4) var(--sp-5);
+  padding: 0 !important;
+  margin: 0 !important;
+  width: 100% !important;
+  max-width: none !important;
+  min-height: 0 !important;
+}
+
+#subview-dashboard.wb-v2 .wb-head {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  min-height: 40px;
+  margin: 0 0 var(--sp-2);
+}
+
+.wb-head-left,
+.wb-head-right {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  min-width: 0;
+}
+
+.wb-head-left h1 {
+  margin: 0;
+  font-size: var(--fs-page);
+  line-height: var(--lh-page);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text-main);
+}
+
+.wb-head-date {
+  font-size: var(--fs-meta);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+#subview-dashboard.wb-v2 .workspace-summary {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-4);
+  margin: 0;
+}
+
+#subview-dashboard.wb-v2 .summary-label {
+  display: none;
+}
+
+#subview-dashboard.wb-v2 .summary-stat {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+}
+
+#subview-dashboard.wb-v2 .summary-stat strong {
+  font-size: var(--fs-title);
+  line-height: var(--lh-title);
+  font-weight: 700;
+  color: var(--text-main) !important;
+}
+
+#subview-dashboard.wb-v2 .summary-stat small {
+  font-size: var(--fs-meta);
+  color: var(--text-muted);
+}
+
+#subview-dashboard.wb-v2 .wb-capture-btn {
+  height: 32px !important;
+  min-height: 0 !important;
+  padding: 0 var(--sp-3) !important;
+  font-size: var(--fs-body);
+  white-space: nowrap;
+}
+
+#subview-dashboard.wb-v2 .wb-col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  min-width: 0;
+}
+
+/* --- 6.5 工作台内卡片减法：去边框、去阴影、去模糊，只留底色 ---------- */
+#subview-dashboard.wb-v2 .task-tree-section,
+#subview-dashboard.wb-v2 .today-section,
+#subview-dashboard.wb-v2 .inbox-section,
+#subview-dashboard.wb-v2 .advanced-tools-strip,
+#subview-dashboard.wb-v2 .completed-todos-section {
+  margin: 0 !important;
+  padding: var(--card-pad) !important;
+  border: 0 !important;
+  border-radius: var(--r-md) !important;
+  background: var(--bg-card) !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+}
+
+#subview-dashboard.wb-v2 .completed-todos-section:has(.completed-todos-container:empty) {
+  display: none !important;
+}
+
+#subview-dashboard.wb-v2 .section-heading-row,
+#subview-dashboard.wb-v2 .inbox-section-head {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: var(--sp-2) !important;
+  min-height: 24px !important;
+  margin: 0 0 var(--sp-3) !important;
+  padding: 0 !important;
+  border: 0 !important;
+}
+
+#subview-dashboard.wb-v2 .section-heading-row h2,
+#subview-dashboard.wb-v2 .inbox-section-head h2,
+#subview-dashboard.wb-v2 .wb-links h2 {
+  margin: 0 !important;
+  font-size: var(--fs-title) !important;
+  line-height: var(--lh-title) !important;
+  font-weight: 700 !important;
+  color: var(--text-main) !important;
+}
+
+#subview-dashboard.wb-v2 .wb-section-meta {
+  font-size: var(--fs-meta);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 右栏入口列表：行式，不用卡片 */
+#subview-dashboard.wb-v2 .advanced-tools-strip.wb-links {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: stretch !important;
+  gap: 2px !important;
+}
+
+#subview-dashboard.wb-v2 .wb-links h2 {
+  margin-bottom: var(--sp-2) !important;
+}
+
+#subview-dashboard.wb-v2 .wb-link-btn {
+  display: flex !important;
+  align-items: center;
+  height: var(--row-h) !important;
+  min-height: 0 !important;
+  padding: 0 var(--sp-2) !important;
+  border: 0 !important;
+  border-radius: var(--r-sm) !important;
+  background: none !important;
+  color: var(--text-secondary) !important;
+  font-size: var(--fs-body) !important;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+#subview-dashboard.wb-v2 .wb-link-btn:hover {
+  background: var(--overlay-hover, rgba(255, 255, 255, 0.06)) !important;
+  color: var(--text-main) !important;
+}
+
+/* 收件箱条目：从"卡"降为"行" */
+#subview-dashboard.wb-v2 .inbox-record {
+  padding: 10px var(--sp-2) !important;
+  border: 0 !important;
+  border-radius: var(--r-sm) !important;
+  background: none !important;
+  box-shadow: none !important;
+}
+
+#subview-dashboard.wb-v2 .inbox-record:hover {
+  background: var(--overlay-hover, rgba(255, 255, 255, 0.06)) !important;
+  transform: none !important;
+}
+
+/* 浅色主题时代的硬编码遗留：.task-tree-container .glass-accordion{background:#fff!important}
+   .today-item{background:#fff} .advanced-tools-strip{background:#fff!important}
+   在 dark 主题下就是白底白字 —— 这里统一拉回主题变量，并把"卡"改成"行"。 */
+#subview-dashboard.wb-v2 .task-tree-container .glass-accordion {
+  margin-bottom: 0 !important;
+  border: 0 !important;
+  border-radius: var(--r-sm) !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+}
+
+#subview-dashboard.wb-v2 .task-tree-container .glass-accordion:hover {
+  background: var(--overlay-hover, rgba(255, 255, 255, 0.06)) !important;
+}
+
+#subview-dashboard.wb-v2 .task-tree-container .glass-accordion[open] {
+  border-radius: var(--r-sm) !important;
+  background: var(--bg-elevated, rgba(30, 41, 59, 0.6)) !important;
+}
+
+#subview-dashboard.wb-v2 .today-item {
+  padding: 8px var(--sp-1) !important;
+  border: 0 !important;
+  border-bottom: 1px solid var(--stroke-hair) !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+}
+
+#subview-dashboard.wb-v2 .today-item:last-child {
+  border-bottom: 0 !important;
+}
+
+#subview-dashboard.wb-v2 .today-item:hover {
+  background: transparent !important;
+}
+
+#subview-dashboard.wb-v2 .completed-todos-accordion {
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+/* 又一处浅色硬编码：`#subview-dashboard .today-line strong { color:#1f2937 }`
+   在深色主题下正文几乎看不见。统一拉回主题文字色。 */
+#subview-dashboard.wb-v2 .today-line strong,
+#subview-dashboard.wb-v2 .inbox-record-text,
+#subview-dashboard.wb-v2 .log-text,
+#subview-dashboard.wb-v2 .todo-text {
+  color: var(--text-main) !important;
+}
+
+#subview-dashboard.wb-v2 .todo-tag,
+#subview-dashboard.wb-v2 .log-text b,
+#subview-dashboard.wb-v2 .today-tag {
+  color: var(--text-secondary) !important;
+}
+
+/* 待办行左边已经有复选框，不需要再叠一个 ▶ */
+#subview-dashboard.wb-v2 .task-tree-container .log-summary::before {
+  display: none !important;
+}
+
+#subview-dashboard.wb-v2 .task-tree-container .log-summary {
+  padding: 10px var(--sp-2) !important;
+  border-radius: var(--r-sm) !important;
+}
+
+#subview-dashboard.wb-v2 .today-badge {
+  border: 0 !important;
+  background: var(--overlay-light, rgba(255, 255, 255, 0.06)) !important;
+  color: var(--text-secondary) !important;
+  font-weight: 400 !important;
+}
+
+/* --- 6.6 捕获浮层 ------------------------------------------------------ */
+#subview-dashboard.wb-v2 .wb-popover {
+  position: absolute;
+  z-index: 60;
+  top: 52px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(720px, calc(100% - 48px));
+}
+
+#subview-dashboard.wb-v2 .wb-popover[hidden] {
+  display: none !important;
+}
+
+#subview-dashboard.wb-v2 .wb-popover .composer-card {
+  margin: 0 !important;
+  padding: var(--sp-4) !important;
+  border: 1px solid var(--stroke-hair) !important;
+  border-radius: var(--r-lg) !important;
+  background: color-mix(in srgb, var(--bg-body) 90%, #ffffff) !important;
+  box-shadow: var(--shadow-float) !important;
+  backdrop-filter: none !important;
+}
+
+#subview-dashboard.wb-v2 .wb-popover .quick-capture-input {
+  min-height: 72px !important;
+  font-size: var(--fs-body) !important;
+}
+
+#subview-dashboard.wb-v2 .legacy-capture-area {
+  grid-column: 1 / -1;
+}
+
+#subview-dashboard.wb-v2 .legacy-capture-area.show {
+  padding: var(--card-pad) !important;
+  border: 0 !important;
+  border-radius: var(--r-md) !important;
+  background: var(--bg-card) !important;
+  box-shadow: none !important;
+}
+
+#subview-dashboard.wb-v2 #history-list-container {
+  grid-column: 1 / -1;
+}
+
+/* 窄窗口退化成单列 */
+@media (max-width: 1120px) {
+  #subview-dashboard.wb-v2 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* --- 6.7 笔记页：两栏撑满剩余高度 -------------------------------------- */
+/* 原来只到内容高度，下面近一半是纯黑。 */
+#subview-notes .notes-workbench {
+  min-height: calc(100vh - 176px);
+}
+
+/* 非工作台页面原来各带一层 32px 内边距，和 main-content 的 32px 叠加成 64，
+   和刚统一好的工作台对不齐 —— 一并归零，全站左边缘落在同一条线上。 */
+#workspace-view .main-content > .subview:not(#subview-dashboard) {
+  padding: 0 !important;
+}
+
+/* --- 6.8 设置页：单列，消除"一处高一处矮"的缺口 ------------------------ */
+#subview-settings .settings-layout {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: var(--sp-4) !important;
+  max-width: 880px;
+  margin: 0 !important;
+}
+
+#subview-settings .settings-card {
+  margin: 0 !important;
+}
+
+/* 图标块从 32px 实色方块降为 16px 线性图标，和标题同一行 */
+#subview-settings .settings-card-icon {
+  width: 18px !important;
+  height: 18px !important;
+  min-width: 18px !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: none !important;
+  color: var(--text-muted) !important;
+}
+
+#subview-settings .settings-card-icon svg {
+  width: 16px !important;
+  height: 16px !important;
+}
+
+/* 拆掉卡片里的嵌套子卡："加载中…"那一行不需要再画一个框 */
+#subview-settings .settings-data-panel {
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: none !important;
+  box-shadow: none !important;
+}
+
+/* --- 6.10 表格：数据不足一屏时不要留一块空面板 ------------------------ */
+/* 原来 flex:1 把表格容器拉到满高，3 行数据下面是一整块空壳 + 一条悬空的横向滚动条。 */
+.sh-table-wrap {
+  flex: 0 1 auto !important;
+  max-height: 100% !important;
+}
+
+/* 单元格单行显示：换行会让行高从 40 涨到 120，一屏只能看两行，
+   而且列宽被压窄时"温差超过 3℃ 时读数偏"这种半句换行最毁整洁。
+   表格是索引，要看全文点开行详情；只有用户显式固定了行高（.is-clamped）才保留换行。 */
+.sh-table .sh-cell:not(.is-clamped),
+.sh-table .sh-cell:not(.is-clamped) > *,
+/* 字段开了换行（.is-wrap）也压成一行：.sh-cell.is-wrap .ft-text 是 pre-wrap !important，
+   特异性 (0,3,0)，必须用更长的选择器才压得住。 */
+.sh-table .sh-cell.is-wrap:not(.is-clamped),
+.sh-table .sh-cell.is-wrap:not(.is-clamped) .ft-text {
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+/* 横向滚动时序号列固定在左边，不然滚两屏就不知道自己在看哪一行 */
+.sh-table thead th.sh-th-index,
+.sh-table tbody td.sh-td-index {
+  position: sticky !important;
+  left: 0 !important;
+  z-index: 4 !important;
+  background: var(--bg-card) !important;
+}
+
+.sh-table thead th.sh-th-index {
+  z-index: 7 !important;
+}
+
+/* --- 6.11 表格库：页头一行化 + 去掉列表卡边框 ------------------------- */
+/* 这一页的头是 sheetPage.js 生成的 .sh-page-head，不走 .subview-page-head，
+   所以单独覆盖一次，否则「全部表格」还是 26px + 说明段落三层。 */
+#subview-table .sh-page-head {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: var(--sp-4) !important;
+  min-height: 40px !important;
+  margin: 0 0 var(--sp-5) !important;
+  padding: 0 !important;
+}
+
+#subview-table .sh-page-head .sh-kicker,
+#subview-table .sh-page-head p {
+  display: none !important;
+}
+
+#subview-table .sh-page-head h1 {
+  margin: 0 !important;
+  font-size: var(--fs-page) !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.01em !important;
+}
+
+#subview-table .sh-group-head {
+  display: flex !important;
+  align-items: center !important;
+  gap: var(--sp-2) !important;
+  margin: 0 0 var(--sp-2) !important;
+}
+
+#subview-table .sh-group-count {
+  min-width: 20px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: var(--r-pill);
+  background: var(--overlay-light, rgba(255, 255, 255, 0.06)) !important;
+  color: var(--text-muted) !important;
+  font-size: var(--fs-micro) !important;
+  line-height: 18px;
+  text-align: center;
+}
+
+#subview-table .sh-sheet-card {
+  border: 0 !important;
+  background: var(--bg-card) !important;
+  box-shadow: none !important;
+}
+
+#subview-table .sh-sheet-card:hover {
+  background: var(--bg-elevated, rgba(30, 41, 59, 0.7)) !important;
+  transform: none !important;
+}
+
+/* --- 6.9 搜索页：去掉大卡片，只留一行 -------------------------------- */
+#subview-search .search-panel {
+  margin: 0 0 var(--sp-3) !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: none !important;
+  box-shadow: none !important;
+}
+
+#subview-search .global-search-form {
+  display: flex;
+  gap: var(--sp-2);
+}
+
+#subview-search .global-search-form .hero-input {
+  height: 36px;
+}
+
+#subview-search .search-empty,
+#subview-search .search-status {
+  padding: var(--sp-2) 0 !important;
+  text-align: left !important;
+  color: var(--text-muted) !important;
+  font-size: var(--fs-meta) !important;
+}
+
+/* ==========================================================================
+   设计层 7 · 功能收口（导航 4 项 / 命令面板 / 记录页一行头）
+   新增选择器全部用 #id 或新类名，不覆盖旧层已生效的规则；
+   颜色一律取主题变量，禁止硬编码 —— 旧层曾经因为 #fff 白底在深色主题下瞎掉。
+   ========================================================================== */
+
+/* 7.1 侧栏底部：搜索入口 + 设置 ------------------------------------------- */
+.sidebar-foot {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 2px !important;
+  padding-top: 12px !important;
+  border-top: 1px solid var(--border-light) !important;
+}
+
+#cmdk-open-btn.sidebar-cmdk {
+  display: flex !important;
+  align-items: center !important;
+  gap: 10px !important;
+  width: 100% !important;
+  padding: 9px 12px !important;
+  margin-bottom: 4px !important;
+  border: 1px solid var(--border-light) !important;
+  border-radius: 10px !important;
+  background: var(--bg-input) !important;
+  color: var(--text-secondary) !important;
+  font-size: 13px !important;
+  font-family: inherit !important;
+  text-align: left !important;
+  cursor: pointer !important;
+  transition: background .16s ease, border-color .16s ease, color .16s ease !important;
+}
+
+#cmdk-open-btn.sidebar-cmdk:hover {
+  border-color: var(--border-medium) !important;
+  color: var(--text-main) !important;
+}
+
+.sidebar-cmdk-label { flex: 1 !important; }
+
+.sidebar-cmdk-kbd {
+  flex: none !important;
+  font-family: inherit !important;
+  font-size: 11px !important;
+  line-height: 1.4 !important;
+  color: var(--text-muted) !important;
+  border: 1px solid var(--border-light) !important;
+  border-radius: 4px !important;
+  padding: 1px 5px !important;
+}
+
+/* 7.2 命令面板 ------------------------------------------------------------ */
+.cmdk-overlay {
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: 9000 !important;
+  display: flex !important;
+  align-items: flex-start !important;
+  justify-content: center !important;
+  padding: 11vh 16px 16px !important;
+  background: rgba(0, 0, 0, 0.52) !important;
+  -webkit-backdrop-filter: blur(3px) !important;
+  backdrop-filter: blur(3px) !important;
+}
+
+/* [hidden] 必须压过上面的 display:flex，否则关不掉 */
+.cmdk-overlay[hidden] { display: none !important; }
+
+.cmdk {
+  display: flex !important;
+  flex-direction: column !important;
+  width: min(660px, 100%) !important;
+  max-height: 70vh !important;
+  overflow: hidden !important;
+  background: var(--bg-elevated) !important;
+  border: 1px solid var(--border-medium) !important;
+  border-radius: 14px !important;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.44) !important;
+}
+
+.cmdk-bar {
+  display: flex !important;
+  align-items: center !important;
+  gap: 12px !important;
+  padding: 14px 16px !important;
+  border-bottom: 1px solid var(--border-light) !important;
+}
+
+.cmdk-bar-icon {
+  flex: none !important;
+  width: 16px !important;
+  height: 16px !important;
+  color: var(--text-muted) !important;
+}
+
+#cmdk-input.cmdk-input {
+  flex: 1 !important;
+  min-width: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  outline: 0 !important;
+  background: transparent !important;
+  color: var(--text-main) !important;
+  font-family: inherit !important;
+  font-size: 15px !important;
+  line-height: 1.5 !important;
+  box-shadow: none !important;
+}
+
+#cmdk-input.cmdk-input::placeholder { color: var(--text-muted) !important; }
+
+#cmdk-close.cmdk-close {
+  flex: none !important;
+  padding: 2px 6px !important;
+  border: 1px solid var(--border-light) !important;
+  border-radius: 4px !important;
+  background: transparent !important;
+  color: var(--text-muted) !important;
+  font-family: inherit !important;
+  font-size: 11px !important;
+  line-height: 1.4 !important;
+  cursor: pointer !important;
+}
+
+.cmdk-list {
+  flex: 1 !important;
+  min-height: 72px !important;
+  overflow-y: auto !important;
+  padding: 6px !important;
+}
+
+.cmdk-group {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  padding: 8px 10px 4px !important;
+  font-size: 11px !important;
+  line-height: 1.4 !important;
+  color: var(--text-muted) !important;
+  letter-spacing: .04em !important;
+}
+
+.cmdk-item {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: stretch !important;
+  gap: 2px !important;
+  width: 100% !important;
+  padding: 9px 12px !important;
+  border: 0 !important;
+  border-radius: 6px !important;
+  background: transparent !important;
+  color: var(--text-main) !important;
+  font-family: inherit !important;
+  text-align: left !important;
+  cursor: pointer !important;
+}
+
+/* 主题里 --bg-input 与 --bg-elevated 指向同一个 --color-surface，
+   用它做选中态等于没变色（实测截图里高亮几乎看不见）。
+   半透明中灰是唯一在深浅两套主题下都成立的对比方式。 */
+.cmdk-item.is-active {
+  background: rgba(127, 127, 127, 0.16) !important;
+}
+
+.cmdk-item:hover:not(.is-active) {
+  background: rgba(127, 127, 127, 0.07) !important;
+}
+
+.cmdk-item strong {
+  display: block !important;
+  font-size: 13px !important;
+  font-weight: 700 !important;
+  line-height: 1.5 !important;
+  color: var(--text-main) !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+.cmdk-item small {
+  display: block !important;
+  font-size: 12px !important;
+  line-height: 1.5 !important;
+  color: var(--text-secondary) !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+.cmdk-item em {
+  display: block !important;
+  font-style: normal !important;
+  font-size: 11px !important;
+  line-height: 1.4 !important;
+  color: var(--text-muted) !important;
+}
+
+.cmdk-empty {
+  padding: 28px 16px !important;
+  text-align: center !important;
+  font-size: 13px !important;
+  color: var(--text-muted) !important;
+}
+
+.cmdk-foot {
+  display: flex !important;
+  align-items: center !important;
+  gap: 16px !important;
+  padding: 8px 16px !important;
+  border-top: 1px solid var(--border-light) !important;
+  font-size: 11px !important;
+  color: var(--text-muted) !important;
+}
+
+.cmdk-foot kbd {
+  font-family: inherit !important;
+  font-size: 11px !important;
+  padding: 0 4px !important;
+  border: 1px solid var(--border-light) !important;
+  border-radius: 3px !important;
+}
+
+.cmdk-meta { margin-left: auto !important; }
+
+/* 面板打开时禁止背景滚动 */
+body.cmdk-open { overflow: hidden !important; }
+
+/* 7.3 记录页：页头压成一行 ------------------------------------------------ */
+#subview-timeline.records-v2 .rec-head {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 16px !important;
+  margin: 0 0 16px !important;
+  padding: 0 0 12px !important;
+  border-bottom: 1px solid var(--border-light) !important;
+}
+
+.rec-head-left {
+  display: flex !important;
+  align-items: baseline !important;
+  gap: 12px !important;
+  min-width: 0 !important;
+}
+
+#subview-timeline.records-v2 .rec-head h1 {
+  margin: 0 !important;
+  font-size: 20px !important;
+  font-weight: 700 !important;
+  line-height: 1.25 !important;
+  color: var(--text-main) !important;
+}
+
+.rec-head-count {
+  font-size: 12px !important;
+  line-height: 1.5 !important;
+  color: var(--text-muted) !important;
+}
+
+.rec-head-right {
+  display: flex !important;
+  flex: none !important;
+  align-items: center !important;
+  gap: 8px !important;
+}
+
+#subview-timeline.records-v2 .rec-filter select {
+  min-width: 96px !important;
+  height: 30px !important;
+  padding: 0 8px !important;
+  border: 1px solid var(--border-light) !important;
+  border-radius: 6px !important;
+  background: var(--bg-input) !important;
+  color: var(--text-main) !important;
+  font-family: inherit !important;
+  font-size: 12px !important;
+  line-height: 1.4 !important;
+}
+
+#subview-timeline.records-v2 #rec-add-btn {
+  height: 30px !important;
+  padding: 0 12px !important;
+  font-size: 12px !important;
+  line-height: 1.4 !important;
+}

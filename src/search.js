@@ -32,6 +32,7 @@ function formatTypeLabel(type) {
   if (type === 'log') return '流水';
   if (type === 'todo') return '待办';
   if (type === 'note') return '笔记';
+  if (type === 'sheet') return '表格';
   return type;
 }
 
@@ -140,14 +141,73 @@ async function searchNotes(keyword) {
   }));
 }
 
-async function searchAll(keyword) {
-  const [logs, todos, notes] = await Promise.all([
+export async function searchAll(keyword) {
+  const [logs, todos, notes, sheets] = await Promise.all([
     searchLogs(keyword),
     searchTodos(keyword),
-    searchNotes(keyword)
+    searchNotes(keyword),
+    searchSheetRows(keyword)
   ]);
 
-  return { logs, todos, notes };
+  return { logs, todos, notes, sheets };
+}
+
+// 表格行：custom 是一整条 JSON，字段名存在 sheet_field 里。
+// 这里不解析字段名 —— 搜索的目的是「找回内容」，不是「还原表格」，
+// 把值拼成一行摘要已经足够判断是不是要找的那条。
+function flattenCellValue(value) {
+  if (value === null || value === undefined) return '';
+  if (Array.isArray(value)) {
+    return value.map(item => flattenCellValue(item)).filter(Boolean).join(' ');
+  }
+  if (typeof value === 'object') {
+    return value.name || value.label || value.path || value.url || '';
+  }
+  return String(value);
+}
+
+async function searchSheetRows(keyword) {
+  const like = makeLikeParam(keyword);
+  const rows = await dbQuery(
+    `SELECT r.id, r.sheet_id, r.custom, r.updated_at, s.name AS sheet_name
+       FROM record r
+       LEFT JOIN sheet s ON s.id = r.sheet_id
+      WHERE r.kind = 'sheet_row'
+        AND COALESCE(r.custom, '') LIKE ?
+      ORDER BY r.updated_at DESC, r.id DESC
+      LIMIT ?`,
+    [like, SEARCH_LIMIT_PER_TYPE]
+  );
+
+  return rows.map(row => {
+    let flat = '';
+    try {
+      const data = JSON.parse(row.custom || '{}');
+      flat = Object.keys(data).map(key => flattenCellValue(data[key])).filter(Boolean).join(' · ');
+    } catch (error) {
+      flat = String(row.custom || '');
+    }
+
+    const lowerKeyword = keyword.toLowerCase();
+    const index = flat.toLowerCase().indexOf(lowerKeyword);
+    const start = index > 30 ? index - 30 : 0;
+    const snippet = flat.length > 150
+      ? `${start > 0 ? '...' : ''}${flat.slice(start, start + 150)}${start + 150 < flat.length ? '...' : ''}`
+      : flat;
+
+    return {
+      type: 'sheet',
+      id: row.id,
+      sheetId: row.sheet_id,
+      title: `${row.sheet_name || '表格'} · 第 ${row.id} 行`,
+      snippet: snippet || '空行',
+      detail: flat,
+      tag: row.sheet_name || '',
+      sub_tag: '',
+      time: row.updated_at || '',
+      meta: '表格行'
+    };
+  });
 }
 
 function renderSearchGroup(title, records) {
@@ -196,7 +256,8 @@ function renderSearchResults(groups, keyword) {
   const status = document.getElementById('global-search-status');
   if (!container) return;
 
-  const total = groups.logs.length + groups.todos.length + groups.notes.length;
+  const total = groups.logs.length + groups.todos.length + groups.notes.length
+    + (groups.sheets ? groups.sheets.length : 0);
   if (status) status.innerText = total > 0 ? `找到 ${total} 条相关内容` : '';
 
   if (total === 0) {
@@ -207,7 +268,8 @@ function renderSearchResults(groups, keyword) {
   container.innerHTML = [
     renderSearchGroup('流水', groups.logs),
     renderSearchGroup('待办', groups.todos),
-    renderSearchGroup('笔记', groups.notes)
+    renderSearchGroup('笔记', groups.notes),
+    renderSearchGroup('表格行', groups.sheets || [])
   ].join('');
 }
 

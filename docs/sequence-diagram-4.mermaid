@@ -1,0 +1,29 @@
+%% WorkRecorder 表格为核心重构 · 时序图 ④（新增）
+%% 打开表格 → 建森林 O(n) → 深层视觉降级（为什么层级深度不影响性能）
+%% 对应 P0-2 + 修订 1（数据层无限制 / 视觉层分层降级）
+
+sequenceDiagram
+    autonumber
+    actor U as 用户
+    participant SP as sheetPage
+    participant SS as sheetStore
+    participant DB as SQLite
+    participant RT as recordTree
+
+    Note over U,DB: 场景：某表含一条 6 层链（机组→系统→设备→部件→测点→参数），共 1000 行
+    U->>SP: 打开这张表
+    SP->>SS: loadFields(sheetId) / loadRows(sheetId)
+    SS->>DB: SELECT ... FROM record WHERE sheet_id=? ORDER BY sort, id
+    Note over SS,DB: 查询次数恒为 1，与深度无关；不用递归 CTE
+    DB-->>SS: 1000 行平铺结果
+    SS-->>SP: rows
+    SP->>RT: buildForest(rows)
+    RT->>RT: ① Map 建索引 O(n)
+    RT->>RT: ② 一次遍历挂父子 O(n)，父不在本批→当根
+    RT-->>SP: {roots, byId, depthById}
+    SP->>RT: flattenVisibleTree(rows, collapsedIds, {indentMax:3, pathPrefix:true})
+    RT->>RT: DFS 先序；栈深度=树深，不占内存；折叠节点整枝跳过
+    RT-->>SP: [{row, depth, indent, pathPrefix, pathFull, hasChildren}]
+    SP->>SP: renderBodyRows()：depth 1/2/3 → indent 0/16/32px；depth≥4 → indent 恒 32px + 「⋯ 系统 / 设备」
+    SP-->>U: 渲染完成：第 6 层仍可见，只是不再缩进，靠路径前缀表达层级
+    Note over SP,RT: 建树 + 扁平化合计 O(n)；1000 行 20 层实测 < 20ms；<br/>不存在 O(n·d) 步骤，也不随深度增加查询次数

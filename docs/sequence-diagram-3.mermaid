@@ -1,0 +1,28 @@
+%% WorkRecorder 表格为核心重构 · 时序图 ③（补充，验证坑②）
+%% 随手记移入表格：kind 保持 'log'，表格按 sheet_id 归属必须能看见它
+
+sequenceDiagram
+    autonumber
+    actor U as 用户
+    participant DR as rowDrawer
+    participant RS as recordStore
+    participant SS as sheetStore
+    participant DB as SQLite
+
+    U->>DR: 在「记录」页打开一条随手记（record 123，kind='log'）
+    U->>DR: 菜单「移入表格」→ 选「问题跟踪」
+    DR->>RS: moveRecordToSheet(123, 7)
+    RS->>DB: UPDATE record SET sheet_id=7, updated_at=? WHERE id=123
+    Note over RS,DB: kind 保持 'log' —— 保留出生地
+    RS-->>DR: 完成
+    Note over U,DB: 旧实现（loadRows 查 sheet_row 视图，隐含 kind='sheet_row'）<br/>在这里会失效：表格里看不到这条记录，且不报错
+
+    U->>SS: 重新打开「问题跟踪」
+    SS->>DB: SELECT ... FROM record WHERE sheet_id=7 ORDER BY sort,id
+    DB-->>SS: 结果含 record 123
+    SS-->>U: 表格中出现这条随手记
+
+    U->>SS: 删除「问题跟踪」这张表
+    SS->>DB: DELETE FROM record WHERE sheet_id=7 AND kind='sheet_row'
+    SS->>DB: UPDATE record SET sheet_id=NULL WHERE sheet_id=7
+    Note over SS,DB: record 123 回到「记录」页，而不是被销毁

@@ -25,8 +25,17 @@ fn get_db_file_path() -> String {
     path.to_string_lossy().to_string()
 }
 
-fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, String> {
-    let mut stmt = conn.prepare(&format!("PRAGMA table_info({})", table)).map_err(|e| e.to_string())?;
+// 全库累计变更行数（含触发器内部产生的变更）。
+// 这个 rusqlite 版本没有 Connection::total_changes 方法，走 SQL 内置函数。
+// 为什么需要它：changes() 不统计触发器里的改动，而 v10 之后
+// logs / todos / sheet_row 的写入全部由 INSTEAD OF 触发器转译到 record ——
+// 用 changes() 会得到 0，前端把它当成「保存失败」。
+fn total_changes(conn: &Connection) -> i64 {
+    conn.query_row("SELECT total_changes()", [], |row| row.get(0))
+        .unwrap_or(0)
+}
+
+fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, String> {    let mut stmt = conn.prepare(&format!("PRAGMA table_info({})", table)).map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |row| row.get::<_, String>(1))
         .map_err(|e| e.to_string())?;
@@ -51,9 +60,13 @@ fn add_column_if_missing(conn: &Connection, table: &str, column: &str, definitio
 
 // 🛡️ 应用启动时的数据迁移逻辑
 fn init_and_migrate_db() -> Result<(), String> {
-    let db_path = get_db_file_path();
-    let json_path = get_data_file_path();
-    let mut conn = Connection::open(&db_path).map_err(|e| format!("无法打开数据库: {}", e))?;
+    init_and_migrate_db_at(&get_db_file_path(), &get_data_file_path())
+}
+
+// 参数化的版本：迁移逻辑不读全局路径，测试才能拿数据库副本跑一遍。
+// 迁移是不可逆的（改表名、建视图），必须在副本上验证过再让它碰真实数据。
+fn init_and_migrate_db_at(db_path: &str, json_path: &str) -> Result<(), String> {
+    let mut conn = Connection::open(db_path).map_err(|e| format!("无法打开数据库: {}", e))?;
 
     conn.execute_batch(
         "BEGIN;
@@ -236,13 +249,280 @@ fn init_and_migrate_db() -> Result<(), String> {
             .map_err(|e| format!("数据库升级到 v9 失败: {}", e))?;
     }
 
-    let json_exists = Path::new(&json_path).exists();
+    // v10：统一记录表（logs / todos / sheet_row → record）。
+    //
+    // 动机：这三张表是「同一件事的三种身份」。用户录入时必须先判断
+    // 「这是流水、待办还是表格行」才能动手，这是设计强加给用户的架构决策。
+    // 合并后 kind 只是过滤器，status 是字段：
+    //     流水   = kind='log'
+    //     待办   = kind='todo' AND status != 'done'
+    //     表格行 = kind='sheet_row' AND sheet_id = ?
+    //
+    // 兼容策略（本迁移的关键）：旧表改名为 *_legacy 做只读备份，同时建立
+    // **同名可写视图**，用 INSTEAD OF 触发器把读写转译到 record。这样前端
+    // 现有 90 余处 SQL 一行都不用改，风险收敛到「视图列名必须与旧表完全一致」。
+    // 验证过两个已知陷阱：代码里没有 last_insert_rowid 依赖，也没有
+    // INSERT ... ON CONFLICT（视图不支持 UPSERT）。
+    if schema_version < 10 {
+        // 重入保护：已经是视图说明上次迁移完成、只是版本号没落盘。
+        let logs_is_view: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'view' AND name = 'logs'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+
+        if logs_is_view == 0 {
+            // 迁移前整库备份。数据只有几十行，但一旦迁移写坏就是不可逆的，
+            // 留一份原样文件比任何回滚代码都可靠。
+            let backup_path = format!("{}.before-record-v10", db_path);
+            if !Path::new(&backup_path).exists() {
+                fs::copy(&db_path, &backup_path)
+                    .map_err(|e| format!("备份数据库失败: {}", e))?;
+            }
+
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS record (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    kind TEXT NOT NULL DEFAULT 'log',
+                    title TEXT NOT NULL DEFAULT '',
+                    body TEXT DEFAULT '',
+                    remark TEXT DEFAULT '',
+                    status TEXT DEFAULT 'done',
+                    happened_date TEXT DEFAULT '',
+                    happened_time TEXT DEFAULT '',
+                    deadline TEXT DEFAULT '',
+                    tag TEXT DEFAULT '',
+                    sub_tag TEXT DEFAULT '',
+                    parent_id INTEGER,
+                    linked_todo TEXT DEFAULT '',
+                    is_overdue INTEGER DEFAULT 0,
+                    record_type TEXT DEFAULT '',
+                    sheet_id INTEGER,
+                    sort REAL DEFAULT 0,
+                    height INTEGER,
+                    start_at TEXT DEFAULT '',
+                    end_at TEXT DEFAULT '',
+                    completed_at TEXT DEFAULT '',
+                    custom TEXT DEFAULT '{}',
+                    legacy_id INTEGER,
+                    created_at TEXT DEFAULT '',
+                    updated_at TEXT DEFAULT ''
+                );
+                CREATE INDEX IF NOT EXISTS idx_record_kind_date ON record(kind, happened_date DESC, happened_time DESC);
+                CREATE INDEX IF NOT EXISTS idx_record_kind_status ON record(kind, status);
+                CREATE INDEX IF NOT EXISTS idx_record_sheet ON record(sheet_id, sort, id);
+                CREATE INDEX IF NOT EXISTS idx_record_tag ON record(tag, sub_tag);
+                CREATE INDEX IF NOT EXISTS idx_record_legacy ON record(kind, legacy_id);"
+            ).map_err(|e| format!("创建 record 表失败: {}", e))?;
+
+            // 迁移用纯 SQL 完成：legacy_id 保留原 id，后续靠自连接重映射引用。
+            // todos 先插，因为 logs.linked_todo 指向它。
+            conn.execute_batch(
+                "BEGIN;
+                INSERT INTO record (kind, title, body, remark, status, deadline, tag, sub_tag,
+                                    parent_id, start_at, end_at, completed_at, sort, custom,
+                                    legacy_id, created_at, updated_at)
+                SELECT 'todo', COALESCE(task, ''), COALESCE(detail, ''), COALESCE(remark, ''),
+                       CASE WHEN done IN (1, '1', 'true', 'TRUE', 'True') THEN 'done' ELSE 'pending' END,
+                       COALESCE(deadline, ''), COALESCE(tag, ''), COALESCE(sub_tag, ''),
+                       CASE WHEN parent_id IS NULL OR parent_id = '' THEN NULL ELSE CAST(parent_id AS INTEGER) END,
+                       COALESCE(start_at, ''), COALESCE(end_at, ''), COALESCE(completed_at, ''),
+                       COALESCE(sort_order, 0), COALESCE(custom, '{}'), id, '', ''
+                FROM todos ORDER BY id;
+
+                INSERT INTO record (kind, title, body, remark, status, happened_date, happened_time,
+                                    deadline, tag, sub_tag, linked_todo, is_overdue, record_type,
+                                    custom, legacy_id, created_at, updated_at)
+                SELECT 'log', COALESCE(text, ''), COALESCE(detail, ''), COALESCE(remark, ''),
+                       CASE WHEN status = 'unprocessed' THEN 'inbox' ELSE 'done' END,
+                       COALESCE(date, ''), COALESCE(time, ''), COALESCE(deadline, ''),
+                       COALESCE(tag, ''), COALESCE(sub_tag, ''), COALESCE(linked_todo, ''),
+                       CASE WHEN is_overdue IN (1, '1', 'true', 'TRUE', 'True') THEN 1 ELSE 0 END,
+                       COALESCE(record_type, 'log'), COALESCE(custom, '{}'), id,
+                       TRIM(COALESCE(date, '') || ' ' || COALESCE(time, '')),
+                       TRIM(COALESCE(date, '') || ' ' || COALESCE(time, ''))
+                FROM logs ORDER BY id;
+
+                INSERT INTO record (kind, title, body, sheet_id, sort, height, custom,
+                                    legacy_id, created_at, updated_at)
+                SELECT 'sheet_row', '', '', sheet_id, COALESCE(sort, 0), height,
+                       COALESCE(data, '{}'), id, COALESCE(created_at, ''), COALESCE(updated_at, '')
+                FROM sheet_row ORDER BY id;
+
+                -- 引用重映射：旧 id → 新 id。找不到对应记录时置空（原本就是悬空引用）。
+                UPDATE record SET parent_id = (
+                    SELECT p.id FROM record p WHERE p.kind = 'todo' AND p.legacy_id = record.parent_id
+                ) WHERE kind = 'todo' AND parent_id IS NOT NULL;
+
+                UPDATE record SET linked_todo = (
+                    SELECT t.id FROM record t
+                    WHERE t.kind = 'todo' AND CAST(t.legacy_id AS TEXT) = record.linked_todo
+                ) WHERE kind = 'log' AND linked_todo IS NOT NULL AND linked_todo != '';
+                COMMIT;"
+            ).map_err(|e| format!("迁移数据到 record 失败: {}", e))?;
+
+            // 旧表退位为只读备份，同名视图接管原表名。
+            conn.execute_batch(
+                "ALTER TABLE logs RENAME TO logs_legacy;
+                 ALTER TABLE todos RENAME TO todos_legacy;
+                 ALTER TABLE sheet_row RENAME TO sheet_row_legacy;
+
+                 CREATE VIEW logs AS SELECT
+                     id,
+                     happened_date AS date,
+                     happened_time AS time,
+                     title AS text,
+                     tag, sub_tag,
+                     body AS detail,
+                     remark,
+                     linked_todo,
+                     deadline,
+                     is_overdue,
+                     CASE WHEN status = 'inbox' THEN 'unprocessed' ELSE 'processed' END AS status,
+                     record_type,
+                     custom
+                 FROM record WHERE kind = 'log';
+
+                 CREATE VIEW todos AS SELECT
+                     id,
+                     title AS task,
+                     -- 必须输出字符串 'true'/'false'，不能输出 1/0。
+                     -- 原表 done 列一直存的是字符串（前端 params 全部 map(String)），
+                     -- 代码里既有 `WHERE done = 'true'` 也有 `done === 'true'` 判断；
+                     -- 改成整数会让「清理已完成待办」静默失效（一条都删不掉）。
+                     CASE WHEN status = 'done' THEN 'true' ELSE 'false' END AS done,
+                     tag, sub_tag,
+                     body AS detail,
+                     remark, deadline, completed_at,
+                     parent_id,
+                     start_at, end_at,
+                     CAST(sort AS INTEGER) AS sort_order,
+                     custom
+                 FROM record WHERE kind = 'todo';
+
+                 CREATE VIEW sheet_row AS SELECT
+                     id, sheet_id, custom AS data, CAST(sort AS INTEGER) AS sort,
+                     created_at, updated_at, height
+                 FROM record WHERE kind = 'sheet_row';"
+            ).map_err(|e| format!("旧表改建为视图失败: {}", e))?;
+
+            // 写入转译。NEW.* 是「视图整行」——UPDATE 未提及的列取当前值，
+            // 所以 `UPDATE logs SET remark=?` 这类单列更新不会把其他列抹掉。
+            conn.execute_batch(
+                "CREATE TRIGGER logs_insert INSTEAD OF INSERT ON logs BEGIN
+                    INSERT INTO record (kind, title, body, remark, status, happened_date,
+                                        happened_time, deadline, tag, sub_tag, linked_todo,
+                                        is_overdue, record_type, custom, created_at, updated_at)
+                    VALUES ('log', COALESCE(NEW.text, ''), COALESCE(NEW.detail, ''),
+                            COALESCE(NEW.remark, ''),
+                            CASE WHEN NEW.status = 'unprocessed' THEN 'inbox' ELSE 'done' END,
+                            COALESCE(NEW.date, ''), COALESCE(NEW.time, ''),
+                            COALESCE(NEW.deadline, ''), COALESCE(NEW.tag, ''),
+                            COALESCE(NEW.sub_tag, ''), COALESCE(NEW.linked_todo, ''),
+                            CASE WHEN NEW.is_overdue IN (1, '1', 'true', 'TRUE', 'True') THEN 1 ELSE 0 END,
+                            COALESCE(NEW.record_type, 'log'), COALESCE(NEW.custom, '{}'),
+                            TRIM(COALESCE(NEW.date, '') || ' ' || COALESCE(NEW.time, '')),
+                            TRIM(COALESCE(NEW.date, '') || ' ' || COALESCE(NEW.time, '')));
+                 END;
+
+                 CREATE TRIGGER logs_update INSTEAD OF UPDATE ON logs BEGIN
+                    UPDATE record SET
+                        title = COALESCE(NEW.text, ''),
+                        body = COALESCE(NEW.detail, ''),
+                        remark = COALESCE(NEW.remark, ''),
+                        status = CASE WHEN NEW.status = 'unprocessed' THEN 'inbox' ELSE 'done' END,
+                        happened_date = COALESCE(NEW.date, ''),
+                        happened_time = COALESCE(NEW.time, ''),
+                        deadline = COALESCE(NEW.deadline, ''),
+                        tag = COALESCE(NEW.tag, ''),
+                        sub_tag = COALESCE(NEW.sub_tag, ''),
+                        linked_todo = COALESCE(NEW.linked_todo, ''),
+                        is_overdue = CASE WHEN NEW.is_overdue IN (1, '1', 'true', 'TRUE', 'True') THEN 1 ELSE 0 END,
+                        record_type = COALESCE(NEW.record_type, 'log'),
+                        custom = COALESCE(NEW.custom, '{}')
+                    WHERE id = OLD.id;
+                 END;
+
+                 CREATE TRIGGER logs_delete INSTEAD OF DELETE ON logs BEGIN
+                    DELETE FROM record WHERE id = OLD.id;
+                 END;
+
+                 CREATE TRIGGER todos_insert INSTEAD OF INSERT ON todos BEGIN
+                    INSERT INTO record (kind, title, body, remark, status, deadline, tag, sub_tag,
+                                        parent_id, start_at, end_at, completed_at, sort, custom,
+                                        created_at, updated_at)
+                    VALUES ('todo', COALESCE(NEW.task, ''), COALESCE(NEW.detail, ''),
+                            COALESCE(NEW.remark, ''),
+                            CASE WHEN NEW.done IN (1, '1', 'true', 'TRUE', 'True') THEN 'done' ELSE 'pending' END,
+                            COALESCE(NEW.deadline, ''), COALESCE(NEW.tag, ''),
+                            COALESCE(NEW.sub_tag, ''),
+                            CASE WHEN NEW.parent_id IS NULL OR NEW.parent_id = '' OR CAST(NEW.parent_id AS INTEGER) = 0
+                                 THEN NULL ELSE CAST(NEW.parent_id AS INTEGER) END,
+                            COALESCE(NEW.start_at, ''), COALESCE(NEW.end_at, ''),
+                            COALESCE(NEW.completed_at, ''), COALESCE(NEW.sort_order, 0),
+                            COALESCE(NEW.custom, '{}'), '', '');
+                 END;
+
+                 CREATE TRIGGER todos_update INSTEAD OF UPDATE ON todos BEGIN
+                    UPDATE record SET
+                        title = COALESCE(NEW.task, ''),
+                        body = COALESCE(NEW.detail, ''),
+                        remark = COALESCE(NEW.remark, ''),
+                        status = CASE WHEN NEW.done IN (1, '1', 'true', 'TRUE', 'True') THEN 'done' ELSE 'pending' END,
+                        deadline = COALESCE(NEW.deadline, ''),
+                        tag = COALESCE(NEW.tag, ''),
+                        sub_tag = COALESCE(NEW.sub_tag, ''),
+                        parent_id = CASE WHEN NEW.parent_id IS NULL OR NEW.parent_id = '' OR CAST(NEW.parent_id AS INTEGER) = 0
+                                         THEN NULL ELSE CAST(NEW.parent_id AS INTEGER) END,
+                        start_at = COALESCE(NEW.start_at, ''),
+                        end_at = COALESCE(NEW.end_at, ''),
+                        completed_at = COALESCE(NEW.completed_at, ''),
+                        sort = COALESCE(NEW.sort_order, 0),
+                        custom = COALESCE(NEW.custom, '{}')
+                    WHERE id = OLD.id;
+                 END;
+
+                 CREATE TRIGGER todos_delete INSTEAD OF DELETE ON todos BEGIN
+                    DELETE FROM record WHERE id = OLD.id;
+                 END;
+
+                 CREATE TRIGGER sheet_row_insert INSTEAD OF INSERT ON sheet_row BEGIN
+                    INSERT INTO record (kind, title, body, sheet_id, sort, height, custom,
+                                        created_at, updated_at)
+                    VALUES ('sheet_row', '', '', NEW.sheet_id, COALESCE(NEW.sort, 0), NEW.height,
+                            COALESCE(NEW.data, '{}'), COALESCE(NEW.created_at, ''),
+                            COALESCE(NEW.updated_at, ''));
+                 END;
+
+                 CREATE TRIGGER sheet_row_update INSTEAD OF UPDATE ON sheet_row BEGIN
+                    UPDATE record SET
+                        sheet_id = NEW.sheet_id,
+                        sort = COALESCE(NEW.sort, 0),
+                        height = NEW.height,
+                        custom = COALESCE(NEW.data, '{}'),
+                        updated_at = COALESCE(NEW.updated_at, '')
+                    WHERE id = OLD.id;
+                 END;
+
+                 CREATE TRIGGER sheet_row_delete INSTEAD OF DELETE ON sheet_row BEGIN
+                    DELETE FROM record WHERE id = OLD.id;
+                 END;"
+            ).map_err(|e| format!("创建写转译触发器失败: {}", e))?;
+        }
+
+        conn.execute_batch("PRAGMA user_version = 10;")
+            .map_err(|e| format!("数据库升级到 v10 失败: {}", e))?;
+    }
+
+    let json_exists = Path::new(json_path).exists();
     // ✅ 修复了之前的借用检查器报错，一步到位！
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM tags", [], |row| row.get(0)).unwrap_or(0);
 
     if json_exists && count == 0 {
         println!("🚀 发现旧版 JSON 数据且数据库为空，正在后台静默迁移...");
-        let file_content = fs::read_to_string(&json_path).unwrap_or_default();
+        let file_content = fs::read_to_string(json_path).unwrap_or_default();
         if let Ok(data) = serde_json::from_str::<Value>(&file_content) {
             let tx = conn.transaction().unwrap();
 
@@ -373,7 +653,16 @@ async fn db_execute(query: String, params: Vec<String>) -> Result<usize, String>
     conn.busy_timeout(std::time::Duration::from_millis(3000))
         .map_err(|e| e.to_string())?;
     let rusqlite_params = rusqlite::params_from_iter(params.iter());
-    conn.execute(&query, rusqlite_params).map_err(|e| e.to_string())
+
+    // 为什么不用 execute() 的返回值：v10 之后 logs / todos / sheet_row 是视图，
+    // 写入由 INSTEAD OF 触发器转译到 record 表。SQLite 的 changes() 明确
+    // 「不统计触发器内部的变更」，所以视图 INSERT 会返回 0 ——
+    // 而 quickCapture 正是拿这个 0 判断「保存失败」，会把成功写成失败提示。
+    //
+    // total_changes() 包含触发器内的变更，用前后差值才是真实的写入行数。
+    let before = total_changes(&conn);
+    conn.execute(&query, rusqlite_params).map_err(|e| e.to_string())?;
+    Ok((total_changes(&conn) - before).max(0) as usize)
 }
 
 // （保留旧的指令，确保我们重写 JS 前，应用绝不崩溃！）
@@ -755,4 +1044,279 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // v10 迁移必须在副本上验证：它会改表名、建视图、建触发器，任何一步出错
+    // 都是用户数据层面的灾难。断言五件事：
+    // ①行数守恒 ②视图列名与旧表逐一对应 ③视图可写 ④二次迁移幂等 ⑤引用无悬空。
+    #[test]
+    fn v10_migration_is_lossless_and_views_are_writable() {
+        let src = Path::new("D:/MyDesktopApp/work_data/my_data.db");
+        if !src.exists() {
+            eprintln!("跳过：真实数据库不存在，无法验证迁移");
+            return;
+        }
+
+        let tmp = std::env::temp_dir().join("wr-v10-migration-test");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).expect("创建临时目录失败");
+        let db = tmp.join("t.db");
+        fs::copy(src, &db).expect("复制数据库失败（应用是否正在运行并占用？）");
+        let json = tmp.join("t.json");
+
+        let before = {
+            let conn = Connection::open(&db).unwrap();
+            let logs: i64 = conn.query_row("SELECT COUNT(*) FROM logs", [], |r| r.get(0)).unwrap();
+            let todos: i64 = conn.query_row("SELECT COUNT(*) FROM todos", [], |r| r.get(0)).unwrap();
+            let rows: i64 = conn.query_row("SELECT COUNT(*) FROM sheet_row", [], |r| r.get(0)).unwrap();
+            (logs, todos, rows)
+        };
+
+        let db_str = db.to_string_lossy().to_string();
+        let json_str = json.to_string_lossy().to_string();
+        init_and_migrate_db_at(&db_str, &json_str).expect("迁移失败");
+
+        let conn = Connection::open(&db).unwrap();
+
+        // ① 行数守恒
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM record", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, before.0 + before.1 + before.2, "record 行数应等于三表之和");
+
+        // ② 视图列名必须与旧表完全一致：前端 90 余处 SQL 全靠列名取值
+        let expect_logs = vec![
+            "id", "date", "time", "text", "tag", "sub_tag", "detail", "remark",
+            "linked_todo", "deadline", "is_overdue", "status", "record_type", "custom",
+        ];
+        let stmt = conn.prepare("SELECT * FROM logs LIMIT 1").unwrap();
+        let cols: Vec<String> = stmt.column_names().into_iter().map(|s| s.to_string()).collect();
+        drop(stmt);
+        assert_eq!(cols, expect_logs, "logs 视图列名与旧表不一致");
+
+        let expect_todos = vec![
+            "id", "task", "done", "tag", "sub_tag", "detail", "remark", "deadline",
+            "completed_at", "parent_id", "start_at", "end_at", "sort_order", "custom",
+        ];
+        let stmt = conn.prepare("SELECT * FROM todos LIMIT 1").unwrap();
+        let cols: Vec<String> = stmt.column_names().into_iter().map(|s| s.to_string()).collect();
+        drop(stmt);
+        assert_eq!(cols, expect_todos, "todos 视图列名与旧表不一致");
+
+        let expect_rows = vec!["id", "sheet_id", "data", "sort", "created_at", "updated_at", "height"];
+        let stmt = conn.prepare("SELECT * FROM sheet_row LIMIT 1").unwrap();
+        let cols: Vec<String> = stmt.column_names().into_iter().map(|s| s.to_string()).collect();
+        drop(stmt);
+        assert_eq!(cols, expect_rows, "sheet_row 视图列名与旧表不一致");
+
+        let logs_n: i64 = conn.query_row("SELECT COUNT(*) FROM logs", [], |r| r.get(0)).unwrap();
+        assert_eq!(logs_n, before.0);
+        let todos_n: i64 = conn.query_row("SELECT COUNT(*) FROM todos", [], |r| r.get(0)).unwrap();
+        assert_eq!(todos_n, before.1);
+
+        // ③ 视图可写：INSERT / 单列 UPDATE / DELETE 都经触发器落到 record
+        conn.execute(
+            "INSERT INTO logs (date, time, text, tag, sub_tag, detail, remark, linked_todo, deadline, is_overdue, status, record_type) \
+             VALUES ('2026-01-01', '10:00', '迁移写入测试', '测试', '', '', '', '', '', 'false', 'unprocessed', 'log')",
+            [],
+        ).expect("视图 INSERT 失败");
+
+        let new_id: i64 = conn
+            .query_row("SELECT id FROM record WHERE title = '迁移写入测试'", [], |r| r.get(0))
+            .expect("INSERT 未落到 record");
+
+        let status: String = conn
+            .query_row("SELECT status FROM record WHERE id = ?1", [new_id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(status, "inbox", "unprocessed 应映射为 inbox");
+
+        conn.execute("UPDATE logs SET remark = '追加' WHERE id = ?1", [new_id])
+            .expect("视图 UPDATE 失败");
+        let title: String = conn
+            .query_row("SELECT title FROM record WHERE id = ?1", [new_id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(title, "迁移写入测试", "单列 UPDATE 不应抹掉其他列");
+
+        conn.execute("DELETE FROM logs WHERE id = ?1", [new_id])
+            .expect("视图 DELETE 失败");
+        let gone: i64 = conn
+            .query_row("SELECT COUNT(*) FROM record WHERE id = ?1", [new_id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(gone, 0, "视图 DELETE 未删除 record 行");
+
+        // ④ 二次迁移幂等：版本号已到 10，不应重复插入
+        drop(conn);
+        init_and_migrate_db_at(&db_str, &json_str).expect("二次迁移失败");
+        let conn = Connection::open(&db).unwrap();
+        let n2: i64 = conn.query_row("SELECT COUNT(*) FROM record", [], |r| r.get(0)).unwrap();
+        assert_eq!(n2, n, "二次迁移不应改变行数");
+
+        // ⑤ 引用重映射：linked_todo 必须指向真实存在的 todo
+        let dangling: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM record r WHERE r.kind = 'log' \
+                 AND r.linked_todo != '' AND r.linked_todo IS NOT NULL \
+                 AND NOT EXISTS (SELECT 1 FROM record t WHERE t.kind = 'todo' AND CAST(t.id AS TEXT) = r.linked_todo)",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(dangling, 0, "linked_todo 存在悬空引用");
+
+        drop(conn);
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    // 迁移只保证「数据搬过去了」。前端是通过视图读写的，所以这里把
+    // data.js / quickCapture.js / todo.js / sheetStore.js 里真实用到的 SQL 形态
+    // 逐条跑一遍。抓的是三类不会报错、只会静默少数据的失败：
+    //   ①视图列名与旧表对不上  ②参数个数不对  ③类型变了导致 WHERE 匹配不上
+    // 第 ③ 类最隐蔽 —— done 从字符串 'true' 变成整数 1 时，
+    // 「清理已完成待办」会一条都删不掉，而且界面毫无提示。
+    #[test]
+    fn frontend_sql_surface_still_works() {
+        let src = Path::new("D:/MyDesktopApp/work_data/my_data.db");
+        if !src.exists() {
+            eprintln!("跳过：真实数据库不存在，无法验证");
+            return;
+        }
+
+        let tmp = std::env::temp_dir().join("wr-v10-sql-surface");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).expect("创建临时目录失败");
+        let db = tmp.join("t.db");
+        fs::copy(src, &db).expect("复制数据库失败");
+        let json = tmp.join("t.json");
+        init_and_migrate_db_at(&db.to_string_lossy(), &json.to_string_lossy()).expect("迁移失败");
+
+        let conn = Connection::open(&db).unwrap();
+
+        // ---- 读取：data.js loadData ----
+        for sql in [
+            "SELECT * FROM todos",
+            "SELECT * FROM logs ORDER BY date DESC, time DESC",
+            "SELECT name FROM tags",
+            "SELECT main_tag, name FROM sub_tags",
+            "SELECT key, value FROM settings",
+        ] {
+            conn.prepare(sql).unwrap_or_else(|e| panic!("读取失败 [{}]: {}", sql, e));
+        }
+
+        // ---- 流水：quickCapture 写入 + 编辑 ----
+        // 这里复刻 db_execute 的计数方式（total_changes 差值），
+        // 因为 quickCapture.js 用它的返回值判断「是否保存成功」。
+        // 如果视图写入让这个数变成 0，那条路径会误报「保存失败」——
+        // 用户以为没存上，其实已经落库。
+        let before = total_changes(&conn);
+        conn.execute(
+            "INSERT INTO logs (date, time, text, tag, sub_tag, detail, remark, linked_todo, deadline, is_overdue, status, record_type) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            rusqlite::params![
+                "2026-11-12", "21:00", "前端写入验证", "测试", "", "", "", "", "",
+                "false", "unprocessed", "quick"
+            ],
+        ).expect("流水写入失败");
+        let inserted = total_changes(&conn) - before;
+        assert!(inserted >= 1, "写入计数为 {}，前端会误判为保存失败", inserted);
+
+        let log_id: i64 = conn
+            .query_row("SELECT id FROM record WHERE title = '前端写入验证'", [], |r| r.get(0))
+            .expect("流水未落到 record");
+        let status: String = conn
+            .query_row("SELECT status FROM record WHERE id = ?1", [log_id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(status, "inbox", "quick 记录应进入待整理");
+
+        conn.execute("UPDATE logs SET tag=?, sub_tag=? WHERE id=?",
+            rusqlite::params!["测试2", "", log_id]).unwrap();
+        conn.execute(
+            "UPDATE logs SET date=?, time=?, text=?, detail=?, deadline=?, tag=?, sub_tag=? WHERE id=?",
+            rusqlite::params!["2026-11-12", "21:01", "前端写入验证2", "", "", "测试2", "", log_id],
+        ).unwrap();
+
+        // ---- 待办：todo.js 写入 / 勾选 / 取消 / 级联 ----
+        conn.execute(
+            "INSERT INTO todos (task, done, tag, sub_tag, detail, remark, deadline, start_at, end_at, parent_id, completed_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            rusqlite::params!["前端待办验证", "false", "测试", "", "", "", "", "", "", "", ""],
+        ).expect("待办写入失败");
+
+        let todo_id: i64 = conn
+            .query_row("SELECT id FROM record WHERE title = '前端待办验证'", [], |r| r.get(0))
+            .expect("待办未落到 record");
+
+        conn.execute("UPDATE todos SET done = ?, completed_at = ? WHERE id = ?",
+            rusqlite::params!["true", "2026-11-12 21:02:00", todo_id]).unwrap();
+        let status: String = conn
+            .query_row("SELECT status FROM record WHERE id = ?1", [todo_id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(status, "done", "勾选后应为 done");
+
+        conn.execute("UPDATE todos SET done = ?, completed_at = ? WHERE id = ?",
+            rusqlite::params!["false", "", todo_id]).unwrap();
+        let status: String = conn
+            .query_row("SELECT status FROM record WHERE id = ?1", [todo_id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(status, "pending", "取消勾选后应为 pending");
+
+        conn.execute("UPDATE todos SET parent_id=? WHERE parent_id=?",
+            rusqlite::params!["", todo_id]).unwrap();
+
+        let pending: i64 = conn
+            .query_row("SELECT COUNT(*) FROM todos WHERE done = 'false'", [], |r| r.get(0))
+            .unwrap();
+        assert!(pending >= 1, "WHERE done = 'false' 未匹配到未完成待办");
+
+        // 第 ③ 类失败就在这里暴露：视图 done 必须是字符串 'true'，
+        // 否则下面这句会删掉 0 行 —— 而且不报错，界面照常显示「已清理」。
+        //
+        // 注意不能用 conn.execute 的返回值断言：DELETE 打在视图上时，
+        // SQLite 的 changes() 不统计 INSTEAD OF 触发器内部的删除，恒为 0。
+        // 必须回查 record 才能确认数据是否真的没了。
+        conn.execute("UPDATE todos SET done = ? WHERE id = ?",
+            rusqlite::params!["true", todo_id]).unwrap();
+        conn.execute("DELETE FROM todos WHERE done = ?", rusqlite::params!["true"])
+            .expect("按 done 删除失败");
+        let gone: i64 = conn
+            .query_row("SELECT COUNT(*) FROM todos WHERE id = ?1", [todo_id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(gone, 0, "WHERE done = 'true' 未删除到已完成待办（视图 done 类型变了）");
+
+        // ---- 表格行：sheetStore 增改删 ----
+        let sheet_id: i64 = conn
+            .query_row("SELECT id FROM sheet LIMIT 1", [], |r| r.get(0))
+            .unwrap_or(1);
+
+        conn.execute(
+            "INSERT INTO sheet_row (sheet_id, data, sort, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            rusqlite::params![sheet_id, "{\"f_demo\":\"表格写入验证\"}", 999,
+                             "2026-11-12 21:00:00", "2026-11-12 21:00:00"],
+        ).expect("表格行写入失败");
+
+        let row_id: i64 = conn
+            .query_row("SELECT id FROM record WHERE custom LIKE '%表格写入验证%'", [], |r| r.get(0))
+            .expect("表格行未落到 record");
+
+        conn.execute("UPDATE sheet_row SET data = ?, updated_at = ? WHERE id = ?",
+            rusqlite::params!["{\"f_demo\":\"已改\"}", "2026-11-12 21:05:00", row_id]).unwrap();
+        conn.execute("UPDATE sheet_row SET height = ?, updated_at = ? WHERE id = ?",
+            rusqlite::params![72, "2026-11-12 21:06:00", row_id]).unwrap();
+
+        let data: String = conn
+            .query_row("SELECT data FROM sheet_row WHERE id = ?1", [row_id], |r| r.get(0))
+            .unwrap();
+        assert!(data.contains("已改"), "表格行内容未更新：{}", data);
+
+        conn.execute("DELETE FROM sheet_row WHERE sheet_id = ?", [sheet_id]).unwrap();
+        let left: i64 = conn
+            .query_row("SELECT COUNT(*) FROM record WHERE kind = 'sheet_row' AND sheet_id = ?1",
+                       [sheet_id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, 0, "按表删除行未生效");
+
+        drop(conn);
+        let _ = fs::remove_dir_all(&tmp);
+    }
 }

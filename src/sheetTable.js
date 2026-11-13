@@ -9,6 +9,10 @@ import { renderFieldIcon, renderCell, isDateOnly } from './fieldTypes.js';
 
 const INDEX_WIDTH = 52;
 const ADD_COL_WIDTH = 44;
+// 每列的最小可用宽度：列多到装不下时才允许横向滚动，而不是一上来就溢出。
+// 96px 是"十列硬塞进 1360"的极限，表头会被截成"业…""解…"；130px 才能让
+// 四字字段名完整显示，代价是横向滚动 —— 宁可滚动也不要读不懂的列。
+const MIN_COL_WIDTH = 130;
 
 export function visibleOf(fields) {
   return fields.filter(field => Number(field.visible) !== 0);
@@ -18,17 +22,22 @@ export function fieldWidth(field) {
   return Number(field.width) || 160;
 }
 
+// 注意：这里返回的是「允许的最小宽度」，不是列宽之和。
+// 列宽本身改成百分比（见 buildColgroup），表格永远铺满容器、不横向溢出；
+// 只有当列多到每列不足 MIN_COL_WIDTH 时，才需要横向滚动。
 export function tableWidth(fields) {
-  return visibleOf(fields).reduce((sum, field) => sum + fieldWidth(field), 0) + INDEX_WIDTH + ADD_COL_WIDTH;
+  return visibleOf(fields).length * MIN_COL_WIDTH + INDEX_WIDTH + ADD_COL_WIDTH;
 }
 
 export function buildColgroup(fields) {
   const visible = visibleOf(fields);
-  // 最后一列不写宽度：table-layout:fixed 下它会自动吸收容器剩余空间。
-  // 拖动列宽时只有被拖的那一列变，其余列保持用户设定的值。
-  const cols = visible.map((field, index) => {
-    const isLast = index === visible.length - 1;
-    return isLast ? '<col />' : `<col style="width:${fieldWidth(field)}px" />`;
+  // field.width 从「像素」变成「权重」：渲染时归一化成百分比。
+  // 好处是无论窗口多宽、有多少列，表格都正好等于容器宽度；
+  // 用户拖过的相对宽度仍然保留（权重比例不变）。
+  const total = visible.reduce((sum, field) => sum + fieldWidth(field), 0) || 1;
+  const cols = visible.map(field => {
+    const pct = (fieldWidth(field) / total) * 100;
+    return `<col style="width:${pct.toFixed(4)}%" />`;
   });
   return `<colgroup><col style="width:${INDEX_WIDTH}px" />${cols.join('')}<col style="width:${ADD_COL_WIDTH}px" /></colgroup>`;
 }

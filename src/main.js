@@ -13,6 +13,7 @@ import { initNotesModule } from './notes.js';
 import { setNotesDataPathProvider } from './notesStore.js';
 import { initSheetPage } from './sheetPage.js';
 import { setSheetAdapter } from './sheetStore.js';
+import { initCommandPalette } from './commandPalette.js';
 
 // Tauri 全局对象由 withGlobalTauri 同步注入，正常情况可直接取用。
 // 这里做一次防御：万一注入时序异常，也不要让整个模块崩溃。
@@ -120,8 +121,10 @@ async function initApp() {
   safeRun('quick-capture', initQuickCapture);
   safeRun('record-reader', setupRecordReader);
   safeRun('search', initSearchModule);
+  safeRun('command-palette', initCommandPalette);
   safeRun('freecell', initFreeCellModule);
   safeRun('legacy-tools-toggle', setupLegacyToolsToggle);
+  safeRun('dashboard-chrome', setupDashboardChrome);
 
   // 全局事件 1：点击空白处收起所有三点菜单
   document.addEventListener('click', (e) => {
@@ -185,6 +188,75 @@ function setupLegacyToolsToggle() {
   });
 
   setOpen(area.classList.contains('show'));
+}
+
+// 工作台头部：日期、捕获浮层、右栏入口跳转。
+// 浮层默认隐藏，「＋ 记一笔」或 Ctrl+Shift+Space 唤起，Esc / 点空白关闭。
+// 不用 Ctrl+Space 是因为它会和中文输入法的中英切换抢按键。
+function setupDashboardChrome() {
+  const popover = document.getElementById('capture-popover');
+  const openBtn = document.getElementById('capture-open-btn');
+  const input = document.getElementById('quick-capture-input');
+  if (!popover || !openBtn) return;
+
+  const dateEl = document.getElementById('wb-date');
+  if (dateEl) {
+    const now = new Date();
+    const week = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][now.getDay()];
+    dateEl.textContent = `${now.getMonth() + 1}月${now.getDate()}日 · ${week}`;
+  }
+
+  const setOpen = open => {
+    popover.hidden = !open;
+    openBtn.setAttribute('aria-expanded', String(open));
+    if (open) requestAnimationFrame(() => input?.focus());
+  };
+
+  openBtn.addEventListener('click', () => setOpen(popover.hidden));
+
+  document.addEventListener('click', event => {
+    if (popover.hidden) return;
+    if (popover.contains(event.target) || openBtn.contains(event.target)) return;
+    setOpen(false);
+  });
+
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && !popover.hidden) setOpen(false);
+    if (event.ctrlKey && event.shiftKey && event.code === 'Space') {
+      event.preventDefault();
+      setOpen(popover.hidden);
+    }
+  });
+
+  document.querySelectorAll('[data-wb-goto]').forEach(btn => {
+    btn.addEventListener('click', () => document.getElementById(btn.dataset.wbGoto)?.click());
+  });
+
+  // 捕获浮层是全局唯一录入入口，但它挂在工作台 DOM 里 ——
+  // 从别的页面唤起时先把工作台切出来，否则浮层会跟着父容器一起 display:none。
+  window.__wrOpenCapture = () => {
+    const dashboard = document.getElementById('subview-dashboard');
+    if (dashboard && dashboard.style.display === 'none') {
+      window.__wrRouteTo?.('nav-dashboard');
+    }
+    setOpen(true);
+  };
+
+  // 记录页的「＋ 记一笔」：录入入口只有这一个，这里只是从另一个页面唤起它。
+  document.getElementById('rec-add-btn')?.addEventListener('click', () => {
+    window.__wrOpenCapture?.();
+  });
+
+  const recordCount = document.getElementById('rec-count');
+  if (recordCount && appData) {
+    const total = Object.values(appData.logs || {}).reduce((sum, list) => sum + list.length, 0);
+    recordCount.textContent = total ? `${total} 条` : '';
+  }
+
+  // 空当接龙不占导航位，但功能保留在设置里 —— 它是「不想删，但不该和表格并列」的东西。
+  document.getElementById('open-freecell-btn')?.addEventListener('click', () => {
+    window.__wrRouteTo?.('nav-freecell');
+  });
 }
 
 function setupTitlebar() {
@@ -311,44 +383,66 @@ window.showModal = function(title, htmlContent, onReady, onConfirm, options = {}
 function setupRouting() {
   const landingView = document.getElementById('landing-view'); const workspaceView = document.getElementById('workspace-view');
   if (!landingView || !workspaceView) return;
+
+  // 启动即进工作台：landing 只是历史遗留，不再作为入口。
   landingView.style.display = 'none';
   workspaceView.style.display = 'flex';
   document.getElementById('enter-btn')?.addEventListener('click', () => { landingView.style.display = 'none'; workspaceView.style.display = 'flex'; });
-  document.getElementById('back-btn')?.addEventListener('click', () => { workspaceView.style.display = 'none'; landingView.style.display = 'flex'; });
-  const navBtns = [
-    { btn: document.getElementById('nav-dashboard'), view: document.getElementById('subview-dashboard') },
-    { btn: document.getElementById('nav-notes'), view: document.getElementById('subview-notes') },
-    { btn: document.getElementById('nav-table'), view: document.getElementById('subview-table') },
-    { btn: document.getElementById('nav-timeline'), view: document.getElementById('subview-timeline') },
-    { btn: document.getElementById('nav-freecell'), view: document.getElementById('subview-freecell') },
-    { btn: document.getElementById('nav-search'), view: document.getElementById('subview-search') },
-    { btn: document.getElementById('nav-settings'), view: document.getElementById('subview-settings') }
-  ].filter(item => item.btn && item.view);
-  navBtns.forEach(item => {
-    item.btn.addEventListener('click', async () => {
+
+  // 路由表：按钮与视图分开查。空当接龙已移出主导航（入口收在设置页），
+  // 它的按钮不存在但视图还在，所以 btn 必须允许为空。
+  const routes = [
+    { id: 'nav-dashboard', view: 'subview-dashboard' },
+    { id: 'nav-timeline', view: 'subview-timeline' },
+    { id: 'nav-notes', view: 'subview-notes' },
+    { id: 'nav-table', view: 'subview-table' },
+    { id: 'nav-settings', view: 'subview-settings' },
+    { id: 'nav-freecell', view: 'subview-freecell' }
+  ].map(route => ({
+    id: route.id,
+    btn: document.getElementById(route.id),
+    view: document.getElementById(route.view)
+  })).filter(route => route.view);
+
+  const show = async (id) => {
+    const target = routes.find(route => route.id === id);
+    if (!target) return;
+
     // 离开笔记页前先把未保存的草稿刷到磁盘
-    const leavingNotes = document.getElementById('subview-notes')?.style.display !== 'none'
-      && item.btn.id !== 'nav-notes';
+    const notesView = document.getElementById('subview-notes');
+    const leavingNotes = notesView && notesView.style.display !== 'none' && id !== 'nav-notes';
     if (leavingNotes && typeof window.__wrFlushNotes === 'function') {
       try { await window.__wrFlushNotes(); } catch (error) { console.warn('笔记刷盘失败', error); }
     }
 
-    navBtns.forEach(nav => { nav.view.style.display = 'none'; nav.btn.classList.remove('active'); });
-       item.view.style.display = item.btn.id === 'nav-dashboard' ? '' : 'block'; item.btn.classList.add('active');
-       navBtns.forEach(nav => nav.btn.removeAttribute('aria-current'));
-       item.btn.setAttribute('aria-current', 'page');
-      localStorage.setItem('workRecorder:lastSubview', item.btn.id);
-      if (item.btn.id === 'nav-timeline') renderTimeline();
-      if (item.btn.id === 'nav-table') {
-        try { await initSheetPage(); } catch (error) { logToFile('error', `表格页初始化失败: ${error?.stack || error}`); }
-      }
-      if (item.btn.id === 'nav-search') document.getElementById('global-search-input')?.focus();
+    routes.forEach(route => {
+      route.view.style.display = 'none';
+      route.btn?.classList.remove('active');
+      route.btn?.removeAttribute('aria-current');
     });
+
+    // dashboard 用空字符串恢复样式表默认值（.wb-v2 是 display:grid）；
+    // 其余页面用 block。这里写死 display 会压掉样式表里的 grid 布局。
+    target.view.style.display = id === 'nav-dashboard' ? '' : 'block';
+    target.btn?.classList.add('active');
+    target.btn?.setAttribute('aria-current', 'page');
+    localStorage.setItem('workRecorder:lastSubview', id);
+
+    if (id === 'nav-timeline') renderTimeline();
+    if (id === 'nav-table') {
+      try { await initSheetPage(); } catch (error) { logToFile('error', `表格页初始化失败: ${error?.stack || error}`); }
+    }
+  };
+
+  routes.forEach(route => {
+    route.btn?.addEventListener('click', () => { show(route.id); });
   });
 
+  // 命令面板与设置页都靠这个跳转：视图可以没有按钮，但切换必须只有一条路径。
+  window.__wrRouteTo = show;
+
   const lastSubview = localStorage.getItem('workRecorder:lastSubview');
-  const targetNav = navBtns.find(item => item.btn.id === lastSubview);
-  if (targetNav) targetNav.btn.click();
+  show(routes.some(route => route.id === lastSubview) ? lastSubview : 'nav-dashboard');
 }
 
 function setupTabs() {
@@ -398,6 +492,8 @@ export function updateWorkspaceSummary() {
   setText('summary-completed-count', completedCount);
   setText('summary-today-count', todayCount);
   setText('summary-note-count', noteCount);
+  setText('wb-todo-ratio', pendingCount ? `${pendingCount} 项未完成` : '全部完成');
+  setText('wb-record-count', todayCount ? `${todayCount} 条` : '还没有记录');
 }
 window.updateWorkspaceSummary = updateWorkspaceSummary;
 window.renderTodayTimeline = renderTodayTimeline;

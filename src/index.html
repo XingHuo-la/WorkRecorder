@@ -101,286 +101,307 @@
         </div>
         
         <div class="nav-menu">
-          <button id="nav-dashboard" class="nav-item active" aria-current="page"><span class="nav-item-icon"><svg class="wr-icon" aria-hidden="true"><use href="#ic-home"/></svg></span><span>我的工作台</span></button>
+          <!-- 导航按「一批数据的几种看法」组织，不再按页面堆功能。
+               搜索不再是页面 —— 它是 Ctrl+K 随时可唤起的命令面板。
+               空当接龙移出主导航（入口收在设置页），代码保留。 -->
+          <button id="nav-dashboard" class="nav-item active" aria-current="page"><span class="nav-item-icon"><svg class="wr-icon" aria-hidden="true"><use href="#ic-home"/></svg></span><span>今天</span></button>
+          <button id="nav-timeline" class="nav-item"><span class="nav-item-icon"><svg class="wr-icon" aria-hidden="true"><use href="#ic-clock"/></svg></span><span>记录</span></button>
           <button id="nav-notes" class="nav-item"><span class="nav-item-icon"><svg class="wr-icon" aria-hidden="true"><use href="#ic-notebook"/></svg></span><span>笔记</span></button>
           <button id="nav-table" class="nav-item"><span class="nav-item-icon"><svg class="wr-icon" aria-hidden="true"><use href="#ic-table"/></svg></span><span>表格</span></button>
-          <button id="nav-timeline" class="nav-item"><span class="nav-item-icon"><svg class="wr-icon" aria-hidden="true"><use href="#ic-clock"/></svg></span><span>时间轴</span></button>
-          <button id="nav-freecell" class="nav-item"><span class="nav-item-icon"><svg class="wr-icon" aria-hidden="true"><use href="#ic-cards"/></svg></span><span>空当接龙</span></button>
-          <button id="nav-search" class="nav-item"><span class="nav-item-icon"><svg class="wr-icon" aria-hidden="true"><use href="#ic-search"/></svg></span><span>搜索</span></button>
-          <button id="nav-settings" class="nav-item"><span class="nav-item-icon"><svg class="wr-icon" aria-hidden="true"><use href="#ic-sliders"/></svg></span><span>系统设置</span></button>
         </div>
 
-        <div style="flex: 1;"></div> <button id="back-btn" style="width: 100%;">返回</button>
+        <div style="flex: 1;"></div>
+
+        <div class="sidebar-foot">
+          <button type="button" id="cmdk-open-btn" class="sidebar-cmdk" title="搜索记录、笔记、表格（Ctrl+K）">
+            <span class="nav-item-icon"><svg class="wr-icon" aria-hidden="true"><use href="#ic-search"/></svg></span>
+            <span class="sidebar-cmdk-label">搜索</span>
+            <kbd class="sidebar-cmdk-kbd">Ctrl K</kbd>
+          </button>
+          <button id="nav-settings" class="nav-item"><span class="nav-item-icon"><svg class="wr-icon" aria-hidden="true"><use href="#ic-sliders"/></svg></span><span>设置</span></button>
+        </div>
       </div>
       
       <div class="main-content">
         
-        <div id="subview-dashboard" class="subview">
-          <div class="dashboard-hero">
-            <div class="dashboard-title-copy">
-              <span class="subview-kicker">TODAY</span>
-              <h1>今日工作台</h1>
-              <p>先把今天要做的事、发生的事丢进来，整理可以往后放。</p>
+        <div id="subview-dashboard" class="subview wb-v2">
+          <header class="wb-head">
+            <div class="wb-head-left">
+              <h1>今天</h1>
+              <span id="wb-date" class="wb-head-date"></span>
             </div>
-            <div class="workspace-summary compact-summary" id="workspace-summary" aria-live="polite">
-              <span class="summary-label">今天的工作节奏</span>
-              <span class="summary-stat"><strong id="summary-pending-count">0</strong><small>待办</small></span>
-              <span class="summary-stat"><strong id="summary-completed-count">0</strong><small>完成</small></span>
-              <span class="summary-stat"><strong id="summary-today-count">0</strong><small>记录</small></span>
-              <span class="summary-stat"><strong id="summary-note-count">0</strong><small>笔记</small></span>
+            <div class="wb-head-right">
+              <div class="workspace-summary compact-summary" id="workspace-summary" aria-live="polite">
+                <span class="summary-stat"><strong id="summary-pending-count">0</strong><small>待办</small></span>
+                <span class="summary-stat"><strong id="summary-completed-count">0</strong><small>完成</small></span>
+                <span class="summary-stat"><strong id="summary-today-count">0</strong><small>记录</small></span>
+                <span class="summary-stat"><strong id="summary-note-count">0</strong><small>笔记</small></span>
+              </div>
+              <button type="button" id="capture-open-btn" class="primary-btn wb-capture-btn" aria-controls="capture-popover" aria-expanded="false" title="Ctrl+Shift+Space">＋ 记一笔</button>
+            </div>
+          </header>
+
+          <div class="wb-col wb-col-main">
+            <div class="task-tree-section">
+              <div class="section-heading-row">
+                <h2>今日待办</h2>
+                <span id="wb-todo-ratio" class="wb-section-meta"></span>
+              </div>
+              <div id="todo-list-container" class="task-tree-container"></div>
+            </div>
+
+            <div class="today-section">
+              <div class="section-heading-row">
+                <h2>今天的记录</h2>
+                <span id="wb-record-count" class="wb-section-meta"></span>
+              </div>
+              <div id="today-timeline-container"></div>
+            </div>
+
+            <section class="completed-todos-section" aria-label="已完成待办">
+              <div id="completed-todos-container" class="completed-todos-container"></div>
+            </section>
+          </div>
+
+          <div class="wb-col wb-col-side">
+            <section class="inbox-section" aria-labelledby="inbox-title">
+              <div class="inbox-section-head">
+                <div><h2 id="inbox-title">待整理</h2></div>
+                <button type="button" id="inbox-collapse-toggle" class="inbox-collapse-toggle" aria-expanded="true" aria-controls="inbox-records-container" aria-label="收起待整理">-</button>
+              </div>
+              <div id="inbox-records-container" class="inbox-records-container"></div>
+            </section>
+
+            <div class="advanced-tools-strip wb-links">
+              <h2>其他入口</h2>
+              <button id="legacy-tools-toggle" type="button" class="wb-link-btn" aria-controls="legacy-capture-area" aria-expanded="false">完整录入 · 补录历史</button>
+              <button type="button" class="wb-link-btn" data-wb-goto="nav-notes">全部笔记</button>
+              <button type="button" class="wb-link-btn" data-wb-goto="nav-timeline">时间轴</button>
             </div>
           </div>
 
-          <div class="input-card composer-card">
-            <div class="quick-capture">
-              <div class="composer-eyebrow">
-                <label for="quick-capture-input" class="composer-eyebrow-label">快速记录</label>
-                <span id="quick-capture-draft-status" class="quick-capture-draft-status" aria-live="polite"></span>
-              </div>
-              <textarea id="quick-capture-input" class="quick-capture-input" aria-keyshortcuts="Control+Enter Meta+Enter" placeholder="先把事情写下来，不用急着分类……"></textarea>
-              <div class="quick-capture-footer">
-                <div class="quick-capture-hint">
-                  <span>Enter 换行</span>
-                  <span class="shortcut-key">Ctrl</span><span>+</span><span class="shortcut-key">Enter</span><span>保存</span>
-                </div>
-                <span id="quick-capture-toast" class="quick-capture-toast" aria-live="polite"></span>
-                <button id="quick-add-todo" type="button" class="icon-btn quick-todo-btn">转待办</button>
-                <button id="quick-save-note" type="button" class="icon-btn quick-note-direct-btn">转笔记</button>
-                <button id="quick-save-log" type="button" class="icon-btn quick-log-direct-btn">记流水</button>
-                <button id="quick-capture-save" type="button" class="primary-btn quick-save-btn">收进待整理</button>
-              </div>
-            </div>
+          <div id="capture-popover" class="wb-popover" hidden>
+              <div class="input-card composer-card">
+                          <div class="quick-capture">
+                            <div class="composer-eyebrow">
+                              <label for="quick-capture-input" class="composer-eyebrow-label">快速记录</label>
+                              <span id="quick-capture-draft-status" class="quick-capture-draft-status" aria-live="polite"></span>
+                            </div>
+                            <textarea id="quick-capture-input" class="quick-capture-input" aria-keyshortcuts="Control+Enter Meta+Enter" placeholder="先把事情写下来，不用急着分类……"></textarea>
+                            <div class="quick-capture-footer">
+                              <div class="quick-capture-hint">
+                                <span>Enter 换行</span>
+                                <span class="shortcut-key">Ctrl</span><span>+</span><span class="shortcut-key">Enter</span><span>保存</span>
+                              </div>
+                              <span id="quick-capture-toast" class="quick-capture-toast" aria-live="polite"></span>
+                              <button id="quick-add-todo" type="button" class="icon-btn quick-todo-btn">转待办</button>
+                              <button id="quick-save-note" type="button" class="icon-btn quick-note-direct-btn">转笔记</button>
+                              <button id="quick-save-log" type="button" class="icon-btn quick-log-direct-btn">记流水</button>
+                              <button id="quick-capture-save" type="button" class="primary-btn quick-save-btn">收进待整理</button>
+                            </div>
+                          </div>
 
-          </div>
+                        </div>
 
-          <section class="inbox-section" aria-labelledby="inbox-title">
-            <div class="inbox-section-head">
-              <div>
-                <h2 id="inbox-title">待整理</h2>
-              </div>
-              <button type="button" id="inbox-collapse-toggle" class="inbox-collapse-toggle" aria-expanded="true" aria-controls="inbox-records-container" aria-label="收起待整理">-</button>
-            </div>
-            <div id="inbox-records-container" class="inbox-records-container"></div>
-          </section>
 
-          <div class="task-tree-section">
-            <div class="section-heading-row">
-              <h2>今日待办 / 待办任务树</h2>
-            </div>
-            <div id="todo-list-container" class="task-tree-container"></div>
-          </div>
-
-          <div class="advanced-tools-strip">
-            <div>
-              <h2>完整录入</h2>
-              <p>分类、时间、拆分任务或补录历史。</p>
-            </div>
-            <button id="legacy-tools-toggle" type="button" class="text-link-btn" aria-controls="legacy-capture-area" aria-expanded="false">打开完整录入</button>
           </div>
 
           <div id="legacy-capture-area" class="legacy-capture-area" aria-hidden="true">
-            <div class="legacy-tools-header">
-              <div>
-                <h2>完整录入</h2>
-                <p>补录流水、待办或笔记。</p>
-              </div>
-              <button id="legacy-tools-collapse" type="button" class="text-link-btn" aria-controls="legacy-capture-area" aria-expanded="true">收起</button>
-            </div>
+                      <div class="legacy-tools-header">
+                        <div>
+                          <h2>完整录入</h2>
+                          <p>补录流水、待办或笔记。</p>
+                        </div>
+                        <button id="legacy-tools-collapse" type="button" class="text-link-btn" aria-controls="legacy-capture-area" aria-expanded="true">收起</button>
+                      </div>
 
-            <div class="composer-section-label">类型</div>
-              <div class="tab-buttons composer-segment legacy-mode-switch" aria-label="整理模式">
-                <button id="tab-log-btn" class="tab-btn active">流水</button>
-                <button id="tab-todo-btn" class="tab-btn">待办</button>
-                <button id="tab-note-btn" class="tab-btn">笔记</button>
-              </div>
+                      <div class="composer-section-label">类型</div>
+                        <div class="tab-buttons composer-segment legacy-mode-switch" aria-label="整理模式">
+                          <button id="tab-log-btn" class="tab-btn active">流水</button>
+                          <button id="tab-todo-btn" class="tab-btn">待办</button>
+                          <button id="tab-note-btn" class="tab-btn">笔记</button>
+                        </div>
 
-            <div id="panel-log" class="tab-panel composer-panel">
-              <div class="composer-section">
-                <div class="composer-section-label">内容</div>
-                <input type="text" id="log-task-input" placeholder="记录发生了什么" class="hero-input composer-main-input" />
-              </div>
+                      <div id="panel-log" class="tab-panel composer-panel">
+                        <div class="composer-section">
+                          <div class="composer-section-label">内容</div>
+                          <input type="text" id="log-task-input" placeholder="记录发生了什么" class="hero-input composer-main-input" />
+                        </div>
 
-              <div class="composer-section">
-                <div class="composer-section-label">时间</div>
-                <div class="legacy-inline-controls">
-                  <div class="time-control">
-                    <label class="checkbox-label">
-                      <input type="checkbox" id="log-use-current-time" checked> 自动时间
-                    </label>
-                    <input type="text" id="log-manual-datetime" style="display: none;" class="datetime-input" placeholder="选择时间..." />
-                  </div>
-                  <div class="deadline-control">
-                    <label class="checkbox-label">
-                      <input type="checkbox" id="log-has-deadline"> 截至日期
-                    </label>
-                    <input type="text" id="log-deadline-input" style="display: none;" class="datetime-input" placeholder="选择截止时间..." />
-                  </div>
-                </div>
-              </div>
+                        <div class="composer-section">
+                          <div class="composer-section-label">时间</div>
+                          <div class="legacy-inline-controls">
+                            <div class="time-control">
+                              <label class="checkbox-label">
+                                <input type="checkbox" id="log-use-current-time" checked> 自动时间
+                              </label>
+                              <input type="text" id="log-manual-datetime" style="display: none;" class="datetime-input" placeholder="选择时间..." />
+                            </div>
+                            <div class="deadline-control">
+                              <label class="checkbox-label">
+                                <input type="checkbox" id="log-has-deadline"> 截至日期
+                              </label>
+                              <input type="text" id="log-deadline-input" style="display: none;" class="datetime-input" placeholder="选择截止时间..." />
+                            </div>
+                          </div>
+                        </div>
 
-              <div class="composer-section">
-                <div class="composer-section-label">归属</div>
-              <div class="form-row legacy-owner-row">
-                <div class="field-col">
-                  <label class="field-label">主分类</label>
-                  <select id="log-tag-select" class="hero-input select-hero"></select>
-                  <input type="text" id="log-tag-new" class="hero-input" style="display: none; margin-top: 8px;" placeholder="输入新主分类..." />
-                </div>
-                <div class="field-col">
-                  <label class="field-label">子项目</label>
-                  <select id="log-sub-tag-select" class="hero-input select-hero"></select>
-                  <input type="text" id="log-sub-tag-new" class="hero-input" style="display: none; margin-top: 8px;" placeholder="输入新子项目..." />
-                </div>
-              </div>
-              </div>
+                        <div class="composer-section">
+                          <div class="composer-section-label">归属</div>
+                        <div class="form-row legacy-owner-row">
+                          <div class="field-col">
+                            <label class="field-label">主分类</label>
+                            <select id="log-tag-select" class="hero-input select-hero"></select>
+                            <input type="text" id="log-tag-new" class="hero-input" style="display: none; margin-top: 8px;" placeholder="输入新主分类..." />
+                          </div>
+                          <div class="field-col">
+                            <label class="field-label">子项目</label>
+                            <select id="log-sub-tag-select" class="hero-input select-hero"></select>
+                            <input type="text" id="log-sub-tag-new" class="hero-input" style="display: none; margin-top: 8px;" placeholder="输入新子项目..." />
+                          </div>
+                        </div>
+                        </div>
 
-              <div class="composer-section">
-                <div class="composer-section-label">说明</div>
-                <textarea id="log-detail-input" placeholder="详细说明 (可选)... 补充具体细节、思路或复盘..." class="hero-textarea"></textarea>
-              </div>
+                        <div class="composer-section">
+                          <div class="composer-section-label">说明</div>
+                          <textarea id="log-detail-input" placeholder="详细说明 (可选)... 补充具体细节、思路或复盘..." class="hero-textarea"></textarea>
+                        </div>
 
-              <div class="composer-section">
-                <div class="composer-section-label">状态</div>
-              <div class="form-actions">
-                <div class="action-controls">
-                  <div class="status-control legacy-inline-controls">
-                    <label class="radio-label success-text"><input type="radio" name="log-status" value="normal" checked> 正常</label>
-                    <label class="radio-label danger-text"><input type="radio" name="log-status" value="overdue"> 延期</label>
-                  </div>
-                </div>
-                <button id="add-log-btn" class="btn btn-primary legacy-save-btn">保存流水</button>
-              </div>
-              </div>
-            </div>
+                        <div class="composer-section">
+                          <div class="composer-section-label">状态</div>
+                        <div class="form-actions">
+                          <div class="action-controls">
+                            <div class="status-control legacy-inline-controls">
+                              <label class="radio-label success-text"><input type="radio" name="log-status" value="normal" checked> 正常</label>
+                              <label class="radio-label danger-text"><input type="radio" name="log-status" value="overdue"> 延期</label>
+                            </div>
+                          </div>
+                          <button id="add-log-btn" class="btn btn-primary legacy-save-btn">保存流水</button>
+                        </div>
+                        </div>
+                      </div>
 
-            <div id="panel-todo" class="tab-panel composer-panel" style="display: none;">
-              <div class="composer-section">
-                <div class="composer-section-label">内容</div>
-                <input type="text" id="todo-task-input" placeholder="输入要做的事" class="hero-input composer-main-input" />
-              </div>
+                      <div id="panel-todo" class="tab-panel composer-panel" style="display: none;">
+                        <div class="composer-section">
+                          <div class="composer-section-label">内容</div>
+                          <input type="text" id="todo-task-input" placeholder="输入要做的事" class="hero-input composer-main-input" />
+                        </div>
 
-              <div class="composer-section">
-                <div class="composer-section-label">时间</div>
-                <label class="checkbox-label" style="margin-bottom: 8px;">
-                  <input type="checkbox" id="todo-has-date-range"> 计划时间
-                </label>
-                <div id="todo-date-range-fields" style="display: none; align-items: center; gap: 10px; flex-wrap: wrap;">
-                  <div id="todo-time-range-picker"></div>
-                  <input type="text" id="todo-start-input" class="datetime-input time-range-compatible-input" placeholder="开始时间..." readonly />
-                  <input type="text" id="todo-end-input" class="datetime-input time-range-compatible-input" placeholder="结束/截止时间..." readonly />
-                </div>
-              </div>
+                        <div class="composer-section">
+                          <div class="composer-section-label">时间</div>
+                          <label class="checkbox-label" style="margin-bottom: 8px;">
+                            <input type="checkbox" id="todo-has-date-range"> 计划时间
+                          </label>
+                          <div id="todo-date-range-fields" style="display: none; align-items: center; gap: 10px; flex-wrap: wrap;">
+                            <div id="todo-time-range-picker"></div>
+                            <input type="text" id="todo-start-input" class="datetime-input time-range-compatible-input" placeholder="开始时间..." readonly />
+                            <input type="text" id="todo-end-input" class="datetime-input time-range-compatible-input" placeholder="结束/截止时间..." readonly />
+                          </div>
+                        </div>
 
-              <div class="composer-section">
-                <div class="composer-section-label">归属</div>
-              <div class="form-row legacy-owner-row">
-                <div class="field-col">
-                  <label class="field-label">主分类</label>
-                  <select id="todo-tag-select" class="hero-input select-hero"></select>
-                  <input type="text" id="todo-tag-new" class="hero-input" style="display: none; margin-top: 8px;" placeholder="输入新主分类..." />
-                </div>
-                <div class="field-col">
-                  <label class="field-label">子项目</label>
-                  <select id="todo-sub-tag-select" class="hero-input select-hero"></select>
-                  <input type="text" id="todo-sub-tag-new" class="hero-input" style="display: none; margin-top: 8px;" placeholder="输入新子项目..." />
-                </div>
-              </div>
-              </div>
+                        <div class="composer-section">
+                          <div class="composer-section-label">归属</div>
+                        <div class="form-row legacy-owner-row">
+                          <div class="field-col">
+                            <label class="field-label">主分类</label>
+                            <select id="todo-tag-select" class="hero-input select-hero"></select>
+                            <input type="text" id="todo-tag-new" class="hero-input" style="display: none; margin-top: 8px;" placeholder="输入新主分类..." />
+                          </div>
+                          <div class="field-col">
+                            <label class="field-label">子项目</label>
+                            <select id="todo-sub-tag-select" class="hero-input select-hero"></select>
+                            <input type="text" id="todo-sub-tag-new" class="hero-input" style="display: none; margin-top: 8px;" placeholder="输入新子项目..." />
+                          </div>
+                        </div>
+                        </div>
 
-              <div class="composer-section">
-                <div class="composer-section-label">说明</div>
-                <textarea id="todo-detail-input" placeholder="详细说明 (可选)... 记录执行标准、灵感或补充信息..." class="hero-textarea"></textarea>
-              </div>
+                        <div class="composer-section">
+                          <div class="composer-section-label">说明</div>
+                          <textarea id="todo-detail-input" placeholder="详细说明 (可选)... 记录执行标准、灵感或补充信息..." class="hero-textarea"></textarea>
+                        </div>
 
-              <div class="composer-section">
-                <div class="composer-section-label">其他选项</div>
-              <div class="form-actions">
-                <div class="action-controls">
-                  <div class="parent-task-control" style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
-                    <label class="checkbox-label">
-                      <input type="checkbox" id="todo-has-parent"> 设为下级任务
-                    </label>
-                    <select id="todo-parent-select" class="datetime-input" style="display: none; width: 260px !important;"></select>
-                  </div>
-                </div>
-                <button id="add-todo-btn" class="btn btn-primary legacy-save-btn">保存待办</button>
-              </div>
-              </div>
-            </div>
+                        <div class="composer-section">
+                          <div class="composer-section-label">其他选项</div>
+                        <div class="form-actions">
+                          <div class="action-controls">
+                            <div class="parent-task-control" style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+                              <label class="checkbox-label">
+                                <input type="checkbox" id="todo-has-parent"> 设为下级任务
+                              </label>
+                              <select id="todo-parent-select" class="datetime-input" style="display: none; width: 260px !important;"></select>
+                            </div>
+                          </div>
+                          <button id="add-todo-btn" class="btn btn-primary legacy-save-btn">保存待办</button>
+                        </div>
+                        </div>
+                      </div>
 
-            <div id="panel-note" class="tab-panel composer-panel note-composer" style="display: none;">
-              <div class="composer-section note-editor-shell">
-                <div class="composer-section-label">内容</div>
-                <textarea id="note-content-input" class="hero-textarea note-main-input" placeholder="写下想法或结论"></textarea>
-              </div>
+                      <div id="panel-note" class="tab-panel composer-panel note-composer" style="display: none;">
+                        <div class="composer-section note-editor-shell">
+                          <div class="composer-section-label">内容</div>
+                          <textarea id="note-content-input" class="hero-textarea note-main-input" placeholder="写下想法或结论"></textarea>
+                        </div>
 
-              <div class="composer-section">
-                <div class="composer-section-label">时间</div>
-                <p class="legacy-muted-text">保存时使用当前时间。</p>
-              </div>
+                        <div class="composer-section">
+                          <div class="composer-section-label">时间</div>
+                          <p class="legacy-muted-text">保存时使用当前时间。</p>
+                        </div>
 
-              <div class="composer-section">
-                <div class="composer-section-label">归属</div>
-              <div class="form-row note-meta-row legacy-owner-row">
-                <div class="field-col">
-                  <label class="field-label">主分类</label>
-                  <select id="note-tag-select" class="hero-input select-hero"></select>
-                  <input type="text" id="note-tag-new" class="hero-input" style="display: none; margin-top: 8px;" placeholder="输入新主分类..." />
-                </div>
-                <div class="field-col">
-                  <label class="field-label">子项目</label>
-                  <select id="note-sub-tag-select" class="hero-input select-hero"></select>
-                  <input type="text" id="note-sub-tag-new" class="hero-input" style="display: none; margin-top: 8px;" placeholder="输入新子项目..." />
-                </div>
-              </div>
-              </div>
+                        <div class="composer-section">
+                          <div class="composer-section-label">归属</div>
+                        <div class="form-row note-meta-row legacy-owner-row">
+                          <div class="field-col">
+                            <label class="field-label">主分类</label>
+                            <select id="note-tag-select" class="hero-input select-hero"></select>
+                            <input type="text" id="note-tag-new" class="hero-input" style="display: none; margin-top: 8px;" placeholder="输入新主分类..." />
+                          </div>
+                          <div class="field-col">
+                            <label class="field-label">子项目</label>
+                            <select id="note-sub-tag-select" class="hero-input select-hero"></select>
+                            <input type="text" id="note-sub-tag-new" class="hero-input" style="display: none; margin-top: 8px;" placeholder="输入新子项目..." />
+                          </div>
+                        </div>
+                        </div>
 
-              <div class="composer-section">
-                <div class="composer-section-label">说明</div>
-                <div class="note-action-field" style="display:none;">
-                  <input type="text" id="note-action-input" class="hero-input" placeholder="可选：顺手生成一个后续待办..." />
-                </div>
-              </div>
+                        <div class="composer-section">
+                          <div class="composer-section-label">说明</div>
+                          <div class="note-action-field" style="display:none;">
+                            <input type="text" id="note-action-input" class="hero-input" placeholder="可选：顺手生成一个后续待办..." />
+                          </div>
+                        </div>
 
-              <div class="composer-section">
-                <div class="composer-section-label">其他选项</div>
-              <div class="note-type-chips" aria-label="笔记类型">
-                <button type="button" class="note-chip-btn active" data-note-type="idea">想法</button>
-                <button type="button" class="note-chip-btn" data-note-type="problem">问题</button>
-                <button type="button" class="note-chip-btn" data-note-type="source">资料</button>
-                <button type="button" class="note-chip-btn" data-note-type="decision">决策</button>
-                <button type="button" class="note-chip-btn" data-note-type="method">方法</button>
-                <button type="button" class="note-chip-btn" data-note-type="review">复盘</button>
-              </div>
+                        <div class="composer-section">
+                          <div class="composer-section-label">其他选项</div>
+                        <div class="note-type-chips" aria-label="笔记类型">
+                          <button type="button" class="note-chip-btn active" data-note-type="idea">想法</button>
+                          <button type="button" class="note-chip-btn" data-note-type="problem">问题</button>
+                          <button type="button" class="note-chip-btn" data-note-type="source">资料</button>
+                          <button type="button" class="note-chip-btn" data-note-type="decision">决策</button>
+                          <button type="button" class="note-chip-btn" data-note-type="method">方法</button>
+                          <button type="button" class="note-chip-btn" data-note-type="review">复盘</button>
+                        </div>
 
-              <select id="note-type-select" class="hero-input select-hero note-type-select-field" aria-label="记录类型">
-                    <option value="idea">想法</option>
-                    <option value="problem">问题</option>
-                    <option value="source">资料</option>
-                    <option value="decision">决策</option>
-                    <option value="method">方法</option>
-                    <option value="review">复盘</option>
-                  </select>
+                        <select id="note-type-select" class="hero-input select-hero note-type-select-field" aria-label="记录类型">
+                              <option value="idea">想法</option>
+                              <option value="problem">问题</option>
+                              <option value="source">资料</option>
+                              <option value="decision">决策</option>
+                              <option value="method">方法</option>
+                              <option value="review">复盘</option>
+                            </select>
 
-              <div class="form-actions note-actions">
-                <div class="action-controls">
-                  <button type="button" id="toggle-note-action-btn" class="icon-btn">+ 后续待办</button>
-                </div>
-                <button id="add-note-btn" class="btn btn-primary legacy-save-btn">保存笔记</button>
-              </div>
-              </div>
-            </div>
-          </div>
+                        <div class="form-actions note-actions">
+                          <div class="action-controls">
+                            <button type="button" id="toggle-note-action-btn" class="icon-btn">+ 后续待办</button>
+                          </div>
+                          <button id="add-note-btn" class="btn btn-primary legacy-save-btn">保存笔记</button>
+                        </div>
+                        </div>
+                      </div>
+                    </div>
 
-          <hr class="divider" />
 
-          <div class="today-section">
-            <h2>今日时间线</h2>
-            <div id="today-timeline-container"></div>
-          </div>
-          <section class="completed-todos-section" aria-label="已完成待办">
-            <div id="completed-todos-container" class="completed-todos-container"></div>
-          </section>
+
           <div id="history-list-container" class="legacy-hidden-list"></div>
         </div>
 
@@ -453,29 +474,24 @@
           <div id="sheet-app" class="sheet-app"></div>
         </div>
 
-        <div id="subview-timeline" class="subview" style="display: none;">
-          <header class="subview-page-head timeline-page-head">
-            <div>
-              <span class="subview-kicker">WORK HISTORY</span>
-              <h1>时间轴</h1>
-              <p>按日期回看工作记录、任务进展与补充说明。</p>
+        <div id="subview-timeline" class="subview records-v2" style="display: none;">
+          <!-- 「记录」= 过去的时间轴。页面头压成一行：标题 + 计数 + 内联筛选。
+               原设计是 kicker + 大标题 + 说明 + 独立筛选卡，四层才轮到内容。 -->
+          <header class="rec-head">
+            <div class="rec-head-left">
+              <h1>记录</h1>
+              <span id="rec-count" class="rec-head-count"></span>
+            </div>
+            <div class="rec-head-right">
+              <label class="rec-filter">
+                <select id="timeline-main-filter" aria-label="按主分类筛选"></select>
+              </label>
+              <label class="rec-filter">
+                <select id="timeline-sub-filter" aria-label="按子项目筛选"></select>
+              </label>
+              <button type="button" id="rec-add-btn" class="primary-btn">＋ 记一笔</button>
             </div>
           </header>
-
-          <div class="timeline-filter-card" aria-label="时间轴筛选">
-            <div class="timeline-filter-copy">
-              <strong>筛选记录</strong>
-              <span>聚焦一个分类或项目，快速缩小历史范围。</span>
-            </div>
-            <label class="timeline-filter-field">
-              <span>主分类</span>
-              <select id="timeline-main-filter"></select>
-            </label>
-            <label class="timeline-filter-field">
-              <span>子项目</span>
-              <select id="timeline-sub-filter"></select>
-            </label>
-          </div>
 
           <div id="timeline-container"></div>
         </div>
@@ -526,27 +542,8 @@
           </section>
         </div>
 
-        <div id="subview-search" class="subview" style="display: none;">
-          <header class="subview-page-head search-page-head">
-            <div>
-              <span class="subview-kicker">SEARCH</span>
-              <h1>搜索</h1>
-              <p>输入关键词，查找历史流水、待办和笔记。</p>
-            </div>
-          </header>
-
-          <div class="input-card search-panel">
-            <form id="global-search-form" class="global-search-form">
-              <input id="global-search-input" class="hero-input" type="search" placeholder="搜索关键词..." autocomplete="off" />
-              <button class="primary-btn" type="submit">搜索</button>
-            </form>
-            <div id="global-search-status" class="search-status" aria-live="polite"></div>
-          </div>
-
-          <div id="global-search-results" class="search-results">
-            <div class="search-empty">请输入关键词后搜索。</div>
-          </div>
-        </div>
+        <!-- 独立搜索页已下线：搜索改为 Ctrl+K 命令面板。
+             两者功能重叠，但页面形态要求用户先「去搜索」，而搜索是一个随时发生的动作。 -->
 
         <div id="subview-settings" class="subview" style="display: none;">
           <header class="subview-page-head settings-page-head">
@@ -591,6 +588,10 @@
                 <div><h2 id="settings-freecell-title">空当接龙</h2><p>这些偏好与游戏页面的“选项”菜单保持同步。</p></div>
               </div>
               <div class="settings-list">
+                <div class="settings-row">
+                  <div class="settings-row-copy"><strong>打开游戏</strong><span>空当接龙已移出主导航 —— 它不是日常工作的一部分，但没删。</span></div>
+                  <div class="settings-row-control"><button id="open-freecell-btn" class="icon-btn">开始一局</button></div>
+                </div>
                 <label class="settings-row settings-toggle-row"><span class="settings-row-copy"><strong>安全自动收牌</strong><span>只在不会明显降低可解性的情况下自动移入基础区。</span></span><input id="setting-freecell-auto-foundation" type="checkbox" class="settings-switch" checked></label>
                 <label class="settings-row settings-toggle-row"><span class="settings-row-copy"><strong>撤销计入步数</strong><span>默认开启，关闭后撤销不增加步数。</span></span><input id="setting-freecell-count-undo" type="checkbox" class="settings-switch" checked></label>
                 <label class="settings-row settings-toggle-row"><span class="settings-row-copy"><strong>发牌后立即计时</strong><span>关闭时从第一次有效移动开始计时。</span></span><input id="setting-freecell-timer-on-deal" type="checkbox" class="settings-switch"></label>
@@ -613,7 +614,7 @@
                 <div class="settings-card-title-wrap"><span class="settings-card-icon" aria-hidden="true"><svg class="wr-icon" aria-hidden="true"><use href="#ic-tag"/></svg></span><div><h2 id="settings-tags-title">标签库管理</h2><p>活跃标签会出现在录入和筛选控件中。</p></div></div>
                 <input type="text" id="search-tag-input" class="hero-input settings-search-input" placeholder="搜索主分类或子项目" />
               </div>
-              <div class="settings-tag-create"><label for="new-tag-input">添加主标签</label><input type="text" id="new-tag-input" class="hero-input" placeholder="输入新主标签..."><button id="add-tag-btn" class="primary-btn">创建标签</button></div>
+              <div class="settings-tag-create"><label for="new-tag-input">添加主标签</label><input type="text" id="new-tag-input" class="hero-input" placeholder="输入新主标签..."><button id="add-tag-btn" class="primary-btn">创建标签</button><button id="cleanup-tags-btn" class="icon-btn" title="删除没有任何记录引用的分类">清理未使用</button></div>
               <div id="tags-library-container" class="settings-tag-library"></div>
             </section>
 
@@ -628,6 +629,25 @@
 
         </div>
 
+      </div>
+    </div>
+
+    <!-- 命令面板：Ctrl+K 唤起。搜索与动作用同一个框，
+         因为「我要找那条记录」和「我要去某处」在心里是一件事。 -->
+    <div id="cmdk-overlay" class="cmdk-overlay" hidden>
+      <div class="cmdk" role="dialog" aria-modal="true" aria-label="搜索与命令">
+        <div class="cmdk-bar">
+          <svg class="cmdk-bar-icon wr-icon" aria-hidden="true"><use href="#ic-search"/></svg>
+          <input id="cmdk-input" class="cmdk-input" type="text" autocomplete="off" spellcheck="false"
+                 placeholder="搜索记录、笔记、表格行…" aria-controls="cmdk-list" />
+          <button type="button" id="cmdk-close" class="cmdk-close" aria-label="关闭">Esc</button>
+        </div>
+        <div id="cmdk-list" class="cmdk-list" role="listbox" aria-label="搜索结果"></div>
+        <div class="cmdk-foot">
+          <span class="cmdk-hint"><kbd>↑</kbd><kbd>↓</kbd> 选择</span>
+          <span class="cmdk-hint"><kbd>Enter</kbd> 打开</span>
+          <span id="cmdk-meta" class="cmdk-meta"></span>
+        </div>
       </div>
     </div>
 

@@ -1,0 +1,235 @@
+%% WorkRecorder 表格为核心重构 · 类图（数据模型 + 服务模块）
+%% 说明：JS 无类型系统，图中类型标注即 JSDoc 约定，实施时按此对齐。
+classDiagram
+    direction TB
+
+    %% ---------- 存储层：唯一真相 ----------
+    class record {
+        <<table>>
+        +int id PK
+        +string kind  %% 'log'|'todo'|'sheet_row' 出生地，不随移入表格改变
+        +string title
+        +string body  %% 正文 Markdown，行详情「关闭即保存」
+        +string remark
+        +string status  %% 'inbox'|'pending'|'doing'|'done'
+        +string happened_date
+        +string happened_time
+        +string deadline
+        +string tag
+        +string sub_tag
+        +int parent_id  %% 任意 record 的父（原仅待办）
+        +string linked_todo
+        +int is_overdue
+        +string record_type
+        +int sheet_id  %% 归属表；null = 不属于任何表
+        +real sort
+        +int height
+        +string start_at
+        +string end_at
+        +string completed_at
+        +string custom  %% JSON：表格字段值容器，不放业务键
+        +int legacy_id  %% 仅 v10 迁移写入
+        +string created_at
+        +string updated_at
+    }
+
+    class sheet {
+        <<table>>
+        +int id PK
+        +string name
+        +int task_id  %% 挂载点（anchor）：这张表被挂在哪一行上。null = 未挂载的独立表
+        +string created_at
+        +string updated_at
+        +int sort
+    }
+
+    class sheet_field {
+        <<table>>
+        +int id PK
+        +int sheet_id FK
+        +string key
+        +string label
+        +string type  %% text|number|select|multi_select|date|checkbox|attachment|relation
+        +string options  %% JSON: {source,options,targetSheetId?,multiple?,format?,wrap?,dateOnly?}
+        +int width
+        +int sort
+        +int visible
+    }
+
+    class note_index {
+        <<table>>
+        +int id PK
+        +string rel_path UNIQUE
+        +string title
+        +string note_type
+        +string status
+        +string tag
+        +string sub_tag
+        +int record_id  %% 新增：这条笔记挂在哪条 record 上；真相在 .md front-matter
+        +string created_at
+        +string updated_at
+    }
+
+    class views_frozen {
+        <<view, 冻结>>
+        logs
+        todos
+        sheet_row
+    }
+
+    %% ---------- 数据访问层 ----------
+    class sheetStore {
+        <<module>>
+        +setSheetAdapter(adapter)
+        +loadRows(sheetId) RecordRow[]
+        +insertRow(sheetId, values, kind) int
+        +insertRowAt(sheetId, sortIndex, count, values)
+        +saveRowValues(rowId, values)
+        +setRowHeight(rowId, height)
+        +deleteRow(rowId)
+        +loadFields(sheetId) Field[]
+        +listSheets() SheetSummary[]
+        +createSheet(name, anchorRecordId, templateKey) int
+        +setSheetAnchor(sheetId, anchorRecordId)
+        +listSheets() SheetSummary[]  %% 含只读别名 anchor_record_id
+        +deleteSheet(sheetId)
+        +parseOptions(field) object
+        +mergeFieldOptions(field, patch) string
+        +parseRowData(row) object
+        +rowTitle(values, fields) string
+        +describeField(field) string  %% 同步，relation 只显示「关联」
+    }
+
+    class recordStore {
+        <<module, 新建>>
+        +setRecordAdapter(adapter)
+        +getRecord(id) RecordRow
+        +listChildren(parentId) RecordRow[]
+        +listAncestors(recordId, opts) Ancestor[]
+        +listChildSheets(recordId) SheetSummary[]
+        +patchRecord(id, patch)  %% nullable 走 SQL 字面量 NULL
+        +createRecord(fields) int
+        +setParent(childId, parentId) Result
+        +deleteRecord(id) Result
+        +moveRecordToSheet(recordId, sheetId)  %% kind 不变
+        +removeRecordFromSheet(recordId)
+    }
+
+    class recordTree {
+        <<module, 纯函数>>
+        +wouldCreateCycle(childId, parentId, parentOf) bool
+        +buildForest(rows) {roots, byId, depthById}  %% O(n)，无递归 SQL
+        +flattenVisibleTree(rows, collapsedIds, opts) VisibleNode[]
+        %% VisibleNode = {row, depth(不封顶), indent(≥3层封顶), pathPrefix, pathFull, hasChildren, childCount}
+        %% opts = {indentMax:3, pathPrefix:true, indentStep:16}
+    }
+
+    %% ---------- 字段渲染层 ----------
+    class fieldTypes {
+        <<module, 同步纯函数>>
+        +FIELD_TYPE_ORDER
+        +FIELD_TYPE_LABELS
+        +TYPE_ICON_IDS
+        +renderCell(field, value, ctx) string
+        +openCellEditor(cellEl, field, value, actions)
+        +resolveOptions(field, ctx) Option[]
+        +normalizeMulti(value) string[]
+    }
+
+    class relationField {
+        <<module, 新建>>
+        +renderRelationCell(field, value, ctx) string  %% 必须同步
+        +resolveRelation(value, cache) RelationTarget[]
+        +hydrateRelations(rows, fields, cache)  %% 批量 IN 预取
+        +findBacklinks(recordId, sheetId) Backlink[]  %% 禁用 LIKE
+        +openRelationPicker(cellEl, field, value, actions)
+    }
+
+    class sheetTable {
+        <<module, 同步纯函数>>
+        +buildColgroup(fields) string
+        +buildHead(fields) string
+        +buildCell(field, row, ctx) string
+        +buildRow(row, fields, index, opts) string  %% 新增 indent / expander
+    }
+
+    %% ---------- 交互层 ----------
+    class navigation {
+        <<module, 新建>>
+        +pushNav(entry)
+        +popNav() NavEntry
+        +peekNav() NavEntry
+        +getNavDepth() int
+        +onNavChange(fn)
+        +resetNav()
+    }
+
+    class sheetPanels {
+        <<module>>
+        +openDrawer(opts) HTMLElement
+        +closeAllPanels()
+        +openRowMenu(anchor, row, index, handlers)
+        +openColumnMenu(anchor, field, handlers)
+        +openFieldPanel(opts)
+        +openImagePreview(src, name, gallery)
+    }
+
+    class rowDrawer {
+        <<module, 新建>>
+        +openRowDrawer(opts) HTMLElement
+        +flushDrawerBody()
+        +isDrawerOpen() bool
+        -renderBreadcrumb(ancestors)
+        -renderFields(row, fields)
+        -renderChildren(id)
+        -renderSubSheets(id)
+        -renderBody(body)  %% 防抖 400ms 写库
+        -renderNotes(id)
+        -renderBacklinks(id)
+    }
+
+    class sheetPage {
+        <<module>>
+        +initSheetPage()
+        -openSheet(sheetId)
+        -renderSheet(opts)
+        -renderBodyRows(reset)
+        -ensureRowRendered(rowId)
+        -groupSheets() Group[]
+        +__wrOpenSheet(sheetId)
+        +__wrLocateCell(rowId, fieldKey) bool
+        +__wrOpenRow(recordId, opts)
+    }
+
+    %% ---------- 关系 ----------
+    record "1" --> "0..*" record : parent_id 自引用（无深度限制）
+    record "1" --> "0..*" record : sheet_id 归属（一条记录属 1 张表）
+    sheet "1" --> "0..*" sheet_field
+    sheet "0..*" --> "0..1" record : task_id = 挂载点 anchor（单挂载点，1 处）
+    note_index "0..*" --> "0..1" record : record_id
+    views_frozen ..|> record : 投影（只读，冻结不再演进）
+
+    sheetStore ..> record : 直读直写（不再经视图）
+    recordStore ..> record : 唯一读写入口
+    recordStore ..> recordTree : 环检测/树展开
+    sheetTable ..> fieldTypes : renderCell
+    fieldTypes ..> relationField : type='relation' 分发
+    sheetPage ..> sheetStore
+    sheetPage ..> recordStore
+    sheetPage ..> sheetTable
+    sheetPage ..> relationField : hydrateRelations
+    rowDrawer ..> recordStore
+    rowDrawer ..> sheetPanels : openDrawer（单向，禁止反向）
+    rowDrawer ..> relationField
+    rowDrawer ..> navigation
+    sheetPage ..> navigation
+    commandPalette ..> navigation
+
+    %% ---------- 关键约束（实现时必读）----------
+    %% 1. sheet_field.type 无 CHECK 约束，'relation' 直接可写；
+    %%    配置走 options 顶层键（targetSheetId / multiple），不塞 options 数组。
+    %% 2. record.sort 为 REAL，直读必须 CAST(sort AS INTEGER)，与视图保持一致。
+    %% 3. renderCell 链路禁止 await：buildRow 是同步字符串拼装，被滚动高频调用；
+    %%    relation 标题靠 hydrateRelations 预取进 relCache。
+    %% 4. rowDrawer -> sheetPanels 单向依赖，sheetPanels 禁止 import rowDrawer（ESM 循环 + TDZ）。
+    %% 5. nullable 列写 NULL 必须用 SQL 字面量，不能走参数（params 会被 String()）。

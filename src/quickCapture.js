@@ -937,6 +937,10 @@ function openRecordReader(record) {
   document.getElementById('record-reader-close')?.focus();
 }
 
+// 命令面板要打开同一条记录，必须看到同一套详情。
+// 复制一份渲染逻辑会立刻走样（这里已经有转待办 / 转笔记等动作），所以直接复用。
+window.__wrOpenRecordReader = openRecordReader;
+
 function setupInboxDateTimeInput(body, selector) {
   const input = body.querySelector(selector);
   if (!input) return;

@@ -1,0 +1,52 @@
+%% WorkRecorder 表格为核心重构 · 时序图 ①
+%% 打开行详情 → 点关联 chip → 打开对方 → Esc 逐层返回
+%% 对应 P0-1（行即页面）+ P0-5（跳转栈与定位）
+
+sequenceDiagram
+    autonumber
+    actor U as 用户
+    participant SP as sheetPage
+    participant NAV as navigation
+    participant DR as rowDrawer
+    participant RS as recordStore
+    participant REL as relationField
+    participant DB as SQLite record
+
+    U->>SP: 双击第 12 行
+    SP->>SP: filterRows(state.rows) 取出 row(12)/index/total
+    SP->>DR: openRowDrawer({recordId:12, sheetId:3, row, fields, index, total})
+    DR->>NAV: pushNav({kind:'sheet', sheetId:3, anchor:null})
+    DR->>RS: getRecord(12) + listChildren(12) + listChildSheets(12) + listAncestors(12)
+    RS->>DB: SELECT ... FROM record WHERE id=12
+    RS->>DB: SELECT ... FROM record WHERE parent_id=12
+    RS->>DB: SELECT ... FROM sheet WHERE task_id=12
+    DB-->>RS: 4 组结果
+    RS-->>DR: RecordRow + children + subSheets + ancestors
+    DR->>REL: hydrateRelations([row12], fields, relCache)
+    REL->>DB: SELECT id,title,sheet_id FROM record WHERE id IN (7,12,31)
+    DB-->>REL: 目标标题
+    REL-->>DR: relCache 填充完成
+    DR-->>U: 抽屉打开：面包屑/字段网格/子项/挂载在下面的表/正文/笔记/被引用于
+
+    U->>DR: 点关联 chip「3 号算子变更」（字段 f_rel，值 [3]）
+    DR->>DR: flushDrawerBody() 先把正文写库（关闭即保存，无保存按钮）
+    DR->>RS: patchRecord(12,{body}) 不 await
+    DR->>NAV: pushNav({kind:'row', recordId:12, anchor:{rowId:12, fieldKey:'f_rel'}})
+    DR->>DR: closeAllPanels()（openDrawer 是单例，行 A 抽屉关闭）
+    DR->>DR: openRowDrawer({recordId:3, sheetId:7, fromNav:true})
+    Note over DR: fromNav=true 不再重复压栈，否则 Esc 要按两次
+
+    U->>U: 按 Esc
+    DR->>NAV: popNav()
+    NAV-->>DR: {kind:'row', recordId:12, anchor:{rowId:12, fieldKey:'f_rel'}}
+    DR->>DR: openRowDrawer({recordId:12, sheetId:3, anchor, fromNav:true})
+
+    U->>U: 再按 Esc
+    DR->>NAV: popNav()
+    NAV-->>NAV: {kind:'sheet', sheetId:3, anchor:{rowId:12, fieldKey:'f_rel'}}
+    NAV->>SP: __wrOpenSheet(3)
+    SP->>SP: openSheet(3) → renderSheet()
+    NAV->>SP: __wrLocateCell(12,'f_rel')
+    SP->>SP: ensureRowRendered(12)（分块渲染补齐）
+    SP->>SP: scrollIntoView + .sh-cell[data-key] 聚焦
+    SP-->>U: 表格回到原位，焦点落回该关联单元格

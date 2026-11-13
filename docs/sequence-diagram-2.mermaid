@@ -1,0 +1,42 @@
+%% WorkRecorder 表格为核心重构 · 时序图 ②
+%% 在一行上挂一张表 → 写入 task_id（挂载点）→ 表格库分组刷新
+%% 对应 P0-3（把表挂到行上）+ 三分法第三条
+
+sequenceDiagram
+    autonumber
+    actor U as 用户
+    participant DR as rowDrawer
+    participant SS as sheetStore
+    participant DB as SQLite
+    participant SP as sheetPage
+    participant NAV as navigation
+
+    U->>DR: 行详情（record 12「2 号机组」）点「在此行挂一张表」
+    DR->>DR: 弹模板选择（复用 SHEET_TEMPLATES 4 个模板）
+    U->>DR: 选「空白表格」+ 名字「温差月报数据」
+    DR->>SS: createSheet({name:'温差月报数据', anchorRecordId:12, templateKey:'blank'})
+    SS->>DB: SELECT COALESCE(MAX(sort),-1) AS max_sort FROM sheet
+    DB-->>SS: 5
+    SS->>DB: INSERT INTO sheet (name, task_id, created_at, updated_at, sort) VALUES (?,12,?,?,6)
+    SS->>DB: INSERT INTO sheet_field × 2（模板列：名称/备注）
+    SS->>DB: SELECT id FROM sheet WHERE sort=6 AND name='温差月报数据'
+    Note over SS,DB: 不用 MAX(id)：插入失败会拿到上一张表的 id，字段会写进别人表里
+    DB-->>SS: sheetId = 9
+    SS-->>DR: 9
+    DR->>DR: 「挂载在下面」区插入「温差月报数据 · 0 条」
+
+    U->>DR: 点这张表
+    DR->>NAV: pushNav({kind:'row', recordId:12, anchor:null})
+    DR->>SP: __wrOpenSheet(9)
+    SP->>SS: loadFields(9) / loadRows(9)
+    SS->>DB: SELECT ... FROM sheet_field WHERE sheet_id=9
+    SS->>DB: SELECT id, custom AS data, kind, parent_id FROM record WHERE sheet_id=9
+    DB-->>SS: 空集
+    SP->>SP: renderSheet()，页头面包屑 = listAncestors(12) + 「温差月报数据」
+
+    U->>U: Esc → 回行 12；再 Esc → 回表格首页
+    SP->>SS: listSheets()（卡片要显示「挂载于：2 号机组」）
+    SS->>DB: SELECT s.*, (SELECT COUNT(*) FROM record r WHERE r.sheet_id=s.id) AS row_count, (SELECT r2.updated_at FROM record r2 WHERE r2.sheet_id=s.id ORDER BY r2.updated_at DESC LIMIT 1) AS last_at
+    DB-->>SS: 含 anchor_record_id 别名的表清单
+    SP->>SP: groupSheets() → 分组「挂载于：主设备诊断台账 / 2 号机组」
+    SP-->>U: 库视图按「挂载于：…」分组；未挂载单列「独立表」

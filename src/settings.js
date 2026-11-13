@@ -406,6 +406,53 @@ export function initSettingsModule() {
     } else alert("⚠️ 标签已存在！");
   });
 
+  // 清理零引用分类。
+  // 库里长期积累着「测试」「我尝试新建一个分类」这类试错残留 —— 不是用户懒，
+  // 是删除入口藏在设置深处，而建错分类的成本几乎为零。给一个一次性的收口动作。
+  document.getElementById('cleanup-tags-btn')?.addEventListener('click', async () => {
+    // 查视图而不是 record 表：视图在旧版本库里也存在，迁移未跑时不会静默失败。
+    const rows = await dbQuery(
+      `SELECT t.name,
+              (SELECT COUNT(*) FROM logs  WHERE tag = t.name)
+            + (SELECT COUNT(*) FROM todos WHERE tag = t.name) AS used,
+              (SELECT COUNT(*) FROM note_index WHERE tag = t.name) AS noted
+         FROM tags t
+        ORDER BY t.name`
+    );
+
+    const unused = rows.filter(row => Number(row.used) === 0 && Number(row.noted) === 0 && row.name !== '未分类');
+
+    if (!unused.length) {
+      alert('没有可清理的分类 —— 每个分类都至少被一条记录或笔记引用。');
+      return;
+    }
+
+    const list = unused
+      .map(row => `<span style="display:inline-block;margin:4px 6px 0 0;padding:3px 9px;border-radius:999px;background:var(--bg-input);border:1px solid var(--border-light);font-size:12px;">${escapeHtml(row.name)}</span>`)
+      .join('');
+
+    window.showModal(
+      '清理未使用分类',
+      `<div style="font-size:13px;color:var(--text-main);line-height:1.7;">
+        <p style="margin:0 0 8px;">以下 ${unused.length} 个分类没有任何记录或笔记引用，可以安全删除：</p>
+        <div style="margin-bottom:10px;">${list}</div>
+        <p style="margin:0;color:var(--text-secondary);font-size:12px;">删除同时会移除这些分类下的子项目。此操作不可撤销。</p>
+       </div>`,
+      null,
+      async () => {
+        for (const row of unused) {
+          await dbExecute('DELETE FROM sub_tags WHERE main_tag = ?', [row.name]);
+          await dbExecute('DELETE FROM tags WHERE name = ?', [row.name]);
+        }
+        await loadData();
+        renderSettingsTags();
+        updateAllDropdowns();
+        return true;
+      },
+      { danger: true, btnText: '🗑️ 删除这些分类' }
+    );
+  });
+
   const updateBtn = document.getElementById('check-update-btn');
   if (updateBtn) {
       updateBtn.onclick = async () => {

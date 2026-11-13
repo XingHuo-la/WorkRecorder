@@ -2135,14 +2135,17 @@ function colElements() {
 function applyColumnWidth(field, width) {
   const visible = visibleOf(state.fields);
   const index = visible.findIndex(item => item.key === field.key);
-  const { table, cols } = colElements();
+  const { cols } = colElements();
   if (index < 0 || !cols.length) return;
-  const col = cols[index + 1];
-  if (col) col.style.width = `${width}px`;
-  if (table) {
-    const sum = visible.reduce((total, item) => total + (item.key === field.key ? width : fieldWidth(item)), 0) + 96;
-    table.style.minWidth = `${sum}px`;
-  }
+
+  // 列宽是百分比（权重），拖一列等于改权重，其余列按比例让出空间。
+  // 只写被拖的那一列会和其他列的总和打架，所以整组重算一次。
+  const next = visible.map(item => (item.key === field.key ? width : fieldWidth(item)));
+  const total = next.reduce((sum, item) => sum + item, 0) || 1;
+  next.forEach((item, i) => {
+    const col = cols[i + 1];
+    if (col) col.style.width = `${((item / total) * 100).toFixed(4)}%`;
+  });
   field.width = width;
 }
 
@@ -2178,9 +2181,14 @@ function onHostPointerDown(event) {
   const index = visible.findIndex(item => item.key === field.key);
   const { cols } = colElements();
   const col = cols[index + 1];
-  const startWidth = col?.getBoundingClientRect().width || fieldWidth(field);
+  const startWidth = fieldWidth(field);
+  // 权重/像素的换算比：拖动 1px 要换算成多少权重，否则列被压缩后拖不动。
+  const scroller = host?.querySelector('[data-scroll]');
+  const avail = (scroller?.clientWidth || 0) - 96;
+  const totalWeight = visible.reduce((sum, item) => sum + fieldWidth(item), 0);
+  const scale = avail > 0 ? totalWeight / avail : 1;
 
-  resizeState = { field, col, startX: event.clientX, startWidth, width: startWidth };
+  resizeState = { field, col, startX: event.clientX, startWidth, width: startWidth, scale };
   handle.classList.add('is-active');
   document.body.classList.add('sh-col-resizing');
   document.addEventListener('pointermove', onResizeMove);
@@ -2189,7 +2197,10 @@ function onHostPointerDown(event) {
 
 function onResizeMove(event) {
   if (!resizeState) return;
-  const next = Math.max(72, Math.min(640, Math.round(resizeState.startWidth + (event.clientX - resizeState.startX))));
+  const scale = resizeState.scale || 1;
+  const raw = resizeState.startWidth + (event.clientX - resizeState.startX) * scale;
+  // 上下限也按权重换算：视觉上收紧在 64~640px
+  const next = Math.max(Math.round(64 * scale), Math.min(Math.round(640 * scale), Math.round(raw)));
   if (next === resizeState.width) return;
   resizeState.width = next;
   applyColumnWidth(resizeState.field, next);
