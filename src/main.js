@@ -414,8 +414,10 @@ function setupRouting() {
     });
 
     // dashboard 用空字符串恢复样式表默认值（.wb-v2 是 display:grid）；
-    // 其余页面用 block。这里写死 display 会压掉样式表里的 grid 布局。
-    target.view.style.display = id === 'nav-dashboard' ? '' : 'block';
+    // notes 同理（#subview-notes 是 flex 两栏壳，9.7 层的 display 不能带 !important，
+    // 否则会压掉上面的行内 none —— 11-13 真机「笔记视图叠在所有页面」事故的另一半）。
+    // 其余页面用 block。这里写死 display 会压掉样式表里的布局。
+    target.view.style.display = (id === 'nav-dashboard' || id === 'nav-notes') ? '' : 'block';
     target.btn?.classList.add('active');
     target.btn?.setAttribute('aria-current', 'page');
     localStorage.setItem('workRecorder:lastSubview', id);

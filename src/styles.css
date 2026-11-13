@@ -15820,9 +15820,12 @@ body.cmdk-open { overflow: hidden !important; }
    .note-split-label、#note-save-btn）不再命中任何元素，留着无害。 */
 
 /* —— 壳：整页两栏，页头并入左列表头（PRD R05：页头一行化） —— */
+/* ⚠️ display 不能带 !important：main.js 路由靠行内 style.display='none' 隐藏本页，
+   !important 会把行内 none 压掉 → 笔记视图常驻、叠在每一页上（11-13 真机事故）。
+   显示时的布局由 main.js 特判 nav-notes 恢复样式表默认（同 dashboard 的先例）。 */
 #subview-notes {
   padding: 0 !important;
-  display: flex !important;
+  display: flex;
   flex-direction: column;
   overflow: hidden;
 }
@@ -15933,7 +15936,8 @@ body.cmdk-open { overflow: hidden !important; }
   border-left: 1px solid var(--border-light);
 }
 #subview-notes .note-editor-pane-inner {
-  display: flex !important;
+  /* ⚠️ 不能 !important：hidden 切换靠 9928/16316 的 [hidden] 后备（11-13 教训同上） */
+  display: flex;
   flex-direction: column;
   flex: 1 1 auto;
   min-height: 0;
