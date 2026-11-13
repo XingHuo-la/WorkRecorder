@@ -1,5 +1,8 @@
 import { appData, dbExecute, dbQuery, getTodayString, loadData, DEFAULT_TAG } from './data.js';
 import { escapeHtml } from './htmlUtils.js';
+// 记录详情抽屉（表格行与记录页共用一套）。T04 之前这里是 #record-reader-overlay
+// 那套独立阅读器，已删除并合并进 rowDrawer。
+import { openRowDrawer, closeRowDrawer } from './rowDrawer.js';
 import { showUndoToast } from './undoToast.js';
 import { attachDateTimePicker, createTimeRangePicker } from './timeRangePicker.js';
 import {
@@ -869,77 +872,53 @@ function renderInboxActions(extraClass = '') {
   `;
 }
 
-function getRecordHighlights(text) {
-  const labels = [
-    ['重点', 'highlight'],
-    ['下一步', 'next'],
-    ['问题', 'problem'],
-    ['决策', 'decision'],
-    ['结论', 'conclusion']
-  ];
-  return String(text || '')
-    .split(/\r?\n/)
-    .map(line => line.trim())
-    .filter(Boolean)
-    .map(line => {
-      const match = labels.find(([label]) => line.startsWith(`${label}：`) || line.startsWith(`${label}:`));
-      if (!match) return null;
-      return { type: match[1], label: match[0], text: line.replace(new RegExp(`^${match[0]}[：:]\\s*`), '').trim() };
-    })
-    .filter(item => item?.text);
-}
-
+/**
+ * 记录详情：兼容壳。
+ *
+ * 老的 #record-reader-overlay 已删除，详情统一由 rowDrawer 渲染
+ * （表格行与「今天 / 记录」页现在看到的是同一套界面）。
+ *
+ * 函数名与 window.__wrOpenRecordReader 保持不变 —— commandPalette.js 和「今天」页
+ * 都靠这个全局函数打开记录，改签名会让它们静默失效（点了没反应，不报错）。
+ *
+ * 旧阅读器的四个动作（转待办 / 转笔记 / 修改分类 / 编辑）没有丢：
+ * 通过 handlers.actions 传进抽屉，渲染成 footer 上方的动作按钮。两套详情页的能力
+ * 到此合并成一套。
+ */
 function openRecordReader(record) {
-  const overlay = document.getElementById('record-reader-overlay');
-  const titleEl = document.getElementById('record-reader-title');
-  const kickerEl = document.getElementById('record-reader-kicker');
-  const metaEl = document.getElementById('record-reader-meta');
-  const highlightsEl = document.getElementById('record-reader-highlights');
-  const contentEl = document.getElementById('record-reader-content');
-  const actionsEl = document.getElementById('record-reader-actions');
-  if (!overlay || !titleEl || !metaEl || !contentEl || !actionsEl || !record) return;
+  if (!record || record.id === undefined || record.id === null) return;
 
-  const title = getRecordTitle(record);
-  const detail = getRecordDetail(record);
-  const highlights = getRecordHighlights(detail);
   const typeLabel = record.status === 'unprocessed' || record.record_type === 'quick' ? '待整理记录' : '工作记录';
-  const meta = [
+  const subtitle = [
     typeLabel,
     record.tag || DEFAULT_TAG,
     record.sub_tag || '',
     record.date ? `${record.date} ${(record.time || '').substring(0, 5)}` : ''
-  ].filter(Boolean);
+  ].filter(Boolean).join(' · ');
 
-  kickerEl.textContent = typeLabel;
-  titleEl.textContent = title || '未命名记录';
-  metaEl.innerHTML = meta.map(item => `<span>${escapeHtml(item)}</span>`).join('');
-  highlightsEl.innerHTML = highlights.length
-    ? highlights.map(item => `<div class="reader-highlight reader-highlight-${item.type}"><strong>${escapeHtml(item.label)}</strong><span>${escapeHtml(item.text)}</span></div>`).join('')
-    : '';
-  contentEl.innerHTML = escapeHtml(detail || '没有更多正文。').replace(/\r?\n/g, '<br>');
-  actionsEl.innerHTML = `
-    <button type="button" class="icon-btn" data-reader-action="todo">转待办</button>
-    <button type="button" class="icon-btn" data-reader-action="note">转笔记</button>
-    <button type="button" class="icon-btn" data-reader-action="project">修改分类</button>
-    <button type="button" class="icon-btn" data-reader-action="edit">编辑</button>
-  `;
-  actionsEl.querySelectorAll('[data-reader-action]').forEach(button => {
-    button.addEventListener('click', () => {
-      const action = button.dataset.readerAction;
-      window.closeRecordReader?.();
-      if (action === 'project') openInboxProjectModal(record);
-      else if (action === 'edit') openInboxEditModal(record);
-      else openQuickConvertModal(record, action);
-    });
+  openRowDrawer({
+    recordId: record.id,
+    subtitle,
+    // 旧记录对象里的 title / body 先顶上，抽屉立刻有内容；
+    // 真实值随后由 recordStore 的 getRecord 补全（logs 视图里 text = title、detail = body）。
+    record: { title: getRecordTitle(record), body: getRecordDetail(record) },
+    handlers: {
+      actions: [
+        { key: 'todo', label: '转待办', run: () => openQuickConvertModal(record, 'todo') },
+        { key: 'note', label: '转笔记', run: () => openQuickConvertModal(record, 'note') },
+        { key: 'project', label: '修改分类', run: () => openInboxProjectModal(record) },
+        { key: 'edit', label: '编辑', run: () => openInboxEditModal(record) },
+      ],
+    },
   });
-  overlay.classList.add('show');
-  overlay.setAttribute('aria-hidden', 'false');
-  document.getElementById('record-reader-close')?.focus();
 }
 
 // 命令面板要打开同一条记录，必须看到同一套详情。
 // 复制一份渲染逻辑会立刻走样（这里已经有转待办 / 转笔记等动作），所以直接复用。
 window.__wrOpenRecordReader = openRecordReader;
+// todayTimeline 的「去笔记页编辑」会先调它关掉详情页。这个全局以前由 main.js 的
+// setupRecordReader 挂上（那套已随 #record-reader-overlay 删除），现在指向抽屉的关闭动作。
+window.closeRecordReader = () => { closeRowDrawer(); };
 
 function setupInboxDateTimeInput(body, selector) {
   const input = body.querySelector(selector);

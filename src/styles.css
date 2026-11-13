@@ -14384,3 +14384,438 @@ body.cmdk-open { overflow: hidden !important; }
   font-size: 12px !important;
   line-height: 1.4 !important;
 }
+
+/* ==========================================================================
+   设计层 8 · 行详情抽屉（T04：表格行详情 + 记录阅读器合并成一套）
+   选择器全部以 rd- 开头并挂在 .sh-drawer 内部生成的结构上，不覆盖旧层规则；
+   颜色一律取主题变量，禁止硬编码 —— 旧层曾经因为写死 #fff 在深色主题下白底白字。
+   这里刻意不用 !important：新类名没有历史包袱，靠自然层叠即可，再加 !important
+   只会让下一次改样式更难。
+   注意：--bg-input 与 --bg-elevated 在主题里都指向 --color-surface，用它们做
+   「悬停 / 选中」等于没变色，所以状态色用半透明灰。
+   ========================================================================== */
+
+/* 8.1 容器与分区 --------------------------------------------------------- */
+.rd {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.rd-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-light);
+}
+
+.rd-block[hidden],
+.rd-fields[hidden],
+.rd-crumbs[hidden],
+.rd-hint[hidden] {
+  display: none;
+}
+
+.rd-h {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+.rd-empty {
+  display: inline-block;
+  padding: 2px 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+
+.rd-hint {
+  margin: 6px 0 0;
+  padding: 7px 10px;
+  border: 1px solid var(--color-danger);
+  border-radius: var(--radius-sm);
+  background: rgba(var(--color-danger-rgb), 0.08);
+  color: var(--color-danger);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+/* 8.2 面包屑 ------------------------------------------------------------- */
+/* 自根到父，可点击；顶层记录没有祖先时整块隐藏（不占位） */
+.rd-crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  margin: -2px 0 6px;
+  min-width: 0;
+}
+
+.rd-crumb {
+  max-width: 220px;
+  margin: 0;
+  padding: 3px 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.rd-crumb:hover {
+  border-color: var(--border-light);
+  background: rgba(127, 127, 127, 0.12);
+  color: var(--text-main);
+}
+
+.rd-crumb:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 1px;
+}
+
+.rd-crumb-sep {
+  flex: none;
+  color: var(--text-muted);
+  font-size: 11px;
+  opacity: 0.7;
+}
+
+/* 8.3 标题就地编辑 ------------------------------------------------------- */
+/* 标题在抽屉头部（只显示一处，正文里不再重复一份） */
+.sh-drawer-title.rd-title {
+  border-radius: 6px;
+  padding: 1px 4px;
+  margin: -1px -4px;
+  cursor: text;
+  transition: background 0.15s ease;
+}
+
+.sh-drawer-title.rd-title:hover {
+  background: rgba(127, 127, 127, 0.12);
+}
+
+.sh-drawer-title.rd-title:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 1px;
+}
+
+.rd-title-input {
+  width: 100%;
+  min-height: 0;
+  margin: 0;
+  padding: 2px 6px;
+  border: 1px solid var(--color-focus);
+  border-radius: 6px;
+  background: var(--bg-input);
+  color: var(--text-main);
+  font-family: inherit;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+/* 点标题时若走的是表格单元格编辑器，闪一下让用户知道编辑发生在哪一格 */
+.sh-detail-cell.is-title-target {
+  border-color: var(--color-focus);
+  background: rgba(127, 127, 127, 0.16);
+}
+
+/* 8.4 字段网格 / 记录信息网格 ------------------------------------------- */
+/* 字段网格沿用 .sh-detail / .sh-detail-field / .sh-detail-cell（不推倒重来），
+   这里只补抽屉里的间距与宽度，让它比表格里松一点、好读一点 */
+.rd-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.rd-fields .sh-detail {
+  gap: 2px;
+}
+
+.rd-fields .sh-detail-label {
+  width: 76px;
+  padding-top: 9px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+.rd-fields .sh-detail-cell {
+  min-height: 32px;
+  padding: 4px 8px;
+  font-size: 13px;
+  line-height: 1.55;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: text;
+}
+
+.rd-fields .sh-detail-cell:hover {
+  border-color: var(--border-light);
+  background: rgba(127, 127, 127, 0.1);
+}
+
+.rd-fields .sh-detail-cell:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 1px;
+}
+
+/* 无字段记录（随手记 / 待办）用这张网格代替字段区，上半截不会整片空白 */
+.rd-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.rd-meta-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 5px 0;
+  border-bottom: 1px dashed transparent;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.rd-meta-row + .rd-meta-row {
+  border-top: 1px dashed var(--border-light);
+}
+
+.rd-meta-label {
+  flex: none;
+  width: 76px;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  padding-top: 2px;
+}
+
+.rd-meta-value {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text-main);
+  overflow-wrap: anywhere;
+}
+
+/* 8.5 子项列表 ----------------------------------------------------------- */
+.rd-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.rd-row-item,
+.rd-sheet-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  margin: 0;
+  padding: 7px 9px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-main);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.45;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.rd-row-item:hover,
+.rd-sheet-card:hover {
+  border-color: var(--border-light);
+  background: rgba(127, 127, 127, 0.12);
+}
+
+.rd-row-item:focus-visible,
+.rd-sheet-card:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 1px;
+}
+
+.rd-row-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rd-row-meta {
+  flex: none;
+  color: var(--text-muted);
+  font-size: 11.5px;
+}
+
+/* 8.6 挂载的表 ----------------------------------------------------------- */
+.rd-sheets {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.rd-sheet-card {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  border-color: var(--border-light);
+  background: var(--bg-card);
+}
+
+.rd-sheet-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-main);
+  overflow-wrap: anywhere;
+}
+
+.rd-sheet-meta {
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+/* 8.7 正文（Markdown） --------------------------------------------------- */
+/* 复用 .markdown-body 的排版（见「Markdown 预览排版」一节），
+   这里只解决抽屉比笔记页窄得多带来的两个问题：长代码块 / 宽表格横向溢出 */
+.rd-body {
+  font-size: 13.5px;
+  line-height: 1.7;
+  color: var(--text-main);
+  overflow-wrap: anywhere;
+}
+
+.rd-body-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.rd-body > *:first-child {
+  margin-top: 0;
+}
+
+.rd-body > *:last-child {
+  margin-bottom: 0;
+}
+
+.rd-body h1,
+.rd-body h2,
+.rd-body h3 {
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+.rd-body pre {
+  overflow-x: auto;
+  max-width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  background: var(--bg-body);
+}
+
+.rd-body pre code {
+  white-space: pre;
+  background: transparent;
+}
+
+.rd-body code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(127, 127, 127, 0.14);
+  font-size: 0.92em;
+}
+
+.rd-body table {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+}
+
+.rd-body th,
+.rd-body td {
+  padding: 6px 10px;
+  border: 1px solid var(--border-light);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.rd-body blockquote {
+  margin: 8px 0;
+  padding: 2px 0 2px 12px;
+  border-left: 3px solid var(--border-medium);
+  color: var(--text-muted);
+}
+
+.rd-body img {
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--radius-sm);
+}
+
+/* 8.8 关联笔记 / 被引用于（T05、T08 才填内容，本期是占位容器） ------------ */
+.rd-notes,
+.rd-backlinks {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* 8.9 footer 上方的动作区 ------------------------------------------------ */
+/* 内容比按钮多时（笔记 / 引用列表）会跟着正文滚动，这是刻意的：
+   动作按钮只在「这条记录本身」的语境里成立，不该压在整页底部抢视线 */
+.rd-actions {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 14px;
+}
+
+.rd-action {
+  flex: none;
+  margin: 0;
+  padding: 0 12px;
+  height: 30px;
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1.4;
+  border: 1px solid var(--border-light);
+  border-radius: 7px;
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.rd-action:hover {
+  border-color: var(--border-medium);
+  background: rgba(127, 127, 127, 0.12);
+  color: var(--text-main);
+}
+
+.rd-action:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 1px;
+}
+

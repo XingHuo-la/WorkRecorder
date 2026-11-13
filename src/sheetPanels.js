@@ -1036,59 +1036,11 @@ export function openImagePreview(src, name = '', gallery = null) {
 }
 
 // ==========================================
-// 记录详情抽屉（设计稿⑥）
+// 记录详情抽屉已迁出本文件
 // ==========================================
+// 抽屉本体在 rowDrawer.js（T04 把「表格行详情」和「记录阅读器」合成一套）。
+// ★ 本文件禁止引用抽屉模块（rowDrawer）：ESM 循环引用会让本文件的 openDrawer
+// 在 TDZ 里被求值，表现为「抽屉偶发打不开，刷新后又好了」。依赖方向只能是
+// 抽屉 → 本文件（浮层基座），不能反过来。
+// 这里原来那个「表格行详情」函数已删除，调用方（sheetPage.js）直接从抽屉模块取。
 
-export function openRowDrawer({ row, fields, index, total, subtitle, onCellClick, onDelete, onPrev, onNext }) {
-  const visible = fields.filter(field => Number(field.visible) !== 0);
-  const titleField = visible.find(field => field.type === 'text') || visible[0];
-  const titleValue = titleField ? row.values[titleField.key] : '';
-  const title = String(titleValue ?? '').trim() || '未命名记录';
-
-  const body = visible
-    .map(
-      field => `<div class="sh-detail-field">
-        <div class="sh-detail-label">${escapeHtml(field.label)}</div>
-        <div class="sh-detail-cell sh-cell" data-key="${escapeHtml(field.key)}" data-row="${escapeHtml(row.id)}" tabindex="-1">${renderCell(
-          field,
-          row.values[field.key],
-          { placeholder: field.type === 'attachment' ? '点击添加附件' : '点击填写' }
-        )}</div>
-      </div>`
-    )
-    .join('');
-
-  const drawer = openDrawer({
-    title,
-    subtitle: subtitle || '',
-    width: 560,
-    body: `<div class="sh-detail">${body}</div>`,
-    footer: `
-      <button type="button" class="sh-btn is-danger-ghost" data-del>删除记录</button>
-      <span class="sh-foot-gap"></span>
-      <button type="button" class="sh-btn" data-prev ${index <= 1 ? 'disabled' : ''}>上一条</button>
-      <button type="button" class="sh-btn" data-next ${index >= total ? 'disabled' : ''}>下一条</button>`,
-  });
-
-  drawer.querySelector('.sh-detail')?.addEventListener('click', event => {
-    const thumb = event.target.closest('img.ft-att-thumb');
-    if (thumb) {
-      const cell = thumb.closest('.sh-cell');
-      const gallery = [...(cell?.querySelectorAll('img.ft-att-thumb') || [])].map(img => ({
-        src: img.getAttribute('src'),
-        name: img.getAttribute('alt') || '',
-      }));
-      openImagePreview(thumb.getAttribute('src'), thumb.getAttribute('alt') || '', gallery);
-      return;
-    }
-    const cell = event.target.closest('.sh-cell');
-    if (!cell) return;
-    const field = fields.find(item => item.key === cell.dataset.key);
-    if (field) onCellClick?.(field, cell, row);
-  });
-
-  drawer.querySelector('[data-del]')?.addEventListener('click', () => onDelete?.(row));
-  drawer.querySelector('[data-prev]')?.addEventListener('click', () => { onPrev?.(row); });
-  drawer.querySelector('[data-next]')?.addEventListener('click', () => { onNext?.(row); });
-  return drawer;
-}

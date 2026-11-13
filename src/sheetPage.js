@@ -17,12 +17,14 @@ import {
   openFieldPanel,
   openFilterPanel,
   openSortPanel,
-  openRowDrawer,
   openImagePreview,
   closeAllPanels,
   registerActivePanel,
   operatorLabel,
 } from './sheetPanels.js';
+// 抽屉从 rowDrawer 取，不从 sheetPanels 取 —— 抽屉本体已迁出（T04），
+// 且 sheetPanels 绝不 import rowDrawer（防 ESM 循环引用把 openDrawer 拖进 TDZ）。
+import { openRowDrawer } from './rowDrawer.js';
 import {
   setSheetAdapter,
   isSheetStoreReady,

@@ -124,7 +124,6 @@ async function initApp() {
   safeRun('timeline', initTimelineModule);
   safeRun('settings', initSettingsModule);
   safeRun('quick-capture', initQuickCapture);
-  safeRun('record-reader', setupRecordReader);
   safeRun('search', initSearchModule);
   safeRun('command-palette', initCommandPalette);
   safeRun('freecell', initFreeCellModule);
@@ -279,27 +278,6 @@ function setupTitlebar() {
   document.getElementById('titlebar-close')?.addEventListener('click', () => {
     appWindow.close();
   });
-}
-
-function setupRecordReader() {
-  const overlay = document.getElementById('record-reader-overlay');
-  const closeButton = document.getElementById('record-reader-close');
-  if (!overlay || !closeButton || overlay.dataset.bound === '1') return;
-
-  const close = () => {
-    overlay.classList.remove('show');
-    overlay.setAttribute('aria-hidden', 'true');
-  };
-
-  closeButton.addEventListener('click', close);
-  overlay.addEventListener('click', event => {
-    if (event.target === overlay) close();
-  });
-  document.addEventListener('keydown', event => {
-    if (event.key === 'Escape' && overlay.classList.contains('show')) close();
-  });
-  overlay.dataset.bound = '1';
-  window.closeRecordReader = close;
 }
 
 // 🌟 全局高级自定义表单弹窗生成器 
