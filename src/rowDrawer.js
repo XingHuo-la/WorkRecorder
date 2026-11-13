@@ -28,11 +28,38 @@ import {
   patchRecord,
   isRecordStoreReady,
 } from './recordStore.js';
-import { listNotes, setNoteRecord, writeNote } from './notesStore.js';
-import { renderMarkdown } from './markdown.js';
+import {
+  listNotes,
+  writeNote,
+  addNoteRecord,
+  removeNoteRecord,
+  normalizeRecordIds,
+} from './notesStore.js';
+import { renderMarkdown, extractExcerpt } from './markdown.js';
 import { logToFile } from './logger.js';
 
-const DRAWER_WIDTH = 560;
+/**
+ * 抽屉宽度（v1.2 起按视口算，不再是固定 560）。
+ *
+ * 设计稿约 48%（@1360 → 652px）。上下限的来历：
+ *   上限 720 —— 再宽正文行长会超 60 个汉字，读起来要摆头；
+ *   下限 520 —— 两列字段网格每列 (520 − 48 内边距 − 28 列间距) / 2 = 222px，
+ *               刚好放得下 62px label + 160px 值（「下次大修核对润滑脂牌号」11 字 ≈ 154px）。
+ *   < 800 只会在用户把窗口拉得比设计最小窗口还小时出现，保留 16px 边距即可。
+ *
+ * ★ 打开后**不**监听 resize 重算宽度 ★
+ *   抽屉生命周期以秒计，加一个 resize 监听就多一个必须在每条关闭路径上都摘掉的监听器，
+ *   漏摘就是内存泄漏（见 openDrawer 的 onClose / closeRowDrawer / teardown* 三处）。
+ *   用户改完窗口大小后重开抽屉即生效。
+ *
+ * @param {number} viewportWidth window.innerWidth
+ * @returns {number} 抽屉宽度（px，整数）
+ */
+function drawerWidthFor(viewportWidth) {
+  const vw = Number(viewportWidth) > 0 ? Number(viewportWidth) : 1360;
+  const preferred = Math.min(720, Math.max(520, vw * 0.48));
+  return Math.floor(Math.max(320, Math.min(preferred, vw - 32)));
+}
 
 const KIND_LABELS = {
   log: '记录',
@@ -154,7 +181,7 @@ export function openRowDrawer(opts = {}) {
     // 谁先回来不一定。共用一个标志会让「笔记已经到了但正文没到」时笔记区点不动。
     // 语义同样统一：false = 数据还没到，此时**任何**笔记操作都直接 return（不猜、不跳空页）。
     notesReady: false,
-    // 当前记录挂着的笔记（notes_list 里 record_id === 本记录的那批）
+    // 当前记录挂着的笔记（notes_list 里 record_ids 含本记录 id 的那批）
     notes: [],
     // 面板态：'' = 收起 / 'create' = 新建 / 'link' = 关联已有
     notePanel: '',
@@ -170,50 +197,93 @@ export function openRowDrawer(opts = {}) {
     noteCreating: false,
     // 成功类提示条的自动收起定时器（关抽屉时必须清掉）
     hintTimer: null,
+    // ---- 字段网格（v1.2）----
+    // gridFields = 真正渲染成网格的那批字段。与 visibleFields 的差别只有一条：
+    // 值与大标题**逐字相同**的字段不渲染（截图里「设备名称 = 2 号机组前置泵驱动端轴承」
+    // 白占一整行）。ctx.fields 仍保留全量 —— onCellClick 按 data-key 找字段、
+    // startTitleEdit 找 titleField 的格子都靠它。
+    gridFields: [],
+    // ---- 结构块（v1.2：子项 + 挂载的表合并，默认收起）----
+    // 两个异步分区各自到达，计数要等两边都可能有值才画，所以存下来而不是直接写 DOM。
+    structChildren: [],
+    structSheets: [],
+    // ---- footer「⋯」菜单 ----
+    // 菜单打开时挂的 window 捕获 Esc / document 捕获 mousedown（关抽屉时必须摘掉）
+    menuKeyCapture: null,
+    menuOutside: null,
   };
 
   const initialTitle = resolveTitle(ctx);
   const initialKicker = String(options.subtitle ?? '') || defaultKicker(preload);
 
+  // 字段网格的「显示层过滤」：只删与大标题逐字相同的那些格子，不删字段本身。
+  ctx.gridFields = filterGridFields(visibleFields, row, initialTitle);
+
   const bodyHtml = `
     <div class="rd">
-      <nav class="rd-crumbs" data-section="crumbs" hidden aria-label="上级路径"></nav>
       <div class="rd-hint" data-section="hint" hidden></div>
-      <div class="rd-fields" data-section="fields">${fieldsHtml(visibleFields, row)}</div>
-      <section class="rd-block" data-section="children" hidden>
-        <h3 class="rd-h">子项</h3>
-        <div class="rd-list" data-list="children"></div>
-      </section>
-      <section class="rd-block" data-section="sheets" hidden>
-        <h3 class="rd-h">挂载的表</h3>
-        <div class="rd-sheets" data-list="sheets"></div>
-      </section>
-      <section class="rd-block" data-section="body">
-        <h3 class="rd-h">正文</h3>
+
+      <!-- ① 元信息行：一行装完面包屑 + 状态 chip + 日期（空值一律不占行） -->
+      <div class="rd-meta-line" data-section="meta" hidden>
+        <nav class="rd-crumbs" data-list="crumbs" aria-label="上级路径"></nav>
+        <span class="rd-status-chip" data-status-chip hidden></span>
+        <span class="rd-meta-when" data-meta-when hidden></span>
+      </div>
+
+      <!-- ② 正文：不放 h3 标题 —— 它就在页面第二行，标题纯占位 -->
+      <section class="rd-body-block" data-section="body">
         <div class="rd-body markdown-body" data-body></div>
       </section>
+
+      <!-- ③ 字段：.sh-detail 在层 9 变成两列网格，DOM 结构不变 -->
+      <div class="rd-block rd-fields" data-section="fields"${ctx.gridFields.length ? '' : ' hidden'}>
+        ${fieldsHtml(ctx.gridFields, row)}
+      </div>
+
+      <!-- ④ 笔记：标题带计数，空态是一行「＋挂一篇笔记」 -->
       <section class="rd-block" data-section="notes">
-        <h3 class="rd-h">关联笔记<span class="rd-h-count" data-notes-count hidden></span></h3>
+        <h3 class="rd-h">笔记<span class="rd-h-count" data-notes-count>· 0</span></h3>
         <div class="rd-notes" data-notes>
           <span class="rd-empty">加载中…</span>
         </div>
         <div class="rd-note-panel" data-notes-panel hidden></div>
         <div class="rd-notes-foot" data-notes-foot hidden>
           <button type="button" class="rd-link-btn" data-note-create>新建笔记</button>
-          <button type="button" class="rd-link-btn" data-note-pick-link>关联已有</button>
+          <button type="button" class="rd-link-btn" data-note-pick-link>挂一篇已有的</button>
         </div>
       </section>
-      <section class="rd-block" data-section="backlinks">
-        <h3 class="rd-h">被引用于</h3>
-        <div class="rd-backlinks"><span class="rd-empty">暂无引用</span></div>
+
+      <!-- ⑤ 结构：子项 + 挂载的表合成一块，默认收起（两者皆空则整块不出现） -->
+      <section class="rd-block" data-section="structure" hidden>
+        <div class="rd-struct-head" data-struct-toggle role="button" tabindex="0"
+             aria-expanded="false" aria-controls="rd-struct-body">
+          <span class="rd-struct-label">结构</span>
+          <span class="rd-struct-count" data-struct-count></span>
+          <svg class="rd-caret" aria-hidden="true"><use href="#ic-chevron-right"/></svg>
+        </div>
+        <div class="rd-struct-body" id="rd-struct-body" data-struct-body hidden>
+          <div class="rd-sub" data-section="children" hidden>
+            <div class="rd-sub-h">子项</div>
+            <div class="rd-list" data-list="children"></div>
+          </div>
+          <div class="rd-sub" data-section="sheets" hidden>
+            <div class="rd-sub-h">挂载的表</div>
+            <div class="rd-sheets" data-list="sheets"></div>
+          </div>
+        </div>
       </section>
-      ${actionsHtml(handlers.actions)}
+
+      <!-- ⑥ 被引用于：仅非空才出现（默认 hidden，不留「暂无引用」占位） -->
+      <section class="rd-block" data-section="backlinks" hidden>
+        <h3 class="rd-h">被引用于</h3>
+        <div class="rd-backlinks" data-list="backlinks"></div>
+      </section>
     </div>`;
 
   const drawer = openDrawer({
     title: initialTitle,
     subtitle: initialKicker,
-    width: DRAWER_WIDTH,
+    width: drawerWidthFor(window.innerWidth),
     body: bodyHtml,
     footer: footerHtml(index, total, handlers),
     onClose: () => {
@@ -224,6 +294,7 @@ export function openRowDrawer(opts = {}) {
       void flushDrawerBody();
       teardownBodyEditor(ctx);
       teardownNotePanel(ctx);
+      closeMenu(ctx);
       state.open = false;
       state.el = null;
       handlers.onClose?.();
@@ -350,23 +421,43 @@ function resolveTitle(ctx) {
   return ctx.recordId !== null ? `未命名记录 #${ctx.recordId}` : '未命名记录';
 }
 
+/**
+ * 调用方没给 subtitle 时的头部小字：**只放记录类型**。
+ *
+ * v1.2 之前这里还拼了 `status` 与 `happened_*`，但这两样现在归元信息行
+ * （结果 / 状态 chip / 日期），kicker 再写一遍就是同一句话出现两次 ——
+ * 截图里「记录 · 待整理 · 2026-11-13 07:45」下面紧跟「待整理 主设备诊断 / 3 号机组 · 2026-11-13 07:45」。
+ *
+ * @param {object|null} record 部分记录（could be preload）
+ * @returns {string} kicker 文案
+ */
 function defaultKicker(record) {
   if (!record) return '';
-  const parts = [];
-  const kind = KIND_LABELS[record.kind] || '';
-  if (kind) parts.push(kind);
-  const status = STATUS_LABELS[record.status] || '';
-  if (status) parts.push(status);
-  const when = [record.happened_date, String(record.happened_time ?? '').slice(0, 5)]
-    .filter(Boolean)
-    .join(' ');
-  if (when) parts.push(when);
-  return parts.join(' · ');
+  return KIND_LABELS[record.kind] || '';
 }
 
-function fieldsHtml(visibleFields, row) {
-  if (!visibleFields.length) return '';
-  const cells = visibleFields
+/**
+ * 字段网格的「显示层」过滤：值与大标题**逐字相同**的字段不渲染那一格。
+ *
+ * 只删「逐字相同」，不删「标题字段本身」—— 值不同时它是有信息的。
+ * 也不做任何「多于 N 个就折叠」的处理：字段就是这条记录的结论，藏起来等于让用户
+ * 多点一次才知道结论是什么（设计 §3.1 末段已明确否决折叠）。
+ *
+ * @param {object[]} fields 可见字段
+ * @param {object|null} row 行（含 values）
+ * @param {string} titleText 大标题（已 trim）
+ * @returns {object[]} 要渲染的字段
+ */
+function filterGridFields(fields, row, titleText) {
+  const title = String(titleText ?? '').trim();
+  if (!fields.length) return [];
+  if (!title) return fields.slice();
+  return fields.filter(field => String(row?.values?.[field.key] ?? '').trim() !== title);
+}
+
+function fieldsHtml(gridFields, row) {
+  if (!gridFields.length) return '';
+  const cells = gridFields
     .map(
       field => `<div class="sh-detail-field">
         <div class="sh-detail-label">${escapeHtml(field.label || field.key)}</div>
@@ -381,35 +472,59 @@ function fieldsHtml(visibleFields, row) {
   return `<div class="sh-detail">${cells}</div>`;
 }
 
-function actionsHtml(actions) {
-  if (!actions.length) return '';
-  const buttons = actions
+/**
+ * footer 的内容（不含 `<footer>` 本身，那层壳由 openDrawer 建）。
+ *
+ * 布局：左「最后编辑 …」，右「⋯ / 上一条 / 下一条」，4 个兼容动作与「删除记录」收进「⋯」。
+ * ★ 这里**不能**用 openPopover（sheetPanels.js）★
+ *   那个函数第一行就是 closeAllPanels()，而抽屉本身就是 activePanel ——
+ *   用它做菜单等于「点一下 ⋯ 抽屉自己关掉」。菜单是 footer 内的绝对定位块（见层 9 的 9.6）。
+ *
+ * footer 现在**常显**（哪怕只有一行时间）：底栏突然消失比一条只有时间的底栏更像坏了。
+ *
+ * @param {number} index 当前行在结果里的序号（从 1 起，0 = 未知）
+ * @param {number} total 结果总数（0 = 未知）
+ * @param {object} handlers 归一后的 handlers
+ * @returns {string} footer 内部 HTML
+ */
+function footerHtml(index, total, handlers) {
+  const actions = Array.isArray(handlers.actions) ? handlers.actions : [];
+  const hasDelete = typeof handlers.onDelete === 'function';
+  // 一个菜单项都没有就别渲染「⋯」—— 点开是空盒子比没有入口更糟
+  const hasMenu = hasDelete || actions.length > 0;
+  const hasNav = typeof handlers.onPrev === 'function' || typeof handlers.onNext === 'function';
+
+  const actionItems = actions
     .map(
       item =>
-        `<button type="button" class="sh-btn rd-action" data-action-key="${escapeHtml(item.key)}">${escapeHtml(item.label || item.key)}</button>`
+        `<button type="button" class="rd-menu-item" role="menuitem" data-action-key="${escapeHtml(
+          item.key
+        )}">${escapeHtml(item.label || item.key)}</button>`
     )
     .join('');
-  return `<section class="rd-block rd-actions" data-section="actions">${buttons}</section>`;
-}
 
-function footerHtml(index, total, handlers) {
-  const parts = [];
-  if (typeof handlers.onDelete === 'function') {
-    parts.push('<button type="button" class="sh-btn is-danger-ghost" data-del>删除记录</button>');
-  }
+  const menu = hasMenu
+    ? `<button type="button" class="rd-foot-btn" data-more aria-haspopup="menu" aria-expanded="false" aria-label="更多操作">
+        <svg class="wr-icon" aria-hidden="true"><use href="#ic-dots"/></svg>
+      </button>
+      <div class="rd-menu" data-more-menu role="menu" hidden>
+        ${actionItems}
+        ${actionItems && hasDelete ? '<div class="rd-menu-sep" role="separator"></div>' : ''}
+        ${hasDelete ? '<button type="button" class="rd-menu-item is-danger" role="menuitem" data-del>删除记录</button>' : ''}
+      </div>`
+    : '';
 
-  const withNav = typeof handlers.onPrev === 'function' || typeof handlers.onNext === 'function';
-  // 一个按钮都没有就不要渲染 footer：空白的底栏比没有底栏更像坏了
-  if (!parts.length && !withNav) return '';
+  const prevDisabled = index > 0 && index <= 1 ? 'disabled' : '';
+  const nextDisabled = total > 0 && index > 0 && index >= total ? 'disabled' : '';
+  const nav = hasNav
+    ? `<button type="button" class="rd-foot-btn" data-prev ${prevDisabled}>上一条</button>
+       <button type="button" class="rd-foot-btn" data-next ${nextDisabled}>下一条</button>`
+    : '';
 
-  parts.push('<span class="sh-foot-gap"></span>');
-  if (withNav) {
-    const prevDisabled = index <= 1 ? 'disabled' : '';
-    const nextDisabled = total && index >= total ? 'disabled' : '';
-    parts.push(`<button type="button" class="sh-btn" data-prev ${prevDisabled}>上一条</button>`);
-    parts.push(`<button type="button" class="sh-btn" data-next ${nextDisabled}>下一条</button>`);
-  }
-  return parts.join('');
+  return `<span class="rd-foot-when" data-foot-when></span>
+    <span class="rd-foot-gap"></span>
+    ${menu}
+    ${nav}`;
 }
 
 function paintPreloadBody(ctx) {
@@ -477,6 +592,14 @@ async function applyRecord(ctx, token) {
   // 否则表现为「正文永远点不动」，用户只能瞪着它，比写失败更难理解。
   if (!record) {
     ctx.recordReady = true;
+    if (!alive(token)) return;
+    // 记录已被删除（getRecord 返回 null）：kicker 上说明一句，与 id 相关的区块全部收掉。
+    // 「字段」与「笔记」都靠 id 才有意义，留着一个点不动的空网格比不显示更让人困惑。
+    appendKicker(ctx, '记录已删除');
+    const fieldsBlock = section(ctx, 'fields');
+    if (fieldsBlock) fieldsBlock.hidden = true;
+    const notesBlock = section(ctx, 'notes');
+    if (notesBlock) notesBlock.hidden = true;
     return;
   }
   if (!alive(token)) return;
@@ -488,9 +611,10 @@ async function applyRecord(ctx, token) {
   // 头部小字：调用方给了就以调用方为准（表名 · 第 x / y 条），没给就用记录自身的类型
   if (!ctx.kickerProvided) setKicker(ctx, defaultKicker(record));
 
-  // 完全没有字段（随手记 / 待办 / 子项）才用记录信息网格顶替字段区，
-  // 有字段但都不是 text 的行不能走这里 —— 那会把已经渲染好的字段网格覆盖掉。
-  if (!ctx.visibleFields.length) renderMetaRows(ctx, record);
+  // 元信息行：面包屑由 loadCrumbs 填，状态 chip / 标签 / 时间这里填。
+  // 完全没有字段（随手记 / 待办 / 子项）时状态也走 chip；有字段网格时状态就是网格里的一格，
+  // 两处都显示就是刚从字段区删掉的那种重复。
+  renderMetaLine(ctx, record);
 
   // 正文基线补正：preload 里可能只有临时值，record 才是权威。
   // bodySource 永远代表「库里的值」（Esc 放弃时回退到它），所以编辑态下也要更新；
@@ -519,13 +643,14 @@ async function applyRecord(ctx, token) {
 }
 
 /**
- * 面包屑：自根到父。根为空（顶层记录）时整块不显示。
+ * 面包屑：自根到父，填进元信息行里的 `[data-list="crumbs"]`。
+ * 根为空（顶层记录）时容器留空，元信息行是否显示由 updateMetaLineVisibility 统一裁决。
  * 点击留给 T09 接跳转，现在只打点，不做假动作。
  */
 async function loadCrumbs(ctx, token) {
   const chain = await listAncestors(ctx.recordId);
   if (!alive(token) || !chain.length) return;
-  const el = section(ctx, 'crumbs');
+  const el = section(ctx, 'meta')?.querySelector('[data-list="crumbs"]');
   if (!el) return;
 
   // 只在条目之间放分隔符。链尾再加一个 `›` 会指向「下面那条大标题」，
@@ -539,16 +664,21 @@ async function loadCrumbs(ctx, token) {
     )
     .join('<span class="rd-crumb-sep" aria-hidden="true">›</span>');
   el.hidden = false;
+  // 面包屑到位后标签段要让位（两者高度重合），时间/截止段不受影响。
+  composeMetaWhen(ctx);
+  updateMetaLineVisibility(ctx);
 }
 
 async function loadChildren(ctx, token) {
   const children = await listChildren(ctx.recordId);
-  if (!alive(token) || !children.length) return;
-  const block = section(ctx, 'children');
-  const list = block?.querySelector('[data-list="children"]');
-  if (!block || !list) return;
+  if (!alive(token)) return;
+  ctx.structChildren = Array.isArray(children) ? children.filter(Boolean) : [];
 
-  list.innerHTML = children
+  const sub = section(ctx, 'children');
+  const list = sub?.querySelector('[data-list="children"]');
+  if (!sub || !list) return;
+
+  list.innerHTML = ctx.structChildren
     .map(
       child => `<button type="button" class="rd-row-item" data-child-id="${escapeHtml(child.id)}">
         <span class="rd-row-title">${escapeHtml(recordTitle(child))}</span>
@@ -556,17 +686,20 @@ async function loadChildren(ctx, token) {
       </button>`
     )
     .join('');
-  block.hidden = false;
+  sub.hidden = !ctx.structChildren.length;
+  updateStructure(ctx);
 }
 
 async function loadChildSheets(ctx, token) {
   const sheets = await listChildSheets(ctx.recordId);
-  if (!alive(token) || !sheets.length) return;
-  const block = section(ctx, 'sheets');
-  const list = block?.querySelector('[data-list="sheets"]');
-  if (!block || !list) return;
+  if (!alive(token)) return;
+  ctx.structSheets = Array.isArray(sheets) ? sheets.filter(Boolean) : [];
 
-  list.innerHTML = sheets
+  const sub = section(ctx, 'sheets');
+  const list = sub?.querySelector('[data-list="sheets"]');
+  if (!sub || !list) return;
+
+  list.innerHTML = ctx.structSheets
     .map(
       sheet => `<button type="button" class="rd-sheet-card" data-sheet-id="${escapeHtml(sheet.id)}">
         <span class="rd-sheet-name">${escapeHtml(String(sheet.name ?? '').trim() || `表 #${sheet.id}`)}</span>
@@ -574,7 +707,8 @@ async function loadChildSheets(ctx, token) {
       </button>`
     )
     .join('');
-  block.hidden = false;
+  sub.hidden = !ctx.structSheets.length;
+  updateStructure(ctx);
 }
 
 async function renderBody(ctx, rawBody) {
@@ -604,42 +738,175 @@ async function renderBody(ctx, rawBody) {
   }
 }
 
-/** 无字段记录（随手记 / 待办）的信息网格：字段网格区改用它，免得抽屉上半截全空 */
-function renderMetaRows(ctx, record) {
-  const host = section(ctx, 'fields');
-  if (!host) return;
+// ==========================================
+// 元信息行（v1.2：替代原来的「记录信息网格」renderMetaRows）
+// ==========================================
+//
+// 旧做法是给无字段记录（随手记 / 待办 / 子项）画一屏「类型 / 状态 / 标签 / 发生时间 /
+// 截止 / 备注 / 所属表」——对刚建的记录几乎全是空值，白白把正文顶到折叠线以下。
+// 新做法只有一行 22px：面包屑 + 状态 chip + 标签/时间，**空值一律不占行**（连 span 都不留），
+// 整行都没内容时 `[data-section=meta]` 自己 hidden，不占高度。
 
-  const rows = [
-    ['类型', KIND_LABELS[record.kind] || String(record.kind ?? '')],
-    ['状态', STATUS_LABELS[record.status] || String(record.status ?? '')],
-    ['标签', [record.tag, record.sub_tag].filter(Boolean).join(' / ')],
-    [
-      '发生时间',
-      [record.happened_date, String(record.happened_time ?? '').slice(0, 5)].filter(Boolean).join(' '),
-    ],
-    ['截止', record.deadline],
-    ['备注', record.remark],
-    // 只有真在表里才说「所属表」。随手记/待办写「不在任何表」是纯噪音 ——
-    // 表格行本来就有 sheet_id（没被移出过），空值只在非表格记录上出现。
-    ['所属表', record.sheet_id ? `#${record.sheet_id}` : ctx.sheetId ? `#${ctx.sheetId}` : ''],
-  ].filter(([, value]) => String(value ?? '').trim());
+/**
+ * 填元信息行。
+ *
+ * 状态只显示一次（设计 §3.5 决策 4）：
+ *   有字段网格 → 状态就是网格里的一格，chip 不出现；
+ *   没有字段网格 → `record.status` 映射成 chip。
+ * 这条规则同时挡掉了「标题旁 chip + 字段区状态」这种重复。
+ *
+ * @param {object} ctx 抽屉上下文
+ * @param {object} record 完整记录
+ */
+function renderMetaLine(ctx, record) {
+  const line = section(ctx, 'meta');
+  if (!line) return;
 
-  host.innerHTML = rows.length
-    ? `<div class="rd-meta">${rows
-        .map(
-          ([label, value]) =>
-            `<div class="rd-meta-row"><span class="rd-meta-label">${escapeHtml(label)}</span><span class="rd-meta-value">${escapeHtml(
-              value
-            )}</span></div>`
-        )
-        .join('')}</div>`
-    : '';
+  // —— 状态 chip：只在没有字段网格时出现 ——
+  const chip = line.querySelector('[data-status-chip]');
+  const statusFieldInGrid = ctx.gridFields.some(field => String(field?.key ?? '') === 'status');
+  const statusLabel = STATUS_LABELS[record.status] || String(record.status ?? '').trim();
+  if (chip) {
+    const showChip = ctx.gridFields.length === 0 && !statusFieldInGrid && statusLabel !== '';
+    chip.textContent = showChip ? statusLabel : '';
+    chip.hidden = !showChip;
+  }
+
+  // —— 标签 / 发生时间 / 截止：能装进一行才写，空值连分隔符都不留 ——
+  // 标签段存进 ctx，由 composeMetaWhen 统一裁决要不要上屏：
+  // 面包屑（异步后到）给出「表 · 父行」路径时，tag/sub_tag 与它高度重合
+  // （台账行的主分类就是表名、子项目常常就是父行），再写一遍就是「信息太散」。
+  const tags = [record.tag, record.sub_tag]
+    .map(value => String(value ?? '').trim())
+    .filter(Boolean)
+    .join(' / ');
+  const happened = [record.happened_date, String(record.happened_time ?? '').slice(0, 5)]
+    .map(value => String(value ?? '').trim())
+    .filter(Boolean)
+    .join(' ');
+  const deadline = String(record.deadline ?? '').trim();
+  ctx.metaTags = tags;
+  ctx.metaWhenParts = { happened, deadline };
+  composeMetaWhen(ctx);
+
+  updateMetaLineVisibility(ctx);
+  paintFootWhen(ctx, record);
+}
+
+/**
+ * 组装元信息行的「时间 / 标签」段。
+ *
+ * 标签段只在**没有面包屑**时出现（面包屑后到，所以这里要在 loadCrumbs 里再调一次）。
+ * 发生时间 / 截止不受面包屑影响，始终参与。
+ * @param {object} ctx 抽屉上下文
+ */
+function composeMetaWhen(ctx) {
+  const when = section(ctx, 'meta')?.querySelector('[data-meta-when]');
+  if (!when) return;
+  const crumbs = section(ctx, 'meta')?.querySelector('[data-list="crumbs"]');
+  const hasCrumbs = Boolean(crumbs && !crumbs.hidden && crumbs.textContent.trim());
+  const parts = [];
+  if (!hasCrumbs && ctx.metaTags) parts.push(ctx.metaTags);
+  if (ctx.metaWhenParts?.happened) parts.push(ctx.metaWhenParts.happened);
+  if (ctx.metaWhenParts?.deadline) parts.push(`截止 ${ctx.metaWhenParts.deadline}`);
+  when.textContent = parts.join(' · ');
+  when.hidden = !when.textContent;
+}
+
+/**
+ * 元信息行的显隐：三个子元素全空就整行 hidden（22px 也要省，正文首行靠它进首屏）。
+ * @param {object} ctx 抽屉上下文
+ */
+function updateMetaLineVisibility(ctx) {
+  const line = section(ctx, 'meta');
+  if (!line) return;
+  const crumbs = line.querySelector('[data-list="crumbs"]');
+  const chip = line.querySelector('[data-status-chip]');
+  const when = line.querySelector('[data-meta-when]');
+  const hasCrumbs = Boolean(crumbs && !crumbs.hidden && crumbs.textContent.trim());
+  const hasChip = Boolean(chip && !chip.hidden && chip.textContent.trim());
+  const hasWhen = Boolean(when && !when.hidden && when.textContent.trim());
+  line.hidden = !(hasCrumbs || hasChip || hasWhen);
+}
+
+/** 在 kicker 后面追加一段说明（记录已删除之类），已追加过就不重复加。 */
+function appendKicker(ctx, suffix) {
+  const el = ctx.el?.querySelector('.sh-drawer-kicker');
+  if (!el) return;
+  const text = String(el.textContent ?? '').trim();
+  const tail = String(suffix ?? '').trim();
+  if (!tail || text.includes(tail)) return;
+  el.textContent = text ? `${text} · ${tail}` : tail;
+}
+
+/**
+ * footer 左侧「最后编辑 10 分钟前」。
+ *
+ * 相对时间只在抽屉打开时算一次，**不设定时器**：抽屉生命周期以秒计，
+ * 一个每 30 秒 reflow 一次的定时器换来「刚才→1 分钟前」的滚动，收益为零、泄漏风险为正。
+ *
+ * @param {object} ctx 抽屉上下文
+ * @param {object} record 完整记录
+ */
+function paintFootWhen(ctx, record) {
+  const el = ctx.el?.querySelector('[data-foot-when]');
+  if (!el) return;
+  el.textContent = footWhenText(record);
+}
+
+/**
+ * @param {object|null} record 记录
+ * @returns {string} 「最后编辑 …」文案；没有时间戳时返回空串（footer 只剩右侧按钮）
+ */
+function footWhenText(record) {
+  const raw = String(record?.updated_at ?? '').trim();
+  if (!raw) return '';
+  const then = parseStamp(raw);
+  if (!then) return `最后编辑 ${raw.slice(0, 10)}`;
+  const diff = Date.now() - then.getTime();
+  if (diff < 60 * 1000) return '最后编辑 刚刚';
+  const minutes = Math.floor(diff / (60 * 1000));
+  if (minutes < 60) return `最后编辑 ${minutes} 分钟前`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `最后编辑 ${hours} 小时前`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `最后编辑 ${days} 天前`;
+  return `最后编辑 ${raw.slice(0, 10)}`;
+}
+
+/**
+ * 解析 `YYYY-MM-DD HH:mm[:ss]`（本地时区，无时区后缀，见 design §8.3）。
+ * 不用 `new Date(string)`：那会按 ISO/UTC 规则猜，跨时区时差 8 小时。
+ *
+ * @param {string} raw 时间戳
+ * @returns {Date|null} 解析失败返回 null
+ */
+function parseStamp(raw) {
+  const m = /^(\d{4})-(\d{1,2})-(\d{1,2})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?/.exec(String(raw ?? ''));
+  if (!m) return null;
+  const date = new Date(
+    Number(m[1]),
+    Number(m[2]) - 1,
+    Number(m[3]),
+    Number(m[4]),
+    Number(m[5]),
+    Number(m[6] ?? 0)
+  );
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 // ==========================================
 // 事件
 // ==========================================
 
+/**
+ * 挂事件。三个委托各管一片：
+ *   `.sh-drawer-body` —— 正文区的一切点击（附件 / 面包屑 / 子项 / 表卡片 / 笔记 / 单元格）；
+ *   `footer`         —— 「⋯」菜单与上一条 / 下一条（**不是**同一个父节点，不能塞进 body 委托）；
+ *   结构块折叠头      —— 它是 `<div role="button">`，Enter / Space 必须手写（见 §3.5 决策 3）。
+ *
+ * @param {object} ctx 抽屉上下文
+ */
 function bindEvents(ctx) {
   const drawer = ctx.el;
   const bodyEl = drawer.querySelector('.sh-drawer-body');
@@ -648,10 +915,13 @@ function bindEvents(ctx) {
   bodyEl?.addEventListener('input', event => onBodyInput(ctx, event));
   bodyEl?.addEventListener('keydown', event => onBodyKeydown(ctx, event));
 
-  drawer.querySelector('[data-del]')?.addEventListener('click', () => ctx.handlers.onDelete?.(ctx.row));
-  drawer.querySelector('[data-prev]')?.addEventListener('click', () => ctx.handlers.onPrev?.(ctx.row));
-  drawer.querySelector('[data-next]')?.addEventListener('click', () => ctx.handlers.onNext?.(ctx.row));
+  // footer 由 openDrawer 建（它只给 .sh-drawer-foot，不知道 rd- 前缀），这里补上类名，
+  // 让层 9 的 `.rd-foot { position: relative }` 能承载绝对定位的「⋯」菜单。
+  const foot = drawer.querySelector('.sh-drawer-foot');
+  foot?.classList.add('rd-foot');
+  foot?.addEventListener('click', event => onFootClick(ctx, event));
 
+  bindStructureToggle(ctx);
   bindTitleEdit(ctx);
   bindBodyEditor(ctx);
 }
@@ -669,10 +939,10 @@ function onBodyClick(ctx, event) {
     return;
   }
 
-  // ② 动作按钮（兼容壳塞进来的「转待办 / 转笔记 / 修改分类 / 编辑」）
-  const actionEl = event.target.closest('[data-action-key]');
-  if (actionEl) {
-    runAction(ctx, actionEl.dataset.actionKey);
+  // ② 结构块折叠头（子项 + 挂载的表）。必须在「单元格」之前判：
+  //    折叠头里没有 .sh-cell，但排在后面的分支越少越不容易被误伤。
+  if (event.target.closest('[data-struct-toggle]')) {
+    toggleStructure(ctx);
     return;
   }
 
@@ -798,6 +1068,214 @@ function openChildDrawer(ctx, childId) {
 }
 
 // ==========================================
+// footer 与「⋯」菜单
+// ==========================================
+//
+// 为什么菜单是 footer 里的绝对定位块而不是 openPopover：
+//   openPopover 第一行是 closeAllPanels()，而抽屉自己就是 activePanel ——
+//   用它做菜单等于「点一下 ⋯ 抽屉自己关掉」。
+//
+// 为什么菜单项不用 body 的委托：菜单在 footer 里，不是 .sh-drawer-body 的后代，
+//   冒泡永远到不了那个监听器。所以 footer 有自己的一份委托（onFootClick）。
+//
+// Esc 的唯一捕获者规则（design §3.5 决策 1）：笔记面板与菜单都挂 window 捕获，
+//   同时挂两个时后挂的那个赢，顺序依赖太脆。所以**新开前先关旧的**，统一走 closeTransient。
+
+/**
+ * footer 点击委托。
+ * @param {object} ctx 抽屉上下文
+ * @param {MouseEvent} event 点击事件
+ */
+function onFootClick(ctx, event) {
+  const target = event.target;
+  if (!target || typeof target.closest !== 'function') return;
+
+  if (target.closest('[data-more]')) {
+    toggleMenu(ctx);
+    return;
+  }
+
+  const menuItem = target.closest('.rd-menu [data-action-key]');
+  if (menuItem) {
+    // 先收菜单再执行：动作常常会 closeAllPanels（打开弹窗 / 跳页），
+    // 菜单跟着 DOM 一起没了，收尾就轮不到（aria-expanded 会卡在 true）。
+    closeMenu(ctx);
+    runAction(ctx, menuItem.dataset.actionKey);
+    return;
+  }
+
+  if (target.closest('.rd-menu [data-del]')) {
+    closeMenu(ctx);
+    ctx.handlers.onDelete?.(ctx.row);
+    return;
+  }
+
+  if (target.closest('[data-prev]')) {
+    ctx.handlers.onPrev?.(ctx.row);
+    return;
+  }
+
+  if (target.closest('[data-next]')) {
+    ctx.handlers.onNext?.(ctx.row);
+  }
+}
+
+/**
+ * 开 / 关「⋯」菜单。
+ * @param {object} ctx 抽屉上下文
+ */
+function toggleMenu(ctx) {
+  const menu = ctx.el?.querySelector('[data-more-menu]');
+  const btn = ctx.el?.querySelector('[data-more]');
+  if (!menu || !btn) return;
+  if (!menu.hidden) {
+    closeMenu(ctx);
+    return;
+  }
+  // 同一时刻只允许一个 Esc 捕获者：菜单开之前把笔记面板收掉
+  closeTransient(ctx);
+
+  menu.hidden = false;
+  btn.setAttribute('aria-expanded', 'true');
+  bindMenuKeys(ctx);
+}
+
+/**
+ * 关菜单（幂等：没开也能调）。
+ * @param {object} ctx 抽屉上下文
+ */
+function closeMenu(ctx) {
+  if (!ctx) return;
+  teardownMenuKeys(ctx);
+  const menu = ctx.el?.querySelector('[data-more-menu]');
+  if (menu) menu.hidden = true;
+  const btn = ctx.el?.querySelector('[data-more]');
+  if (btn) btn.setAttribute('aria-expanded', 'false');
+}
+
+/**
+ * 菜单打开期间的 Esc / 点外部关闭。
+ *
+ * Esc 必须挂在 **window 捕获**：抽屉自己挂在 document 捕获（openDrawer 里），
+ * 捕获顺序是 window → document，只有比它更早的 window 捕获才能抢在它前面 stopPropagation。
+ */
+function bindMenuKeys(ctx) {
+  teardownMenuKeys(ctx);
+
+  const onKey = event => {
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    event.stopPropagation();
+    closeMenu(ctx);
+  };
+
+  const onDown = event => {
+    const menu = ctx.el?.querySelector('[data-more-menu]');
+    const btn = ctx.el?.querySelector('[data-more]');
+    if (!menu || menu.hidden) return;
+    if (menu.contains(event.target) || btn?.contains(event.target)) return;
+    closeMenu(ctx);
+  };
+
+  window.addEventListener('keydown', onKey, true);
+  document.addEventListener('mousedown', onDown, true);
+  ctx.menuKeyCapture = onKey;
+  ctx.menuOutside = onDown;
+}
+
+/** 摘掉菜单的两条监听器。抽屉关闭时也要走一遍，不能留在 window / document 上。 */
+function teardownMenuKeys(ctx) {
+  if (!ctx) return;
+  if (ctx.menuKeyCapture) {
+    window.removeEventListener('keydown', ctx.menuKeyCapture, true);
+    ctx.menuKeyCapture = null;
+  }
+  if (ctx.menuOutside) {
+    document.removeEventListener('mousedown', ctx.menuOutside, true);
+    ctx.menuOutside = null;
+  }
+}
+
+/**
+ * 临时浮层（笔记面板 / 「⋯」菜单）的统一收口：同一时刻只留一个 Esc 捕获者。
+ * @param {object} ctx 抽屉上下文
+ */
+function closeTransient(ctx) {
+  if (!ctx) return;
+  if (ctx.notePanel) closeNotePanel(ctx);
+  closeMenu(ctx);
+}
+
+// ==========================================
+// 结构块（子项 + 挂载的表，默认收起）
+// ==========================================
+
+/**
+ * 给折叠头补 Enter / Space。
+ *
+ * 折叠头刻意用 `<div role="button" tabindex="0">` 而不是 `<button>`：它长得不像按钮
+ * （无底、无边框、无内边距），用 button 就要用 8 条 `!important` 去顶全局按钮规则
+ * （styles.css:5608），用 div 则零对抗 —— 代价就是这两个键要手写。
+ *
+ * @param {object} ctx 抽屉上下文
+ */
+function bindStructureToggle(ctx) {
+  const head = ctx.el?.querySelector('[data-struct-toggle]');
+  if (!head) return;
+  head.addEventListener('keydown', event => {
+    if (event.key !== 'Enter' && event.key !== ' ' && event.key !== 'Spacebar') return;
+    event.preventDefault();
+    toggleStructure(ctx);
+  });
+}
+
+/**
+ * 展开 / 收起结构块。`aria-expanded` 与 `body.hidden` 是同一份状态的两个投影，
+ * 样式（箭头旋转）只读 aria-expanded，所以两者必须同时改。
+ * @param {object} ctx 抽屉上下文
+ */
+function toggleStructure(ctx) {
+  const head = ctx.el?.querySelector('[data-struct-toggle]');
+  const body = ctx.el?.querySelector('[data-struct-body]');
+  if (!head || !body) return;
+  const open = head.getAttribute('aria-expanded') === 'true';
+  head.setAttribute('aria-expanded', open ? 'false' : 'true');
+  body.hidden = open;
+}
+
+/**
+ * 重算结构块计数并决定整块显隐。
+ *
+ * 计数只报存在的那一项（「4 个子项」/「1 张表」），两者皆空时整块 hidden ——
+ * 不显示「0 个子项」（纯陈述、不提供动作）。
+ *
+ * @param {object} ctx 抽屉上下文
+ */
+function updateStructure(ctx) {
+  const block = section(ctx, 'structure');
+  if (!block) return;
+
+  const childCount = ctx.structChildren.length;
+  const sheetCount = ctx.structSheets.length;
+  const parts = [];
+  if (childCount) parts.push(`${childCount} 个子项`);
+  if (sheetCount) parts.push(`${sheetCount} 张表`);
+
+  const count = block.querySelector('[data-struct-count]');
+  if (count) count.textContent = parts.join(' · ');
+
+  block.hidden = parts.length === 0;
+  if (!parts.length) {
+    // 数据清空时把展开态一起复位：否则下次数据回来会「默认展开」，
+    // 与「每次打开抽屉都收起」（design §8.6）不一致
+    const head = block.querySelector('[data-struct-toggle]');
+    const body = block.querySelector('[data-struct-body]');
+    if (head) head.setAttribute('aria-expanded', 'false');
+    if (body) body.hidden = true;
+  }
+}
+
+// ==========================================
 // 关联笔记（T05b）
 //
 // 关系定义：笔记**永远**以磁盘上的 .md 为唯一真相源，`record_id` 只是 front-matter
@@ -833,8 +1311,15 @@ async function loadNotes(ctx, token) {
   if (!alive(token)) return;
 
   const list = Array.isArray(all) ? all : [];
-  ctx.notes = list.filter(note => toId(note?.record_id) === ctx.recordId);
-  // 数据就位之后才放开标志（顺序反了，用户就有机会在空列表上点「关联已有」）
+  // ★ 多值关联：判据是「这一组 id 里有我」，不是「唯一那个 id 等于我」★
+  // v1.1 这里是 `toId(note.record_id) === ctx.recordId`，多值之后它只能匹配第一条，
+  // 表现就是「挂了 3 篇只显示 1 篇」。统一走 normalizeRecordIds 收口：
+  // 'null' / '' / 0 / NaN / 脏字符串全部被滤掉，不会出现单侧可见的幽灵关联。
+  ctx.notes = list.filter(note => normalizeRecordIds(note?.record_ids).includes(ctx.recordId));
+  // 排序：最近编辑倒序（R16）。listNotes 已经是按 updated_at 倒序的，但那条契约在
+  // notesStore 里没有写死，这里显式排一次，别让「最近改的那篇置顶」依赖上游实现。
+  ctx.notes.sort((a, b) => String(b?.updated_at ?? '').localeCompare(String(a?.updated_at ?? '')));
+  // 数据就位之后才放开标志（顺序反了，用户就有机会在空列表上点「挂一篇已有的」）
   ctx.notesReady = true;
   renderNotes(ctx);
 }
@@ -853,40 +1338,101 @@ function renderNotes(ctx) {
     return;
   }
 
-  if (count) {
-    count.textContent = ctx.notes.length ? ` · ${ctx.notes.length}` : '';
-    count.hidden = !ctx.notes.length;
-  }
+  // 计数常显（包括 0）：「笔记 · 0」本身就是空态的一句陈述，
+  // 藏起来会让「笔记」两个字的右边忽有忽无（R02 要求显示计数）。
+  if (count) count.textContent = `· ${ctx.notes.length}`;
 
-  list.innerHTML = ctx.notes.length
-    ? ctx.notes.map(noteRowHtml).join('')
-    : '<span class="rd-empty">还没有关联笔记</span>';
+  list.innerHTML = ctx.notes.length ? ctx.notes.map((note, i) => noteRowHtml(note, i)).join('') : emptyNotesHtml();
 
   // 面板开着时底部入口收起：面板自带「取消」，看着两组按钮会以为其中一组是多余的
   if (foot) foot.hidden = Boolean(ctx.notePanel);
+  // 列表为空时「挂一篇已有的」已经在空态那一行里了，底栏再放一次就是同一句话写两遍。
+  // 「新建笔记」保留 —— 那是空态里没有的另一个入口。
+  const linkEntry = foot?.querySelector('[data-note-pick-link]');
+  if (linkEntry) linkEntry.hidden = ctx.notes.length === 0;
 }
 
-function noteRowHtml(note) {
+/**
+ * 空态：一行虚线入口，**不写**「还没有关联笔记」。
+ * 纯陈述不提供动作的文案，用户读完还得自己找按钮 —— 入口直接就是这一行。
+ * @returns {string} HTML
+ */
+function emptyNotesHtml() {
+  return '<button type="button" class="rd-note-empty" data-note-pick-link>＋挂一篇笔记</button>';
+}
+
+/**
+ * 一篇关联笔记 = 「标题 + 更新日期 + 一行摘要」三行，外加悬停才出现的解除按钮。
+ * 不打开也知道是哪篇（R10）。
+ *
+ * @param {object} note 笔记
+ * @param {number} index 在列表里的位置（0 = 最近编辑的那篇）
+ * @returns {string} HTML
+ */
+function noteRowHtml(note, index) {
   const rel = String(note?.rel_path ?? '');
+  // 笔记文件已不在磁盘：显式占位，不可点、不给解除按钮。
+  // 数据侧目前靠 Rust 侧下发 missing 标记（notes_list 若补上这个字段即可生效），
+  // 没有标记时这一支不会命中 —— 但**不能**让「读不到文件」变成「静默消失」（R07 末条）。
+  const missing = note?.missing === true || note?.is_missing === true;
+  if (missing) {
+    return `<div class="rd-note-item is-missing">
+      <span class="rd-note-open is-dead" aria-disabled="true">
+        <span class="rd-note-head">
+          <span class="rd-row-title">已删除笔记</span>
+          <span class="rd-row-meta">${escapeHtml(rel)}</span>
+        </span>
+      </span>
+    </div>`;
+  }
+
   const title = String(note?.title ?? '').trim() || '未命名笔记';
   const meta = noteMetaText(note);
+  // 摘要取正文首个非空段落，Markdown 符号已剥离（extractExcerpt 负责）；
+  // 一行 ellipsis 截断，长文在抽屉里不该变成一堵墙。
+  const excerpt = extractExcerpt(String(note?.content ?? ''), 60);
+  const fresh = index === 0 && isFreshNote(note) ? '<span class="rd-note-fresh">刚改过</span>' : '';
+
   return `<div class="rd-note-item">
       <button type="button" class="rd-row-item rd-note-open" data-note-open="${escapeHtml(
         rel
       )}" title="${escapeHtml(title)}">
-        <span class="rd-row-title">${escapeHtml(title)}</span>
-        ${meta ? `<span class="rd-row-meta">${escapeHtml(meta)}</span>` : ''}
+        <span class="rd-note-head">
+          <span class="rd-row-title">${escapeHtml(title)}</span>
+          ${fresh}
+          <span class="rd-row-meta">${escapeHtml(meta)}</span>
+        </span>
+        ${excerpt ? `<span class="rd-note-excerpt">${escapeHtml(excerpt)}</span>` : ''}
       </button>
       <button type="button" class="rd-note-unlink" data-note-unlink="${escapeHtml(
         rel
-      )}" title="解除关联（只解挂，笔记文件保留）" aria-label="解除关联">解除关联</button>
+      )}" title="解除关联（只解挂，笔记文件保留）" aria-label="解除关联">×</button>
     </div>`;
 }
 
-/** 一行里只放得下日期：同名笔记靠日期就能分辨，时刻在抽屉里纯属噪音。 */
+/**
+ * 笔记项的日期：**只显示日期**（`YYYY-MM-DD`）。列表中精确到分秒在窄栏里是噪音（§8.3）。
+ * 取 updated_at（R10 要「更新日期」），没有才退回 created_at。
+ *
+ * @param {object} note 笔记
+ * @returns {string} 日期文本
+ */
 function noteMetaText(note) {
+  const updated = String(note?.updated_at ?? '').trim();
   const created = String(note?.created_at ?? '').trim();
-  return created.length >= 10 ? created.slice(0, 10) : created;
+  const source = updated || created;
+  return source.length >= 10 ? source.slice(0, 10) : source;
+}
+
+/**
+ * 「刚改过」只标最近 24 小时编辑过的那一篇：永远挂一个徽标等于没有徽标。
+ * @param {object} note 笔记
+ * @returns {boolean} 是否算「刚改过」
+ */
+function isFreshNote(note) {
+  const then = parseStamp(String(note?.updated_at ?? ''));
+  if (!then) return false;
+  return Date.now() - then.getTime() < 24 * 60 * 60 * 1000;
 }
 
 // ---- 打开 / 解除关联 ----
@@ -926,17 +1472,21 @@ async function unlinkNote(ctx, relPath) {
   if (!ctx.notesReady) return;
   const rel = String(relPath ?? '');
   if (!rel) return;
+  if (ctx.recordId === null) return;
 
   const note = ctx.notes.find(item => String(item?.rel_path ?? '') === rel) || null;
   const title = String(note?.title ?? '').trim() || '这篇笔记';
 
   try {
-    // 显式传 null 才是「解除」；只解挂，不删文件
-    await setNoteRecord(rel, null);
+    // ★ 只摘「当前这条记录」这一个 id ★
+    // 不能用 setNoteRecord / setNoteRecords([])：前者清空关联（笔记可能还挂着别的记录），
+    // 后者整组替换。removeNoteRecord 在 Rust 侧只删这一个 id，其余原样保留，
+    // 而且只改 front-matter，**永远不删笔记文件**。
+    await removeNoteRecord(rel, ctx.recordId);
   } catch (error) {
     const message = error?.message || String(error);
     console.error('[rowDrawer] 解除关联失败', error);
-    logToFile('error', `[rowDrawer] 解除笔记关联失败 rel=${rel}: ${message}`);
+    logToFile('error', `[rowDrawer] 解除笔记关联失败 rel=${rel} record=${ctx.recordId}: ${message}`);
     showHint(ctx, `解除关联失败：${message}`);
     return;
   }
@@ -963,6 +1513,9 @@ function openNotePanel(ctx, mode) {
   if (!ctx.notesReady || ctx.recordId === null) return;
   const panel = section(ctx, 'notes')?.querySelector('[data-notes-panel]');
   if (!panel) return;
+
+  // 同一时刻只允许一个 Esc 捕获者：面板开之前把「⋯」菜单收掉（§3.5 决策 1）
+  closeTransient(ctx);
 
   ctx.notePanel = mode;
   ctx.noteMoving = null;
@@ -1060,20 +1613,21 @@ function renderPickList(ctx) {
     return;
   }
 
-  host.innerHTML = matched.map(note => pickRowHtml(note, ctx.recordId)).join('');
+  host.innerHTML = matched.map(note => pickRowHtml(note)).join('');
 }
 
 function noteSearchText(note) {
   return [note?.title, note?.tag, note?.sub_tag, noteMetaText(note)].filter(Boolean).join(' ').toLowerCase();
 }
 
-function pickRowHtml(note, recordId) {
+function pickRowHtml(note) {
   const rel = String(note?.rel_path ?? '');
   const title = String(note?.title ?? '').trim() || '未命名笔记';
-  const owner = toId(note?.record_id);
+  // 多值之后不再有「被抢走」这回事：这篇笔记可以同时挂在多条记录上，
+  // 所以这里改成报告它已经挂了几条（信息量与「已关联其他记录」等价，但没有误导）。
+  const linkedCount = normalizeRecordIds(note?.record_ids).length;
   const parts = [noteMetaText(note)];
-  // 挂到别的记录上的笔记允许被抢过来，但必须**先让用户看见**这件事
-  if (owner !== null && owner !== recordId) parts.push('已关联其他记录');
+  if (linkedCount) parts.push(`已挂 ${linkedCount} 条`);
   const meta = parts.filter(Boolean).join(' · ');
 
   return `<button type="button" class="rd-row-item rd-note-pick-row" data-note-pick="${escapeHtml(
@@ -1092,15 +1646,22 @@ async function pickCandidate(ctx, relPath) {
   const note = ctx.noteCandidates.find(item => String(item?.rel_path ?? '') === rel);
   if (!note) return;
 
-  const owner = toId(note.record_id);
-  if (owner !== null && owner !== ctx.recordId) {
-    await showMoveConfirm(ctx, note, owner);
+  // 已经挂在别的记录上：照样能挂（多对多不会抢走任何关联），但要先说清楚，
+  // 免得用户以为「挂过来 = 从那边摘掉」。
+  const others = normalizeRecordIds(note?.record_ids).filter(id => id !== ctx.recordId);
+  if (others.length) {
+    await showMoveConfirm(ctx, note, others[0]);
     return;
   }
   await linkNote(ctx, rel);
 }
 
-/** 改挂确认：说清「从哪来、到哪去、旧记录不会丢东西」，然后再让用户点。 */
+/**
+ * 「再挂一条」确认：说清「两边都保留」，然后再让用户点。
+ * @param {object} ctx 抽屉上下文
+ * @param {object} note 候选笔记
+ * @param {number} ownerId 它已经挂着的一条记录的 id
+ */
 async function showMoveConfirm(ctx, note, ownerId) {
   const token = state.token;
   const title = String(note?.title ?? '').trim() || '这篇笔记';
@@ -1119,11 +1680,11 @@ async function showMoveConfirm(ctx, note, ownerId) {
   if (!box) return;
 
   ctx.noteMoving = { rel: String(note?.rel_path ?? ''), title };
-  box.innerHTML = `<div class="rd-note-confirm-text">「${escapeHtml(title)}」已关联到「${escapeHtml(
+  box.innerHTML = `<div class="rd-note-confirm-text">「${escapeHtml(title)}」已经挂在「${escapeHtml(
     ownerTitle
-  )}」，改挂到当前记录？（那边只是少一条关联，笔记本身不会消失）</div>
+  )}」上，再挂到当前记录？（两边都会保留，那边不会少东西）</div>
     <div class="rd-note-actions">
-      <button type="button" class="rd-link-btn is-primary" data-note-move>改挂过来</button>
+      <button type="button" class="rd-link-btn is-primary" data-note-move>挂到当前记录</button>
       <button type="button" class="rd-link-btn" data-note-cancel>取消</button>
     </div>`;
   box.hidden = false;
@@ -1135,7 +1696,8 @@ async function linkNote(ctx, relPath) {
   if (!rel || ctx.recordId === null) return;
 
   try {
-    await setNoteRecord(rel, ctx.recordId);
+    // 追加一条关联（幂等）：不用 setNoteRecord —— 它会把已有其它关联一起清掉
+    await addNoteRecord(rel, ctx.recordId);
   } catch (error) {
     const message = error?.message || String(error);
     console.error('[rowDrawer] 关联笔记失败', error);
@@ -1186,7 +1748,11 @@ async function createNoteFromDrawer(ctx) {
       status: 'usable',
       tag: String(record?.tag ?? '').trim() || '未分类',
       sub_tag: String(record?.sub_tag ?? '').trim(),
-      record_id: ctx.recordId,
+      // ★ 新笔记也要走多值口径 ★
+      // 只传 record_id 会退化成「兼容单值」路径（toNoteDoc 里 record_ids 缺席时才用它），
+      // 一旦将来这条新笔记被再挂一条，第一次保存就会把旧的单值行写成 record_ids: [...]
+      // —— 现在直接给数组，文件里从一开始就是新格式。
+      record_ids: ctx.recordId === null ? [] : [ctx.recordId],
       // 空 created_at 会让文件名丢掉日期前缀（Rust 侧不做兜底），这里必须给准时间
       created_at: stamp,
       updated_at: stamp,

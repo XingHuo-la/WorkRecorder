@@ -15181,3 +15181,679 @@ body.cmdk-open { overflow: hidden !important; }
   line-height: 1.5;
   color: var(--color-danger);
 }
+
+/* ==========================================================================
+   设计层 9 · v1.2 记录详情抽屉重排 + 笔记区多篇管理（T02 / T03）
+   --------------------------------------------------------------------------
+   只追加，前面 15183 行一个字符都没改。层内编号 9.1–9.8，9.7 留给笔记页（T04）。
+   层叠关系：同选择器 + 同 !important 状态下**后出现者胜**，所以凡是前面带
+   !important 声明过的属性，这里也带；前面没带的，这里直接写即可。
+   颜色一律取主题变量（旧层写死 #fff 在深色主题下白底白字的教训）。
+
+   与前面各层的四处硬对抗（详见 docs/design-v1.2.md §4.2）：
+     坑 1  5608 `button, .btn { … 全 !important }`   → 9.6 / 9.5 逐条顶回
+     坑 3 11871 `.sh-detail-*` 40px 高 + 96px label → 9.3 用更高权重顶回
+     坑 4  `[hidden]` 被 author 层的 display 规则压掉 → 9.8 统一兜底（放最后）
+   ========================================================================== */
+
+/* 9.1 令牌 ---------------------------------------------------------------- */
+/* 只新增，不覆盖任何已有令牌：--rd-* / --nt-* 前缀避免与旧层同名令牌打架。 */
+:root {
+  --rd-gap: 20px;              /* 抽屉区块之间的垂直间距 */
+  --rd-gap-tight: 12px;        /* 区块内部小节间距 */
+  --rd-fs-body: 15px;          /* 抽屉正文 */
+  --rd-lh-body: 1.78;          /* 抽屉正文行距 */
+  --rd-fs-label: 12px;         /* 字段 label */
+  --rd-row-h: 28px;            /* 字段网格单行高度 */
+  --nt-fs-title: 22px;         /* 笔记标题（T04 用） */
+  --nt-fs-body: 15px;          /* 笔记正文（T04 用） */
+  --nt-lh-body: 1.9;           /* 笔记正文行距（T04 用） */
+  --nt-measure: 700px;         /* 笔记正文可读宽度上限（T04 用） */
+  --nt-list-w: 210px;          /* 笔记列表固定宽（T04 用） */
+}
+
+/* 9.2 抽屉壳与元信息行 ---------------------------------------------------- */
+/* 头部 18/20/14 → 16/24/12，标题 16/18 → 20，body 内边距 16/20/20 → 20/24/24。
+   11656 与 11872 两处都带 !important，这里必须也带。 */
+.sh-drawer-head {
+  gap: 12px !important;
+  padding: 16px 24px 12px !important;
+}
+
+.sh-drawer-kicker {
+  color: var(--text-muted) !important;
+  font-size: var(--font-size-xs) !important;   /* 12px，不再有 10.5 / 11 两档 */
+  font-weight: 500 !important;
+  line-height: 1.4 !important;
+}
+
+.sh-drawer-title {
+  color: var(--text-main) !important;
+  font-size: var(--font-size-xl) !important;   /* 20px：与正文 15px 差 2 档 */
+  font-weight: 700 !important;
+  line-height: 1.32 !important;
+}
+
+.sh-drawer-body {
+  padding: 20px 24px 24px !important;
+}
+
+/* 区块间距：20 / 16（分隔线）/ 10，比层 8 的 14 / 12 / 8 呼吸更开 */
+.rd {
+  gap: 0;
+}
+
+.rd-block {
+  gap: 10px;
+  margin-top: var(--rd-gap);
+  padding-top: 16px;
+}
+
+.rd-h {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+.rd-empty {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+
+/* —— 元信息行：一行装完面包屑 + 状态 chip + 日期 —— */
+/* 三个子元素全空时整行 hidden（22px 也要省，正文首行靠它进首屏）。
+   [hidden] 的强制隐藏写在 9.8，这里不要重复声明 display:!important。 */
+.rd-meta-line {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  margin: 0 0 10px;      /* + .rd 的 0 + 正文块 12px 的内外边距 = 「元信息 → 正文」12px */
+  overflow: hidden;
+}
+
+/* 面包屑从「独立块」降为「行内片段」：去掉层 8 的 margin，允许横向压缩 */
+.rd-crumbs {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 2px;
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.rd-crumb {
+  max-width: 180px;
+  padding: 2px 5px !important;
+  border-radius: 5px !important;
+  font-size: 12px !important;
+  font-weight: 400 !important;
+  line-height: 1.4 !important;
+}
+
+.rd-crumb-sep {
+  font-size: 12px;
+}
+
+/* 状态 chip：只在「没有字段网格」的记录上出现（状态在网格里时由单元格呈现） */
+.rd-status-chip {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: var(--radius-pill);
+  background: rgba(127, 127, 127, 0.14);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.rd-meta-when {
+  flex: none;
+  max-width: 100%;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 正文外层：不带上分隔线（它不是 .rd-block），与元信息行之间只留 12px */
+.rd-body-block {
+  display: block;
+}
+
+/* 9.3 字段两列网格 -------------------------------------------------------- */
+/* 目标：28px 一行、两列、静止无边框。6 字段 = 3 行 × 30 + 2×2 = 94px（≤96）。
+   11871 那段「详情抽屉：字号、行距」把 min-height:40px / padding:8px 10px /
+   border:var(--border-light) 全写成 !important，11573 又写了 display:flex!important，
+   所以这一节每条都要 !important，且权重更高（.rd-fields .x = 0,2,0 > .x = 0,1,0）。 */
+.rd-fields .sh-detail {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 28px;
+  row-gap: 2px;
+}
+
+.rd-fields .sh-detail-field {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  min-width: 0;
+  padding: 2px 0 !important;
+  border: 0;
+}
+
+.rd-fields .sh-detail-label {
+  width: 62px !important;
+  flex: none !important;
+  padding-top: 0 !important;
+  color: var(--text-muted) !important;
+  font-size: var(--rd-fs-label) !important;
+  font-weight: 400 !important;
+  line-height: 1.5 !important;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rd-fields .sh-detail-cell {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 26px !important;
+  height: auto !important;
+  padding: 2px 6px !important;
+  border: 1px solid transparent !important;
+  border-radius: 6px !important;
+  background: transparent !important;
+  color: var(--text-main);
+  font-size: var(--font-size-md) !important;   /* 14px */
+  /* 1.4 而不是 1.5：14×1.5=21 的行盒 + 上下 2px 内边距 + 1px 边框 = 27，
+     比 min-height 26 高 1px，6 个字段就会从 94 涨到 101（超过 96 的预算）。
+     1.4 时行盒 19.6 → 单元格由 min-height 兜到 26，三行正好 3×30 + 2×2 = 94。 */
+  line-height: 1.4 !important;
+  cursor: text;
+}
+
+.rd-fields .sh-detail-cell:hover {
+  border-color: var(--border-light) !important;
+  background: rgba(127, 127, 127, 0.1) !important;
+}
+
+.rd-fields .sh-detail-cell:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 1px;
+}
+
+/* 单元格里的取值组件要跟 14px 的行对齐（层 8 写的是 13.5 / 13 / 12）。
+   行距一律 1.4、pill 压到 20px 高：三者相加不能把 26px 的行撑出界，
+   否则 6 个字段的字段区会从 94px 涨到 101px（T02 判据是 ≤96px）。 */
+.rd-fields .sh-detail-cell .ft-text {
+  font-size: var(--font-size-md) !important;
+  line-height: 1.4 !important;
+  white-space: normal !important;
+}
+.rd-fields .sh-detail-cell .ft-date {
+  font-size: var(--font-size-md) !important;
+  line-height: 1.4 !important;
+}
+.rd-fields .sh-detail-cell .ft-status {
+  font-size: var(--font-size-md) !important;
+  line-height: 1.4 !important;
+}
+.rd-fields .sh-detail-cell .ft-pill {
+  font-size: var(--font-size-xs) !important;
+  line-height: 16px !important;
+  padding: 1px 8px !important;
+}
+
+/* 附件缩略图保持 96×60（重声明同值，防止以后有人改上面那条时顺手改坏） */
+.rd-fields .sh-detail-cell .ft-att-thumb {
+  width: 96px !important;
+  height: 60px !important;
+}
+
+/* 9.4 正文 ---------------------------------------------------------------- */
+/* 13.5 / 1.7 → 15 / 1.78（R13：正文 ≥ 列表标题字号、行距 ≥ 1.7）。
+   层 8 的 .rd-body 没有 !important，这里在后即胜；.markdown-body 容器上没有字号规则
+   （8835–8900 已核），不会打架。 */
+.rd-body {
+  color: var(--text-main);
+  font-size: var(--rd-fs-body);
+  line-height: var(--rd-lh-body);
+}
+
+/* 正文内标题钉死 px（不用 em）：15px 正文下 em 会算出 15.75 这类半档值 */
+.rd-body h1,
+.rd-body h2,
+.rd-body h3 {
+  font-size: var(--font-size-lg);   /* 16px */
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.rd-body h4,
+.rd-body h5,
+.rd-body h6 {
+  font-size: var(--rd-fs-body);     /* 15px：与正文同号但字重更重 */
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+/* 编辑态：字号行距与只读态一致，切换时文字不跳。
+   全局 `textarea { font-size:14px!important; line-height:1.6!important }`（5729–5758）
+   必须顶回，否则一进编辑态正文就变小变紧，看起来像换了份文档。 */
+.rd-body-edit {
+  font-family: inherit;
+  font-size: var(--rd-fs-body) !important;
+  line-height: var(--rd-lh-body) !important;
+  color: var(--text-main);
+}
+
+/* 正文里的代码块 / 表格按 15px 正文重算，避免比正文还小 */
+.rd-body pre {
+  font-size: var(--font-size-sm);
+  line-height: 1.6;
+}
+
+.rd-body th,
+.rd-body td {
+  font-size: var(--font-size-sm);
+}
+
+/* 9.5 笔记区与结构块 ----------------------------------------------------- */
+/* 笔记项三行：标题（14/500）+ 更新日期（12 muted）+ 摘要（13/1.6 单行截断）。
+   R10 判据是「不打开也知道是哪篇」，所以摘要必须在，且必须是纯文本。 */
+.rd-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.rd-note-item {
+  align-items: stretch;
+  gap: 2px;
+  border-radius: 8px;
+}
+
+/* 这是 <button>，被全局规则接管（38px 高 / 14px 字 / 实底），逐条顶回 */
+.rd-note-open {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: stretch !important;
+  gap: 2px !important;
+  min-width: 0;
+  padding: 8px 10px !important;
+  border: 1px solid transparent !important;
+  border-radius: 8px !important;
+  background: transparent !important;
+  color: var(--text-main) !important;
+  font-size: var(--font-size-md) !important;
+  font-weight: 500 !important;
+  line-height: 1.45 !important;
+  text-align: left;
+}
+
+.rd-note-open:hover {
+  border-color: var(--border-light) !important;
+  background: rgba(127, 127, 127, 0.1) !important;
+}
+
+.rd-note-open:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 1px;
+}
+
+.rd-note-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.rd-note-open .rd-row-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text-main);
+  font-size: var(--font-size-md);
+  font-weight: 500;
+  line-height: 1.45;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rd-note-open .rd-row-meta {
+  flex: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+/* 「刚改过」：弱化到只比日期重一点，不能抢标题 */
+.rd-note-fresh {
+  flex: none;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: rgba(127, 127, 127, 0.14);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.4;
+}
+
+.rd-note-excerpt {
+  display: block;
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);   /* 13px */
+  font-weight: 400;
+  line-height: 1.6;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 解除按钮：20×20 的「×」，悬停才出现（沿用层 8 的 opacity + pointer-events 双闸） */
+.rd-note-unlink {
+  align-self: center;
+  width: 20px !important;
+  height: 20px !important;
+  min-height: 0 !important;
+  padding: 0 !important;
+  border: 1px solid transparent !important;
+  border-radius: 5px !important;
+  background: transparent !important;
+  color: var(--text-muted) !important;
+  box-shadow: none !important;
+  font-family: inherit !important;
+  font-size: 14px !important;
+  font-weight: 400 !important;
+  line-height: 1 !important;
+}
+
+/* 笔记文件已不在磁盘：显式占位，不可点、无 hover、无解除按钮 */
+.rd-note-item.is-missing .rd-note-open,
+.rd-note-open.is-dead {
+  cursor: default;
+  opacity: 0.65;
+}
+
+.rd-note-open.is-dead:hover {
+  border-color: transparent !important;
+  background: transparent !important;
+}
+
+/* 空态：一行虚线入口。**不写**「还没有关联笔记」—— 纯陈述不提供动作 */
+.rd-note-empty {
+  display: block;
+  width: 100%;
+  height: 30px !important;
+  min-height: 0 !important;
+  padding: 0 10px !important;
+  border: 1px dashed var(--border-medium) !important;
+  border-radius: 7px !important;
+  background: transparent !important;
+  color: var(--text-muted) !important;
+  box-shadow: none !important;
+  font-family: inherit !important;
+  font-size: var(--font-size-sm) !important;
+  font-weight: 400 !important;
+  line-height: 1.4 !important;
+  text-align: center;
+}
+
+.rd-note-empty:hover {
+  border-color: var(--color-focus) !important;
+  color: var(--text-main) !important;
+}
+
+/* —— 结构块：子项 + 挂载的表合成一块，默认收起 —— */
+/* 折叠头是 <div role="button">（§3.5 决策 3），零全局对抗，所以整节不带 !important */
+.rd-struct-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 0;
+  border-radius: 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  cursor: pointer;
+  user-select: none;
+}
+
+.rd-struct-head:hover {
+  color: var(--text-main);
+}
+
+.rd-struct-head:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 1px;
+}
+
+.rd-struct-label {
+  flex: none;
+}
+
+/* 计数紧跟在「结构」后面，箭头紧跟计数 —— 三块连成一句话
+   「结构 4 个子项 · 1 张表 ▾」。让计数 flex:1 会把箭头推到抽屉最右边，
+   在 652px 宽里两者相距 400px，看着像两个不相干的元素。 */
+.rd-struct-count {
+  flex: none;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.4;
+}
+
+.rd-caret {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  margin-left: 2px;
+  transition: transform 0.15s ease;
+}
+
+.rd-struct-head[aria-expanded="true"] .rd-caret {
+  transform: rotate(90deg);
+}
+
+/* 视觉缩进：让人看出这些内容「在结构里面」 */
+.rd-struct-body {
+  display: block;
+  padding: 4px 0 0 12px;
+}
+
+.rd-sub {
+  display: block;
+  padding-top: 2px;
+}
+
+.rd-sub-h {
+  padding: 2px 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+/* 9.6 footer 与「⋯」菜单 ------------------------------------------------- */
+/* footer 承载绝对定位的菜单，所以必须有 position:relative（.sh-drawer-foot 没设过） */
+.rd-foot {
+  position: relative;
+}
+
+.rd-foot-when {
+  flex: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.rd-foot-gap {
+  flex: 1 1 auto;
+}
+
+/* 分组 reset：只顶结构性杀手（不写尺寸，尺寸留在各自分支里，避免两处 !important 打架） */
+.rd-foot-btn,
+.rd-menu-item {
+  min-height: 0 !important;
+  box-shadow: none !important;
+  font-family: inherit !important;
+  line-height: 1.4 !important;
+}
+
+.rd-foot-btn {
+  flex: none;
+  height: 26px !important;
+  padding: 0 10px !important;
+  border: 1px solid transparent !important;
+  border-radius: 6px !important;
+  background: transparent !important;
+  color: var(--text-secondary) !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.rd-foot-btn:hover {
+  border-color: var(--border-light) !important;
+  background: rgba(127, 127, 127, 0.12) !important;
+  color: var(--text-main) !important;
+}
+
+.rd-foot-btn:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 1px;
+}
+
+.rd-foot-btn[disabled] {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.rd-foot-btn[disabled]:hover {
+  border-color: transparent !important;
+  background: transparent !important;
+  color: var(--text-secondary) !important;
+}
+
+.rd-foot-btn .wr-icon {
+  width: 14px;
+  height: 14px;
+}
+
+/* 「⋯」菜单：footer 内绝对定位，向上弹。**不能**用 openPopover（它会 closeAllPanels，
+   而抽屉就是 activePanel —— 等于点一下「⋯」抽屉自己关掉） */
+.rd-menu {
+  position: absolute;
+  right: 12px;
+  bottom: calc(100% + 6px);
+  z-index: 2;
+  min-width: 160px;
+  padding: 4px;
+  border: 1px solid var(--border-light);
+  border-radius: 10px;
+  background: var(--bg-card);
+  box-shadow: var(--shadow-lg);
+}
+
+.rd-menu-item {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: flex-start !important;
+  width: 100%;
+  height: 30px !important;
+  padding: 0 10px !important;
+  border: 1px solid transparent !important;
+  border-radius: 7px !important;
+  background: transparent !important;
+  color: var(--text-main) !important;
+  font-size: var(--font-size-sm) !important;
+  font-weight: 400 !important;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.rd-menu-item:hover {
+  background: rgba(127, 127, 127, 0.14) !important;
+  color: var(--text-main) !important;
+}
+
+.rd-menu-item:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: -2px;
+}
+
+.rd-menu-item.is-danger {
+  color: var(--color-danger) !important;
+}
+
+.rd-menu-item.is-danger:hover {
+  background: rgba(var(--color-danger-rgb), 0.1) !important;
+  color: var(--color-danger) !important;
+}
+
+.rd-menu-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border-light);
+}
+
+/* 9.7 笔记页 —— 留给 T04，本节暂空。 */
+
+/* 9.8 [hidden] 兜底 ------------------------------------------------------ */
+/* 必须放在层 9 的**最后**，且必须带 !important：
+   author 层的 `display: flex` 会压掉 UA 的 `[hidden] { display: none }`（坑 4，
+   styles.css:9924 记着上次被这个 bug 咬过），症状是「元信息行明明该隐藏却显示空行」，
+   肉眼极难归因。这里一次收口，后面再加新元素也不会踩。 */
+.rd-meta-line[hidden],
+.rd-status-chip[hidden],
+.rd-meta-when[hidden],
+.rd-struct-body[hidden],
+.rd-sub[hidden],
+.rd-menu[hidden],
+.rd-block[hidden],
+.rd-fields[hidden],
+.rd-hint[hidden],
+.rd-crumbs[hidden],
+.rd-note-panel[hidden],
+.rd-link-btn[hidden],
+.rd-notes-foot[hidden] {
+  display: none !important;
+}
+
+/* 窄窗降级：视口高度不足时压间距，但不牺牲正文行距（仍 ≥ R13 的 1.7）。
+   vw < 1080 时字段网格**仍两列**（不降单列，否则 6 字段回到 6 行，正文又被挤下去）。 */
+@media (max-height: 700px) {
+  .sh-drawer-body {
+    padding: 14px 18px 18px !important;
+  }
+
+  .rd-block {
+    margin-top: 14px;
+    padding-top: 12px;
+  }
+
+  .rd-body {
+    line-height: 1.72;
+  }
+
+  .rd-body-edit {
+    line-height: 1.72 !important;
+  }
+}
