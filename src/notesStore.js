@@ -115,6 +115,44 @@ export async function readNote(relPath) {
 }
 
 /**
+ * 把笔记对象整理成 Rust 侧 `NoteDoc` 认得的形状。
+ *
+ * ★ 键名必须是 **snake_case** ★
+ * Rust 的 `NoteDoc` 是 `#[derive(Deserialize)]` 且**没有** `#[serde(rename_all)]`，
+ * serde 对不认识的键**直接忽略**：写成 camelCase 不报错、不抛异常、日志里也没有痕迹，
+ * 只是值静默变成默认值。之前这份 payload 用的是 noteType / subTag / createdAt /
+ * updatedAt / relPath，后果是：
+ *   ① note_type 永远退回默认的 'idea'（用户选的「问题 / 复核」全丢）；
+ *   ② sub_tag 永远空串 —— `notes_write` 的目标目录由 relative_dir(tag, sub_tag) 算，
+ *      文件会从 `notes/<主分类>/<子项目>/` 掉到 `notes/<主分类>/`；
+ *   ③ rel_path 永远空串 —— 保存已有笔记时被当成新建，**每次保存多出一个文件**，
+ *      旧文件还留在原地（`notes_write` 只在 rel_path 有值时才清理旧路径）；
+ *   ④ created_at 空串 —— 文件名里的日期前缀消失。
+ * 入参这侧保留 `doc.note_type ?? doc.noteType` 的兼容：调用方写哪种都能用，
+ * 但**发出去的**只有一种形状。
+ *
+ * @param {object} doc 任意形状的笔记对象
+ * @returns {object} Rust NoteDoc 形状的 payload
+ */
+function toNoteDoc(doc = {}) {
+  return {
+    id: doc.id ?? null,
+    title: doc.title ?? '',
+    content: doc.content ?? '',
+    note_type: doc.note_type ?? doc.noteType ?? 'idea',
+    status: doc.status ?? 'usable',
+    tag: doc.tag ?? '',
+    sub_tag: doc.sub_tag ?? doc.subTag ?? '',
+    // 可空：null = 独立笔记。Rust 侧是 Option<i64>，显式 null 比「不传」更不容易被误读。
+    record_id: doc.record_id ?? doc.recordId ?? null,
+    created_at: doc.created_at ?? doc.createdAt ?? '',
+    updated_at: doc.updated_at ?? doc.updatedAt ?? '',
+    rel_path: doc.rel_path ?? doc.relPath ?? '',
+    abs_path: doc.abs_path ?? doc.absPath ?? '',
+  };
+}
+
+/**
  * 保存笔记（新建或覆盖）。
  *
  * @param {object} doc 笔记对象；relPath 为空表示新建
@@ -124,19 +162,7 @@ export async function writeNote(doc) {
   const dataPath = await currentDataPath();
   if (!dataPath) return null;
 
-  const payload = {
-    id: doc.id ?? null,
-    title: doc.title ?? '',
-    content: doc.content ?? '',
-    noteType: doc.note_type ?? doc.noteType ?? 'idea',
-    status: doc.status ?? 'usable',
-    tag: doc.tag ?? '',
-    subTag: doc.sub_tag ?? doc.subTag ?? '',
-    createdAt: doc.created_at ?? doc.createdAt ?? '',
-    updatedAt: doc.updated_at ?? doc.updatedAt ?? '',
-    relPath: doc.rel_path ?? doc.relPath ?? '',
-    absPath: doc.abs_path ?? doc.absPath ?? ''
-  };
+  const payload = toNoteDoc(doc);
 
   try {
     return await getInvoke()('notes_write', { dataFilePath: dataPath, doc: payload });
@@ -152,17 +178,13 @@ export async function updateNoteMeta(relPath, doc) {
   if (!dataPath || !relPath) return null;
 
   const payload = {
-    id: doc.id ?? null,
-    title: doc.title ?? '',
-    content: '',
-    noteType: doc.note_type ?? doc.noteType ?? '',
+    ...toNoteDoc({ ...doc, content: '', created_at: '', abs_path: '' }),
+    // 这三个在 Rust 侧是「非空才覆盖 / Some 才覆盖」：缺省值必须还原成空串 / null，
+    // 否则一个默认值（'idea' / 'usable'）就会把文件里的真实值打回去。
+    note_type: doc.note_type ?? doc.noteType ?? '',
     status: doc.status ?? '',
-    tag: doc.tag ?? '',
-    subTag: doc.sub_tag ?? doc.subTag ?? '',
-    createdAt: '',
-    updatedAt: doc.updated_at ?? doc.updatedAt ?? '',
-    relPath,
-    absPath: ''
+    record_id: doc.record_id ?? doc.recordId ?? null,
+    rel_path: relPath,
   };
 
   try {
@@ -173,6 +195,37 @@ export async function updateNoteMeta(relPath, doc) {
     });
   } catch (error) {
     console.error('更新笔记元数据失败:', error);
+    throw error;
+  }
+}
+
+/**
+ * 设置或解除笔记与 record 的关联。
+ *
+ * **解除关联必须显式传 null**：Rust 侧的 `notes_set_record` 收到的正是
+ * `Option<i64>`，「没传」和「传 null」在语义上都是 None，但前者一旦被序列化层
+ * 优化掉就会变成「调用方忘了传」，这里的契约只有一种：要解除就传 null。
+ * 注意这只是解挂，**不删文件** —— 笔记始终独立存在于笔记页。
+ *
+ * @param {string} relPath 笔记相对路径
+ * @param {number|string|null} recordId null = 解除关联
+ * @returns {Promise<object|null>} 更新后的文档
+ */
+export async function setNoteRecord(relPath, recordId) {
+  const dataPath = await currentDataPath();
+  if (!dataPath || !relPath) return null;
+
+  const raw = recordId === null || recordId === undefined || recordId === '' ? null : Number(recordId);
+  const id = raw === null || !Number.isFinite(raw) ? null : raw;
+
+  try {
+    return await getInvoke()('notes_set_record', {
+      dataFilePath: dataPath,
+      relPath,
+      recordId: id
+    });
+  } catch (error) {
+    console.error('设置笔记关联失败:', error);
     throw error;
   }
 }
