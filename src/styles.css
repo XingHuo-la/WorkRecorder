@@ -14538,38 +14538,39 @@ body.cmdk-open { overflow: hidden !important; }
 
 /* 8.4 字段网格 / 记录信息网格 ------------------------------------------- */
 /* 字段网格沿用 .sh-detail / .sh-detail-field / .sh-detail-cell（不推倒重来），
-   这里只补抽屉里的间距与宽度，让它比表格里松一点、好读一点 */
+   但**必须带 !important**：11871 行那段「详情抽屉：字号、行距」把
+   min-height:40px / padding:8px 10px / border:var(--border-light) 全写成了
+   !important，不带的话这里一条也赢不了 —— 表现就是 6 个字段吃掉 300px、
+   正文被挤到折叠线以下，打开抽屉先看到一张表单。
+   目标：一行 34px、静止无边框（hover 才提示可编辑），把空间还给正文。 */
 .rd-fields {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-}
-
-.rd-fields .sh-detail {
-  gap: 2px;
+  gap: 0;
 }
 
 .rd-fields .sh-detail-label {
-  width: 76px;
-  padding-top: 9px;
-  font-size: 11.5px;
+  width: 80px !important;
+  padding-top: 7px !important;
+  font-size: 11.5px !important;
   line-height: 1.4;
   color: var(--text-muted);
 }
 
 .rd-fields .sh-detail-cell {
-  min-height: 32px;
-  padding: 4px 8px;
+  min-height: 30px !important;
+  padding: 3px 8px !important;
+  border: 1px solid transparent !important;
+  border-radius: 6px !important;
+  background: transparent !important;
   font-size: 13px;
-  line-height: 1.55;
-  border: 1px solid transparent;
-  border-radius: 6px;
+  line-height: 1.5;
   cursor: text;
 }
 
 .rd-fields .sh-detail-cell:hover {
-  border-color: var(--border-light);
-  background: rgba(127, 127, 127, 0.1);
+  border-color: var(--border-light) !important;
+  background: rgba(127, 127, 127, 0.1) !important;
 }
 
 .rd-fields .sh-detail-cell:focus-visible {
@@ -14817,5 +14818,92 @@ body.cmdk-open { overflow: hidden !important; }
 .rd-action:focus-visible {
   outline: 2px solid var(--color-focus);
   outline-offset: 1px;
+}
+
+/* ======================================================================
+   8.10 顶掉全局 button 规则（抽屉内的四个「其实是按钮」的元素）
+   ----------------------------------------------------------------------
+   样式表里有一条全局规则：
+
+     button, .btn { min-height / padding / border / border-radius /
+                    background / color / font-size …… 全部 !important }
+
+   抽屉里的面包屑 `.rd-crumb`、子项行 `.rd-row-item`、挂载表卡片
+   `.rd-sheet-card`、动作按钮 `.rd-action` 都是 <button>，被它整条接管：
+   13px 变 14px、7px 内边距变 0 --space-4、透明底变实底、hover 无反馈
+   （8.1–8.9 的写法没有 !important，一条也赢不了）。实测行高被撑到 38px，
+   列表看起来像一排表单按钮。
+
+   处理办法：在这里按元素把该有的值用 !important 顶回来。选择器权重
+   （0,1,0 / 0,2,0）高于元素选择器 button（0,0,1），带 !important 即生效。
+   只作用于抽屉内部，不动全站按钮。
+   ====================================================================== */
+.rd-crumb,
+.rd-row-item,
+.rd-sheet-card,
+.rd-action {
+  min-height: 0 !important;
+  box-shadow: none !important;
+  font-family: inherit !important;
+}
+
+/* —— 面包屑：小字、次要色，不是按钮 —— */
+.rd-crumb {
+  padding: 3px 6px !important;
+  border: 1px solid transparent !important;
+  border-radius: 6px !important;
+  background: transparent !important;
+  color: var(--text-muted) !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  line-height: 1.4 !important;
+}
+
+/* —— 子项行 / 挂载表卡片：列表行 —— */
+.rd-row-item,
+.rd-sheet-card {
+  padding: 7px 9px !important;
+  border: 1px solid transparent !important;
+  border-radius: 7px !important;
+  background: transparent !important;
+  color: var(--text-main) !important;
+  font-size: 13px !important;
+  font-weight: 400 !important;
+  line-height: 1.45 !important;
+}
+
+/* 卡片要有个「浮起一层」的底。--bg-card 在深色主题下是半透明叠加色，
+   直接当背景铺会算成浅色块，所以用中性叠加（深浅两套主题都成立）。 */
+.rd-sheet-card {
+  border-color: var(--border-light) !important;
+  background: rgba(127, 127, 127, 0.08) !important;
+}
+
+/* —— 动作按钮：保持按钮外观，但恢复 30px 高与次要文字色 —— */
+.rd-action {
+  height: 30px !important;
+  padding: 0 12px !important;
+  border: 1px solid var(--border-light) !important;
+  border-radius: 7px !important;
+  background: var(--bg-card) !important;
+  color: var(--text-secondary) !important;
+  font-size: 12.5px !important;
+  font-weight: 500 !important;
+  line-height: 1.4 !important;
+}
+
+/* —— hover：全局那条 !important 让下面这些原本全部失效 —— */
+.rd-crumb:hover,
+.rd-row-item:hover,
+.rd-sheet-card:hover {
+  border-color: var(--border-light) !important;
+  background: rgba(127, 127, 127, 0.16) !important;
+  color: var(--text-main) !important;
+}
+
+.rd-action:hover {
+  border-color: var(--border-medium) !important;
+  background: rgba(127, 127, 127, 0.12) !important;
+  color: var(--text-main) !important;
 }
 

@@ -389,14 +389,16 @@ async function loadCrumbs(ctx, token) {
   const el = section(ctx, 'crumbs');
   if (!el) return;
 
+  // 只在条目之间放分隔符。链尾再加一个 `›` 会指向「下面那条大标题」，
+  // 看起来像少了一项（截图核对时确实被误读成 bug），这里不带尾分隔。
   el.innerHTML = chain
     .map(
       item =>
         `<button type="button" class="rd-crumb" data-crumb-id="${escapeHtml(item.id)}" title="${escapeHtml(
           crumbLabel(item)
-        )}">${escapeHtml(crumbLabel(item))}</button><span class="rd-crumb-sep" aria-hidden="true">›</span>`
+        )}">${escapeHtml(crumbLabel(item))}</button>`
     )
-    .join('');
+    .join('<span class="rd-crumb-sep" aria-hidden="true">›</span>');
   el.hidden = false;
 }
 
@@ -474,8 +476,9 @@ function renderMetaRows(ctx, record) {
     ],
     ['截止', record.deadline],
     ['备注', record.remark],
-    // 调用方给了 sheetId（表格行总是给）就先用它，免得记录还没读全时这一行空着
-    ['所属表', record.sheet_id ? `#${record.sheet_id}` : ctx.sheetId ? `#${ctx.sheetId}` : '不在任何表'],
+    // 只有真在表里才说「所属表」。随手记/待办写「不在任何表」是纯噪音 ——
+    // 表格行本来就有 sheet_id（没被移出过），空值只在非表格记录上出现。
+    ['所属表', record.sheet_id ? `#${record.sheet_id}` : ctx.sheetId ? `#${ctx.sheetId}` : ''],
   ].filter(([, value]) => String(value ?? '').trim());
 
   host.innerHTML = rows.length
@@ -744,6 +747,10 @@ function recordTitle(item) {
 }
 
 function statusText(item) {
+  // 表格行不显示状态：record 表给 sheet_row 的 status 永远是建行时的默认值 'done'
+  // （见 recordStore.createRecord），没有任何地方会改它。挂在子项列表里就是每行
+  // 都写「已完成」，纯噪音。表格行真正的状态在它自己的单选字段里，由字段网格呈现。
+  if (item?.kind === 'sheet_row') return '';
   return STATUS_LABELS[item?.status] || String(item?.status ?? '') || KIND_LABELS[item?.kind] || '';
 }
 
