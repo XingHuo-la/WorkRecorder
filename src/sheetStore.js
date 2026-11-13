@@ -1,9 +1,16 @@
-// 「多表」数据层：一张表 = sheet，一套字段 = sheet_field，一堆记录 = sheet_row。
+// 「多表」数据层：一张表 = sheet，一套字段 = sheet_field，一堆记录 = record 里 sheet_id 指向本表的行。
 //
-// 设计要点（对齐设计稿：任务 = 母文件夹，任务内可建多张表）：
-//   · 表可以归属某个任务（sheet.task_id → todos.id），也可以不归属；
-//   · 记录整条存 JSON（sheet_row.data），加列 / 改类型不迁移结构；
+// 设计要点（对齐「以表格为核心」的信息架构）：
+//   · 所有内容都是 record。kind 只是「出生地」（log / todo / sheet_row），
+//     「在不在表里」由 record.sheet_id 表达 —— 一条随手记被移入表格后 kind 不变、sheet_id 有值。
+//   · 表的挂载点：sheet.task_id 指向「这张表挂在哪一行上」，null = 未挂载的独立表。
+//     ⚠️ 它不是父子从属关系：那张表本来就是独立表，只是这一行把它挂过来了。
+//     删掉挂载点 = 表回到未挂载状态，**表本身与表里的数据都不动**。
+//   · 记录整条存 JSON（record.custom），加列 / 改类型不迁移结构；
 //   · 所有写入都是单条 SQL，不批量重写，避免「改一格卡一下」。
+//
+// ⚠️ 本模块已全部直读 record。视图（logs / todos / sheet_row）已冻结，
+//    新代码不要再 FROM 视图 —— 给视图加列要重建触发器，漏一列就静默抹值。
 //
 // 本模块只依赖注入的 adapter（dbQuery / dbExecute），
 // 不直接碰 window.__TAURI__，这样调试壳可以换成本地假数据。
@@ -210,11 +217,15 @@ export const SHEET_TEMPLATES = [
 // ==========================================
 
 export async function listSheets() {
+  // anchor_record_id 是 task_id 的**只读别名**，语义是「这张表挂在哪一行上」。
+  // 刻意不叫 parent_record_id：那会被读成「父表」，而表和行不是父子从属。
+  // 新代码一律读别名，旧代码继续读 task_id；将来真要改名只改这一处 + 一条迁移。
   const rows = await db().dbQuery(
-    `SELECT s.id, s.name, s.task_id, s.created_at, s.updated_at, s.sort,
+    `SELECT s.id, s.name, s.task_id, s.task_id AS anchor_record_id,
+            s.created_at, s.updated_at, s.sort,
             (SELECT COUNT(*) FROM sheet_field f WHERE f.sheet_id = s.id) AS field_count,
-            (SELECT COUNT(*) FROM sheet_row r WHERE r.sheet_id = s.id) AS row_count,
-            (SELECT r2.updated_at FROM sheet_row r2 WHERE r2.sheet_id = s.id ORDER BY r2.updated_at DESC LIMIT 1) AS last_at
+            (SELECT COUNT(*) FROM record r WHERE r.sheet_id = s.id) AS row_count,
+            (SELECT r2.updated_at FROM record r2 WHERE r2.sheet_id = s.id ORDER BY r2.updated_at DESC LIMIT 1) AS last_at
      FROM sheet s
      ORDER BY s.sort, s.id`
   );
@@ -317,7 +328,16 @@ export async function touchSheet(sheetId) {
 
 export async function deleteSheet(sheetId) {
   await db().dbExecute('DELETE FROM sheet_field WHERE sheet_id = ?', [sheetId]);
-  await db().dbExecute('DELETE FROM sheet_row WHERE sheet_id = ?', [sheetId]);
+
+  // kind 是「出生地」，删表的语义按它分两类，顺序不能反：
+  // 1) 在表格里出生的行，只存在于这张表的语境 → 随表销毁；
+  await db().dbExecute("DELETE FROM record WHERE sheet_id = ? AND kind = 'sheet_row'", [sheetId]);
+  // 2) 被「移入」的行（kind = log / todo）有独立的出生语境 → 退回记录页继续存在。
+  //    必须在 DELETE 之后跑，否则会把第 1 类也一起放生，产生「表没了、行还在」的孤儿。
+  //    ⚠️ NULL 只能写成 SQL 字面量：dbExecute 会 params.map(String)，传 null 落库是字符串 'null'，
+  //    而 'null' 既不满足 IS NULL 也不等于任何 sheet_id，那批行会永远查不到、也删不掉。
+  await db().dbExecute('UPDATE record SET sheet_id = NULL WHERE sheet_id = ?', [sheetId]);
+
   await db().dbExecute('DELETE FROM sheet WHERE id = ?', [sheetId]);
 }
 
@@ -385,12 +405,23 @@ export async function deleteField(fieldId) {
 }
 
 // ==========================================
-// 记录（sheet_row）
+// 记录（record 里 sheet_id 指向本表的行）
 // ==========================================
 
 export async function loadRows(sheetId) {
+  // 直读 record，**不看 kind**：一条随手记被移入表格后 kind 仍是 'log'，
+  // 走 sheet_row 视图会查不到它 —— 这是坑② 的主病灶。
+  // custom AS data：parseRowData 读 row.data，别名一加，103 KB 的 sheetPage 一行都不用改。
+  // CAST(sort AS INTEGER)：record.sort 是 REAL，不加会拿到 3.0，
+  // 任何 row.sort === 3 的严格比较会变 false（视图当年也是这么做的）。
+  // 顺手取回 kind/title/body/parent_id/status：行层级、正文、状态都要用，省一次抽屉查询。
   const rows = await db().dbQuery(
-    'SELECT id, sheet_id, data, sort, height, created_at, updated_at FROM sheet_row WHERE sheet_id = ? ORDER BY sort, id',
+    `SELECT id, sheet_id, custom AS data, CAST(sort AS INTEGER) AS sort,
+            height, created_at, updated_at,
+            kind, title, body, parent_id, status
+       FROM record
+      WHERE sheet_id = ?
+      ORDER BY sort, id`,
     [sheetId]
   );
   return (Array.isArray(rows) ? rows : []).map(item => ({ ...item, values: parseRowData(item) }));
@@ -401,16 +432,17 @@ export async function insertRow(sheetId, values = {}) {
   // 排序值必须取 MAX(sort)+1，不能取 COUNT(*)：
   // 删过中间行之后 COUNT 比最大 sort 小，新记录会插到表格中间。
   const maxRows = await db().dbQuery(
-    'SELECT COALESCE(MAX(sort), -1) AS max_sort FROM sheet_row WHERE sheet_id = ?',
+    'SELECT COALESCE(MAX(sort), -1) AS max_sort FROM record WHERE sheet_id = ?',
     [sheetId]
   );
   const sort = Number(maxRows?.[0]?.max_sort ?? -1) + 1;
+  // kind 写 'sheet_row'：在表格里新建的行，出生地就是表格，删表时随表销毁。
   await db().dbExecute(
-    'INSERT INTO sheet_row (sheet_id, data, sort, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+    "INSERT INTO record (kind, sheet_id, custom, sort, created_at, updated_at) VALUES ('sheet_row', ?, ?, ?, ?, ?)",
     [sheetId, JSON.stringify(values), sort, stamp, stamp]
   );
   const created = await db().dbQuery(
-    'SELECT id FROM sheet_row WHERE sheet_id = ? AND sort = ? ORDER BY id DESC LIMIT 1',
+    'SELECT id FROM record WHERE sheet_id = ? AND sort = ? ORDER BY id DESC LIMIT 1',
     [sheetId, sort]
   );
   return created?.[0]?.id || null;
@@ -421,14 +453,14 @@ export async function insertRowAt(sheetId, sortIndex, count = 1, values = {}) {
   const stamp = nowStamp();
   const safeCount = Math.max(1, Math.min(50, Number(count) || 1));
   const at = Math.max(0, Number(sortIndex) || 0);
-  await db().dbExecute('UPDATE sheet_row SET sort = sort + ? WHERE sheet_id = ? AND sort >= ?', [
+  await db().dbExecute('UPDATE record SET sort = sort + ? WHERE sheet_id = ? AND sort >= ?', [
     safeCount,
     sheetId,
     at,
   ]);
   for (let i = 0; i < safeCount; i += 1) {
     await db().dbExecute(
-      'INSERT INTO sheet_row (sheet_id, data, sort, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+      "INSERT INTO record (kind, sheet_id, custom, sort, created_at, updated_at) VALUES ('sheet_row', ?, ?, ?, ?, ?)",
       [sheetId, JSON.stringify(values), at + i, stamp, stamp]
     );
   }
@@ -439,10 +471,10 @@ export async function setRowHeight(rowId, height) {
   // 参数会被统一 String()，null 传下去会写成字符串 'null'（INTEGER 列存成 TEXT）。
   // 「自动行高」必须走不带参数的 SQL NULL。
   if (height == null) {
-    await db().dbExecute('UPDATE sheet_row SET height = NULL, updated_at = ? WHERE id = ?', [stamp, rowId]);
+    await db().dbExecute('UPDATE record SET height = NULL, updated_at = ? WHERE id = ?', [stamp, rowId]);
     return;
   }
-  await db().dbExecute('UPDATE sheet_row SET height = ?, updated_at = ? WHERE id = ?', [
+  await db().dbExecute('UPDATE record SET height = ?, updated_at = ? WHERE id = ?', [
     Math.max(28, Math.min(600, Number(height))),
     stamp,
     rowId,
@@ -451,7 +483,7 @@ export async function setRowHeight(rowId, height) {
 
 export async function saveRowValues(rowId, values) {
   const stamp = nowStamp();
-  await db().dbExecute('UPDATE sheet_row SET data = ?, updated_at = ? WHERE id = ?', [
+  await db().dbExecute('UPDATE record SET custom = ?, updated_at = ? WHERE id = ?', [
     JSON.stringify(values),
     stamp,
     rowId,
@@ -459,7 +491,7 @@ export async function saveRowValues(rowId, values) {
 }
 
 export async function deleteRow(rowId) {
-  await db().dbExecute('DELETE FROM sheet_row WHERE id = ?', [rowId]);
+  await db().dbExecute('DELETE FROM record WHERE id = ?', [rowId]);
 }
 
 export async function duplicateRow(sheetId, values) {

@@ -516,6 +516,33 @@ fn init_and_migrate_db_at(db_path: &str, json_path: &str) -> Result<(), String> 
             .map_err(|e| format!("数据库升级到 v10 失败: {}", e))?;
     }
 
+    // v11：「以表格为核心」的数据地基。**只加索引与一列，一个字符都不碰视图与触发器。**
+    //
+    // 为什么不给视图加列：三个 INSTEAD OF UPDATE 触发器都是全列 NEW.* 覆写
+    // （见 v10 的 logs_update / todos_update / sheet_row_update），加列就要重建视图
+    // 与触发器，漏写一列 → 该列被 COALESCE(NEW.x, '') 静默抹成空，不报错。
+    // 新代码一律 FROM record，视图只服务不打算再改的旧代码。
+    if schema_version < 11 {
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_record_parent ON record(parent_id);
+             CREATE INDEX IF NOT EXISTS idx_record_sheet_only ON record(sheet_id) WHERE sheet_id IS NOT NULL;
+             CREATE INDEX IF NOT EXISTS idx_sheet_task_id ON sheet(task_id);",
+        )
+        .map_err(|e| format!("创建 v11 索引失败: {}", e))?;
+
+        // note_index 只是 .md 文件的元数据缓存，record_id 的真相在文件的 front-matter 里。
+        // 走 add_column_if_missing：老库补列，新库建表时已带该列，两条路径都安全。
+        add_column_if_missing(&conn, "note_index", "record_id", "record_id INTEGER")?;
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_note_index_record
+                 ON note_index(record_id) WHERE record_id IS NOT NULL;",
+        )
+        .map_err(|e| format!("创建 note_index.record_id 索引失败: {}", e))?;
+
+        conn.execute_batch("PRAGMA user_version = 11;")
+            .map_err(|e| format!("数据库升级到 v11 失败: {}", e))?;
+    }
+
     let json_exists = Path::new(json_path).exists();
     // ✅ 修复了之前的借用检查器报错，一步到位！
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM tags", [], |row| row.get(0)).unwrap_or(0);
@@ -1034,6 +1061,7 @@ fn main() {
             notes_fs::notes_read,
             notes_fs::notes_write,
             notes_fs::notes_update_meta,
+            notes_fs::notes_set_record,
             notes_fs::notes_delete,
             notes_fs::notes_ensure_tag_dir,
             notes_fs::notes_open_root,
@@ -1146,7 +1174,7 @@ mod tests {
             .unwrap();
         assert_eq!(gone, 0, "视图 DELETE 未删除 record 行");
 
-        // ④ 二次迁移幂等：版本号已到 10，不应重复插入
+        // ④ 二次迁移幂等：版本号已到 11，不应重复插入
         drop(conn);
         init_and_migrate_db_at(&db_str, &json_str).expect("二次迁移失败");
         let conn = Connection::open(&db).unwrap();
@@ -1315,6 +1343,218 @@ mod tests {
                        [sheet_id], |r| r.get(0))
             .unwrap();
         assert_eq!(left, 0, "按表删除行未生效");
+
+        drop(conn);
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    // v11 只加索引与 note_index.record_id。它最大的风险不是「加不上」，而是
+    // 「有人顺手给视图补了一列」—— 补列要重建视图与触发器，而三个触发器都是
+    // 全列 NEW.* 覆写，漏写一列，那列就被 COALESCE(NEW.x, '') 静默抹成空，不报错。
+    // 所以这里不测「加成功了」，测「没碰不该碰的东西」：
+    //   ①版本号 11、四个索引/列都在
+    //   ②重跑一次迁移，视图与触发器的 SQL 与上一次逐字一致
+    //   ③走视图写一次，视图里没有的列（body / parent_id）必须原样存活
+    #[test]
+    fn v11_adds_indexes_without_touching_views() {
+        let tmp = std::env::temp_dir().join("wr-v11-index-only");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).expect("创建临时目录失败");
+        let db = tmp.join("t.db");
+        let json = tmp.join("t.json");
+        let db_str = db.to_string_lossy().to_string();
+        let json_str = json.to_string_lossy().to_string();
+
+        // 全新库跑一遍：验证 0 → 11 这条路径（老库走的是 v11 单独一段）
+        init_and_migrate_db_at(&db_str, &json_str).expect("全新库迁移失败");
+
+        let conn = Connection::open(&db).unwrap();
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, 11, "全新库版本号应为 11");
+
+        // ① 索引与列
+        for idx in [
+            "idx_record_parent",
+            "idx_record_sheet_only",
+            "idx_sheet_task_id",
+            "idx_note_index_record",
+        ] {
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?1",
+                    [idx],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 1, "缺少索引 {}（v11 未生效）", idx);
+        }
+
+        let has_record_id = {
+            let mut stmt = conn.prepare("PRAGMA table_info(note_index)").unwrap();
+            let names: Vec<String> = stmt
+                .query_map([], |r| r.get::<_, String>(1))
+                .unwrap()
+                .filter_map(|x| x.ok())
+                .collect();
+            names.iter().any(|n| n == "record_id")
+        };
+        assert!(has_record_id, "note_index 缺少 record_id 列");
+
+        // ② 冻结校验：把版本号退回 10 再跑一次，视图/触发器必须逐字不变
+        let snapshot = |c: &Connection| -> Vec<(String, String)> {
+            let mut stmt = c
+                .prepare(
+                    "SELECT name, sql FROM sqlite_master \
+                     WHERE type IN ('view','trigger') AND sql IS NOT NULL ORDER BY name",
+                )
+                .unwrap();
+            let rows = stmt
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+                .unwrap()
+                .filter_map(|x| x.ok())
+                .collect();
+            rows
+        };
+        let before_sql = snapshot(&conn);
+        assert!(!before_sql.is_empty(), "没有视图/触发器，说明 v10 没跑");
+
+        conn.execute_batch("PRAGMA user_version = 10;").unwrap();
+        drop(conn);
+        init_and_migrate_db_at(&db_str, &json_str).expect("v11 重跑失败");
+        let conn = Connection::open(&db).unwrap();
+        assert_eq!(snapshot(&conn), before_sql, "v11 改动了视图或触发器定义");
+
+        // ③ 行为校验：视图里没有 body / parent_id，经视图 UPDATE 后必须还在
+        conn.execute(
+            "INSERT INTO record (kind, sheet_id, custom, sort, title, body, parent_id, created_at, updated_at) \
+             VALUES ('sheet_row', 999, '{\"a\":1}', 0, 'v11 探针', '正文必须存活', 4242, '', '')",
+            [],
+        )
+        .unwrap();
+        let probe: i64 = conn
+            .query_row("SELECT id FROM record WHERE title = 'v11 探针'", [], |r| r.get(0))
+            .unwrap();
+
+        conn.execute(
+            "UPDATE sheet_row SET data = ?, updated_at = ? WHERE id = ?",
+            rusqlite::params!["{\"a\":2}", "2026-11-13 10:00:00", probe],
+        )
+        .expect("视图 UPDATE 失败");
+
+        let (body, parent, custom): (String, Option<i64>, String) = conn
+            .query_row(
+                "SELECT body, parent_id, custom FROM record WHERE id = ?1",
+                [probe],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(body, "正文必须存活", "视图 UPDATE 把 body 抹掉了（触发器漏列）");
+        assert_eq!(parent, Some(4242), "视图 UPDATE 把 parent_id 抹掉了（触发器漏列）");
+        assert!(custom.contains("\"a\":2"), "视图 UPDATE 没写进 custom：{}", custom);
+
+        drop(conn);
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    // T01 的核心行为：一条随手记被「移入」表格后，必须能从表格里查到。
+    // 改造前 loadRows 走 sheet_row 视图（WHERE kind = 'sheet_row'），查不到它 ——
+    // 这就是「表格里看不见、记录页看得见、又删不掉」的根源。
+    // 这里逐条复刻 sheetStore.js 改后的 SQL，抓四件事：
+    //   ①直读 record 且 custom AS data 别名可用  ②CAST(sort AS INTEGER)
+    //   ③移入的行（kind 仍是 log）能被查到      ④删表两段式不留孤儿、NULL 不是字符串
+    #[test]
+    fn sheet_store_direct_read_handles_moved_in_records() {
+        let tmp = std::env::temp_dir().join("wr-t01-direct-read");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).expect("创建临时目录失败");
+        let db = tmp.join("t.db");
+        let json = tmp.join("t.json");
+        init_and_migrate_db_at(&db.to_string_lossy(), &json.to_string_lossy()).expect("迁移失败");
+
+        let conn = Connection::open(&db).unwrap();
+        conn.execute(
+            "INSERT INTO sheet (name, created_at, updated_at, sort) VALUES ('设备台账', '', '', 0)",
+            [],
+        )
+        .unwrap();
+        let sheet_id: i64 = conn
+            .query_row("SELECT id FROM sheet WHERE name = '设备台账'", [], |r| r.get(0))
+            .unwrap();
+
+        // 一条在「记录」页出生的随手记
+        conn.execute(
+            "INSERT INTO logs (date, time, text, tag, sub_tag, detail, remark, linked_todo, deadline, is_overdue, status, record_type) \
+             VALUES ('2026-11-13', '09:00', '前置泵温差偏大', '设备', '', '', '', '', '', 'false', 'unprocessed', 'log')",
+            [],
+        )
+        .unwrap();
+        let log_id: i64 = conn
+            .query_row("SELECT id FROM record WHERE title = '前置泵温差偏大'", [], |r| r.get(0))
+            .unwrap();
+
+        // 移入表格：只写 sheet_id，kind 不变（这就是「保留出生地」）
+        conn.execute("UPDATE record SET sheet_id = ?1 WHERE id = ?2", [sheet_id, log_id])
+            .unwrap();
+
+        // ① + ② + ③：sheetStore.loadRows 的完整 SQL
+        let load_rows = "SELECT id, sheet_id, custom AS data, CAST(sort AS INTEGER) AS sort, \
+                                height, created_at, updated_at, \
+                                kind, title, body, parent_id, status \
+                           FROM record WHERE sheet_id = ?1 ORDER BY sort, id";
+        let mut stmt = conn.prepare(load_rows).expect("loadRows SQL 不合法");
+        let cols: Vec<String> = stmt.column_names().into_iter().map(|s| s.to_string()).collect();
+        assert!(cols.contains(&"data".to_string()), "custom AS data 别名失效，parseRowData 会读到空");
+        let rows: Vec<(i64, String)> = stmt
+            .query_map([sheet_id], |r| Ok((r.get(0)?, r.get(7)?)))
+            .unwrap()
+            .filter_map(|x| x.ok())
+            .collect();
+        drop(stmt);
+        assert_eq!(rows.len(), 1, "移入表格的随手记没被查出来（还在走 kind='sheet_row'？）");
+        assert_eq!(rows[0].1, "log", "移入后 kind 不应改变");
+
+        // ② sort 必须是整数：record.sort 是 REAL，不加 CAST 会拿到 2.0 让严格比较失效
+        conn.execute(
+            "INSERT INTO record (kind, sheet_id, custom, sort, title, body, created_at, updated_at) \
+             VALUES ('sheet_row', ?1, '{\"f\":\"整数校验\"}', 2.5, '', '', '', '')",
+            [sheet_id],
+        )
+        .unwrap();
+        let frac_id: i64 = conn
+            .query_row("SELECT id FROM record WHERE custom LIKE '%整数校验%'", [], |r| r.get(0))
+            .expect("插入的小数 sort 行没找到");
+        let (sort_val, sort_type): (i64, String) = conn
+            .query_row(
+                "SELECT CAST(sort AS INTEGER), typeof(CAST(sort AS INTEGER)) FROM record WHERE id = ?1",
+                [frac_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("CAST(sort AS INTEGER) 查询失败");
+        assert_eq!(sort_val, 2, "CAST 应把 2.5 截断为 2");
+        assert_eq!(sort_type, "integer", "CAST 后类型应为 integer，否则 row.sort === 3 会失效");
+
+        // ④ 删表两段式（顺序：先删表格出生的行，再把移入的放回记录页）
+        conn.execute("DELETE FROM record WHERE sheet_id = ?1 AND kind = 'sheet_row'", [sheet_id])
+            .unwrap();
+        conn.execute("UPDATE record SET sheet_id = NULL WHERE sheet_id = ?1", [sheet_id])
+            .unwrap();
+        conn.execute("DELETE FROM sheet WHERE id = ?1", [sheet_id]).unwrap();
+
+        let remain: i64 = conn
+            .query_row("SELECT COUNT(*) FROM record WHERE sheet_id = ?1", [sheet_id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(remain, 0, "删表后留下孤儿行（sheet_id 还指着已删的表）");
+
+        let log_alive: i64 = conn
+            .query_row("SELECT COUNT(*) FROM record WHERE id = ?1", [log_id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(log_alive, 1, "移入的行被错误地随表销毁了");
+
+        // 关键：NULL 必须是 SQL NULL，不能是字符串 'null'
+        let sid_type: String = conn
+            .query_row("SELECT typeof(sheet_id) FROM record WHERE id = ?1", [log_id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(sid_type, "null", "sheet_id 落成了 '{}'，WHERE sheet_id IS NULL 会查不到它", sid_type);
 
         drop(conn);
         let _ = fs::remove_dir_all(&tmp);

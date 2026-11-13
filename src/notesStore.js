@@ -236,20 +236,26 @@ export async function syncNoteIndex(notes, dbExecute) {
     await dbExecute('DELETE FROM note_index', []);
 
     for (const note of notes) {
+      // ⚠️ record_id 是可空列，必须走 SQL 字面量 NULL：dbExecute 会把参数统一 String()，
+      // 传 null 落库是字符串 'null' —— 那样 `record_id IS NOT NULL` 判定为「已关联」，
+      // 而 `record_id = 12` 永远匹配不上，变成查不到也清不掉的幽灵关联。
+      const linked = note.record_id == null || String(note.record_id).trim() === '';
+      const params = [
+        note.rel_path || '',
+        note.title || '',
+        note.note_type || 'idea',
+        note.status || 'usable',
+        note.tag || '',
+        note.sub_tag || '',
+      ];
+      if (!linked) params.push(Number(note.record_id));
+      params.push(note.created_at || '', note.updated_at || '');
+
       await dbExecute(
         `INSERT OR REPLACE INTO note_index
-         (rel_path, title, note_type, status, tag, sub_tag, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          note.rel_path || '',
-          note.title || '',
-          note.note_type || 'idea',
-          note.status || 'usable',
-          note.tag || '',
-          note.sub_tag || '',
-          note.created_at || '',
-          note.updated_at || ''
-        ]
+         (rel_path, title, note_type, status, tag, sub_tag, record_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ${linked ? 'NULL' : '?'}, ?, ?)`,
+        params
       );
     }
   } catch (error) {

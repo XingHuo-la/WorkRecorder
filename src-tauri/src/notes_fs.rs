@@ -32,6 +32,13 @@ pub struct NoteDoc {
     pub tag: String,
     #[serde(default)]
     pub sub_tag: String,
+    /// 关联的 record id：这份长文是在哪一行的详情里挂上来的。None = 独立笔记。
+    ///
+    /// 只是**元数据**，不是从属关系：笔记始终以 `.md` 文件为唯一真相，
+    /// 可以脱离记录独立存在；删记录时笔记不动，只是变成 `record_id` 悬空的孤儿笔记
+    /// （在笔记页照常可见，`note_index.record_id` 查不到而已）。
+    #[serde(default)]
+    pub record_id: Option<i64>,
     #[serde(default)]
     pub created_at: String,
     #[serde(default)]
@@ -215,6 +222,10 @@ pub fn render_markdown(doc: &NoteDoc) -> String {
     if let Some(id) = doc.id {
         out.push_str(&format!("id: {}\n", id));
     }
+    // 只写有值的记录：独立笔记不产生这一行，老文件重写后也不会多出 `record_id:` 空行。
+    if let Some(record_id) = doc.record_id {
+        out.push_str(&format!("record_id: {}\n", record_id));
+    }
     out.push_str(&format!("title: {}\n", escape_yaml_value(&doc.title)));
     out.push_str(&format!(
         "type: {}\n",
@@ -300,6 +311,10 @@ pub fn parse_markdown(text: &str, fallback_title: &str) -> NoteDoc {
         let value = unquote_yaml_value(&line[colon + 1..]);
         match key {
             "id" => doc.id = value.parse::<i64>().ok(),
+            "record_id" => {
+                // 解析失败（手写成了 record_id: 待定）时保持 None，不让整份笔记失效
+                doc.record_id = value.parse::<i64>().ok();
+            }
             "title" => {
                 if !value.is_empty() {
                     doc.title = value;
@@ -571,6 +586,38 @@ pub async fn notes_update_meta(
     if !doc.updated_at.trim().is_empty() {
         parsed.updated_at = doc.updated_at;
     }
+    // 传了 record_id 就一并挂上。要**解除**关联必须用 notes_set_record（见下），
+    // 因为这里无法区分「没传这个字段」和「要清空」。
+    if doc.record_id.is_some() {
+        parsed.record_id = doc.record_id;
+    }
+    parsed.rel_path = rel_path;
+
+    notes_write(data_file_path, parsed).await
+}
+
+/// 设置或解除笔记与 record 的关联。
+///
+/// 为什么单独一个命令、不并进 `notes_update_meta`：那里的 `record_id: Option<i64>`
+/// 分不清「调用方没传」和「调用方要清空」，靠 serde 的 double-option 技巧能把人绕晕。
+/// 这里语义唯一 —— `record_id = None` 就是显式解除。
+#[tauri::command]
+pub async fn notes_set_record(
+    data_file_path: String,
+    rel_path: String,
+    record_id: Option<i64>,
+) -> Result<NoteDoc, String> {
+    let root = notes_root(&data_file_path);
+    let existing = safe_join(&root, &rel_path)?;
+    let text = fs::read_to_string(&existing)
+        .map_err(|e| format!("读取笔记失败 {}: {}", rel_path, e))?;
+    let file_name = existing
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    let mut parsed = parse_markdown(&text, &title_from_file_name(&file_name));
+    parsed.record_id = record_id;
     parsed.rel_path = rel_path;
 
     notes_write(data_file_path, parsed).await
@@ -674,6 +721,8 @@ pub async fn notes_migrate_legacy(data_file_path: String, force: Option<bool>) -
                 status: row.get::<_, Option<String>>(4)?.unwrap_or_else(|| "usable".to_string()),
                 tag: row.get::<_, Option<String>>(5)?.unwrap_or_default(),
                 sub_tag: row.get::<_, Option<String>>(6)?.unwrap_or_default(),
+                // 旧 notes 表没有「挂在哪一行」的概念，迁移过来的笔记一律是独立笔记
+                record_id: None,
                 created_at: row.get::<_, Option<String>>(7)?.unwrap_or_default(),
                 updated_at: row.get::<_, Option<String>>(8)?.unwrap_or_default(),
                 rel_path: String::new(),
