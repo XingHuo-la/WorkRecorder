@@ -140,6 +140,12 @@ export function openRowDrawer(opts = {}) {
     // bodyEditing = 编辑框是否开着（异步 markdown 渲染回来不能把它冲掉）。
     bodySource: '',
     bodyEditing: false,
+    // recordReady = 「库里的正文」是否已经到位（applyRecord 做完 / 或确定不会再有）。
+    // 首屏 .rd-body 画的是 preload（可能只是空串），此时进编辑态就会拿 preload 当原文，
+    // 保存时把库里的真正文整段覆盖 —— 所以编辑入口必须等这个标志。
+    recordReady: false,
+    // 进编辑态那一刻 textarea 里的值，给 applyRecord 的第二道防御比对用
+    bodyEditOriginal: '',
     // 编辑态挂的 window 捕获监听器，退出时必须摘掉（见 teardownBodyEditor）
     bodyKeyCapture: null,
   };
@@ -403,8 +409,12 @@ function paintEmptyBody(host) {
 // ==========================================
 
 async function hydrate(ctx, token) {
-  // 没有数据通道（调试壳 / 老调用没给 id）：首屏同步渲染的就是全部，不留「加载中」痕迹
-  if (ctx.recordId === null || !isRecordStoreReady()) return;
+  // 没有数据通道（调试壳 / 老调用没给 id）：首屏同步渲染的就是全部，不留「加载中」痕迹。
+  // recordReady 也要放开 —— 这条路上不会有人再来补正文，不放开就永远不能编辑。
+  if (ctx.recordId === null || !isRecordStoreReady()) {
+    ctx.recordReady = true;
+    return;
+  }
 
   ctx.recordPromise = getRecord(ctx.recordId).catch(error => {
     console.warn('[rowDrawer] 记录读取失败', error);
@@ -426,7 +436,14 @@ async function hydrate(ctx, token) {
 
 async function applyRecord(ctx, token) {
   const record = await ctx.recordPromise;
-  if (!alive(token) || !record) return;
+
+  // 取记录失败（库读挂 / 记录已被删）也要放开正文编辑：
+  // 否则表现为「正文永远点不动」，用户只能瞪着它，比写失败更难理解。
+  if (!record) {
+    ctx.recordReady = true;
+    return;
+  }
+  if (!alive(token)) return;
   ctx.record = record;
 
   // 标题：有字段时以行的值为准（表格首列才是真相），没有字段才用 record.title
@@ -444,7 +461,23 @@ async function applyRecord(ctx, token) {
   // 但**基线**不能在编辑态下动 —— 否则用户敲进去的字会被当成「没改过」。
   const body = String(record.body ?? '');
   ctx.bodySource = body;
-  if (!ctx.bodyEditing) state.bodyBaseline = body;
+  // 到这里「库里的正文」才算就位。startBodyEdit 靠它把「preload 当原文」的窗口堵死。
+  ctx.recordReady = true;
+
+  if (!ctx.bodyEditing) {
+    state.bodyBaseline = body;
+  } else {
+    // 第二道防御：万一还是有人在 recordReady 之前进了编辑态（getRecord 重试、
+    // 未来抽屉复用之类的路径），只要他一个字都没敲，就把 textarea 换成真正的正文；
+    // 已经敲过字就一个字都不动 —— 覆盖用户的输入比让他看到 preload 值更糟。
+    const textarea = section(ctx, 'body')?.querySelector('[data-body-edit]');
+    if (textarea && typeof ctx.bodyEditOriginal === 'string' && textarea.value === ctx.bodyEditOriginal) {
+      textarea.value = body;
+      ctx.bodyEditOriginal = body;
+      state.bodyBaseline = body;
+      autoGrowBody(textarea);
+    }
+  }
 
   await renderBody(ctx, body);
 }
@@ -809,12 +842,20 @@ function startBodyEdit(ctx) {
   const host = section(ctx, 'body')?.querySelector('[data-body]');
   if (!host || ctx.bodyEditing) return;
 
+  // 库里的正文还没到位（openRowDrawer 是同步的，getRecord 是毫秒级但终究是异步）。
+  // 这一段空档里 .rd-body 显示的是 preload，用户此刻点进来、敲两下、关掉，
+  // 就会拿「preload + 新键入」把库里的真正文整段覆盖 —— 宁可让他多点一次。
+  // 窗口只有一个本地查询的时间，感知不到。
+  if (!ctx.recordReady) return;
+
   const textarea = document.createElement('textarea');
   textarea.className = 'rd-body-edit';
   textarea.setAttribute('data-body-edit', '');
   textarea.setAttribute('aria-label', '编辑正文');
   textarea.spellcheck = false;
   textarea.value = ctx.bodySource;
+  // 记下「进编辑时的原值」，applyRecord 只在「用户一个字没敲」时才敢替换它
+  ctx.bodyEditOriginal = textarea.value;
 
   host.classList.remove('is-empty');
   host.classList.add('is-editing');
