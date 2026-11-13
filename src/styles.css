@@ -16436,3 +16436,34 @@ body.cmdk-open { overflow: hidden !important; }
 /* 本节为什么这样写：见层首注释 —— 材质三件套（柔影 / 内高光 / 粉彩）
    全部走令牌，深浅主题各配一套值；hover 与 [style*] 的分支都只动
    box-shadow / border-color / background，零布局属性、零 display 声明。 */
+
+/* ---- 10.4 工作台主卡片补纸感（覆盖「工作台内卡片减法」的去阴影规则） ----
+   工作台的两张主卡片不是 .today-item / .inbox-record，而是 wb-v2 下的
+   .task-tree-section / .today-section / .inbox-section / .completed-todos-section
+   （以及同类的 .advanced-tools-strip）。13713 行那段「工作台内卡片减法」
+   明确写了 box-shadow: none !important + border: 0 !important —— 层 10 的六个
+   卡片选择器命中不到它们，所以 Sir 真机截图里主卡片是纯平的。
+
+   本段只推翻「去阴影」，**保留**那条规则的 margin/padding/border-radius/
+   background/backdrop-filter 原样：border 仍是 0（纸感靠内高光而不是描边），
+   尺寸与排版一个字节都不动。层 10 在 13713 之后、两条选择器同特异性，
+   后者胜，所以不需要靠选择器加权去打架。
+   逐条写出选择器（不用缩写类名）：谁会去改工作台的卡片，就该一眼看见它被谁接管。 */
+#subview-dashboard.wb-v2 .task-tree-section,
+#subview-dashboard.wb-v2 .today-section,
+#subview-dashboard.wb-v2 .inbox-section,
+#subview-dashboard.wb-v2 .completed-todos-section,
+#subview-dashboard.wb-v2 .advanced-tools-strip {
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.1),
+    inset 0 1px 0 var(--card-hi, rgba(255, 255, 255, 0.55)),
+    var(--shadow-card, 0 14px 30px -16px rgba(16, 24, 40, 0.3)) !important;
+}
+
+/* ---- 10.5 深色主题下「看得出浮起」的取值 ----
+   深底上 1px 内高光是最主要的浮起信号（外阴影在 #0a0f19 上几乎看不见），
+   所以深色主题的 --card-hi 从 0.07 提到 0.10、--shadow-card 略加深；
+   取值依据是 1080×740（Sir 的实际窗口）深色截图里卡片与背景可辨。
+   这些值在 themes.json（dark / aurora），此处不重复声明颜色，
+   只留一条说明：调深色可读性请改 themes.json，不要在 CSS 里硬编码。 */
+/* 注：浅色主题的 --card-hi (0.55) 与 --shadow-card 未改动。 */
