@@ -15,7 +15,14 @@
       "overlay-light": "rgba(255, 255, 255, 0.05)", "overlay-hover": "rgba(255, 255, 255, 0.1)",
       "sidebar-text": "#f8f9fa", "sidebar-text-muted": "#cbd5e1",
       "game-table": "#115846", "game-table-deep": "#083d32", "game-card": "#f8fafc", "game-card-border": "#cbd5e1",
-      "game-card-red": "#c92a43", "game-card-black": "#111827", "game-card-accent": "#facc15"
+      "game-card-red": "#c92a43", "game-card-black": "#111827", "game-card-accent": "#facc15",
+      "card-hi": "rgba(255, 255, 255, 0.07)", "shadow-card": "0 14px 30px -16px rgba(0, 0, 0, 0.55), 0 1px 2px rgba(0, 0, 0, 0.4)",
+      "pill-yellow": "rgba(255, 231, 144, 0.16)", "pill-yellow-ink": "#FFE790",
+      "pill-green": "rgba(185, 237, 207, 0.14)", "pill-green-ink": "#B9EDCF",
+      "pill-blue": "rgba(184, 219, 251, 0.16)", "pill-blue-ink": "#B8DBFB",
+      "pill-pink": "rgba(251, 195, 206, 0.14)", "pill-pink-ink": "#FBC3CE",
+      "pill-purple": "rgba(220, 206, 251, 0.16)", "pill-purple-ink": "#DCCEFB",
+      "pill-orange": "rgba(251, 200, 160, 0.16)", "pill-orange-ink": "#FBC8A0"
     },
     "background": {
       "image-url": "none",
@@ -39,7 +46,14 @@
       "overlay-light": "rgba(0, 0, 0, 0.04)", "overlay-hover": "rgba(0, 0, 0, 0.08)",
       "sidebar-text": "#0f172a", "sidebar-text-muted": "#64748b",
       "game-table": "#176a53", "game-table-deep": "#0a483a", "game-card": "#ffffff", "game-card-border": "#cbd5e1",
-      "game-card-red": "#d12c45", "game-card-black": "#111827", "game-card-accent": "#d8a84e"
+      "game-card-red": "#d12c45", "game-card-black": "#111827", "game-card-accent": "#d8a84e",
+      "card-hi": "rgba(255, 255, 255, 0.55)", "shadow-card": "0 14px 30px -16px rgba(16, 24, 40, 0.30), 0 1px 2px rgba(16, 24, 40, 0.08)",
+      "pill-yellow": "#FFE790", "pill-yellow-ink": "#6B5310",
+      "pill-green": "#B9EDCF", "pill-green-ink": "#1F6B40",
+      "pill-blue": "#B8DBFB", "pill-blue-ink": "#1D5C8F",
+      "pill-pink": "#FBC3CE", "pill-pink-ink": "#A13A52",
+      "pill-purple": "#DCCEFB", "pill-purple-ink": "#5A48B8",
+      "pill-orange": "#FBC8A0", "pill-orange-ink": "#9A5316"
     },
     "background": {
       "image-url": "none",
@@ -63,7 +77,14 @@
       "overlay-light": "rgba(225, 29, 72, 0.04)", "overlay-hover": "rgba(225, 29, 72, 0.08)",
       "sidebar-text": "#4c0519", "sidebar-text-muted": "#9f1239",
       "game-table": "#75525f", "game-table-deep": "#553844", "game-card": "#fffafb", "game-card-border": "#e8cbd4",
-      "game-card-red": "#d63e69", "game-card-black": "#35252d", "game-card-accent": "#f59e0b"
+      "game-card-red": "#d63e69", "game-card-black": "#35252d", "game-card-accent": "#f59e0b",
+      "card-hi": "rgba(255, 255, 255, 0.65)", "shadow-card": "0 14px 30px -16px rgba(120, 53, 74, 0.30), 0 1px 2px rgba(120, 53, 74, 0.08)",
+      "pill-yellow": "#FFE9A8", "pill-yellow-ink": "#7A5410",
+      "pill-green": "#C2EFD3", "pill-green-ink": "#2A6B44",
+      "pill-blue": "#C3E0FB", "pill-blue-ink": "#275E8C",
+      "pill-pink": "#FBC9D4", "pill-pink-ink": "#A03A55",
+      "pill-purple": "#DFD2FB", "pill-purple-ink": "#5C4AAD",
+      "pill-orange": "#FCCDA9", "pill-orange-ink": "#96541A"
     },
     "background": {
       "image-url": "./assets/themes/sakura-bg.jpg",
@@ -87,7 +108,14 @@
       "overlay-light": "rgba(135, 115, 193, 0.07)", "overlay-hover": "rgba(135, 115, 193, 0.13)",
       "sidebar-text": "#ffffff", "sidebar-text-muted": "#f3effc",
       "game-table": "#4f6f68", "game-table-deep": "#354f49", "game-card": "#ffffff", "game-card-border": "#d9d4e5",
-      "game-card-red": "#c94f6c", "game-card-black": "#2e2937", "game-card-accent": "#d8a84e"
+      "game-card-red": "#c94f6c", "game-card-black": "#2e2937", "game-card-accent": "#d8a84e",
+      "card-hi": "rgba(255, 255, 255, 0.55)", "shadow-card": "0 14px 30px -16px rgba(92, 78, 126, 0.30), 0 1px 2px rgba(92, 78, 126, 0.08)",
+      "pill-yellow": "#FFE790", "pill-yellow-ink": "#6B5310",
+      "pill-green": "#C4EBD2", "pill-green-ink": "#256B4E",
+      "pill-blue": "#C0DBF9", "pill-blue-ink": "#2A5B8C",
+      "pill-pink": "#FBC6CF", "pill-pink-ink": "#9E3D55",
+      "pill-purple": "#DCCEFB", "pill-purple-ink": "#4F3FA8",
+      "pill-orange": "#FBC9A4", "pill-orange-ink": "#8F5218"
     },
     "background": {
       "image-url": "none",
@@ -111,7 +139,14 @@
       "overlay-light": "rgba(45, 212, 191, 0.08)", "overlay-hover": "rgba(45, 212, 191, 0.15)",
       "sidebar-text": "#ecfeff", "sidebar-text-muted": "#67e8f9",
       "game-table": "#0d6066", "game-table-deep": "#083f49", "game-card": "#ecfeff", "game-card-border": "#8bd3d8",
-      "game-card-red": "#c2415b", "game-card-black": "#102a32", "game-card-accent": "#2dd4bf"
+      "game-card-red": "#c2415b", "game-card-black": "#102a32", "game-card-accent": "#2dd4bf",
+      "card-hi": "rgba(255, 255, 255, 0.07)", "shadow-card": "0 14px 30px -16px rgba(0, 0, 0, 0.6), 0 1px 2px rgba(0, 20, 30, 0.5)",
+      "pill-yellow": "rgba(255, 231, 144, 0.15)", "pill-yellow-ink": "#FFE790",
+      "pill-green": "rgba(185, 237, 207, 0.13)", "pill-green-ink": "#B9EDCF",
+      "pill-blue": "rgba(184, 219, 251, 0.15)", "pill-blue-ink": "#B8DBFB",
+      "pill-pink": "rgba(251, 195, 206, 0.13)", "pill-pink-ink": "#FBC3CE",
+      "pill-purple": "rgba(220, 206, 251, 0.15)", "pill-purple-ink": "#DCCEFB",
+      "pill-orange": "rgba(251, 200, 160, 0.15)", "pill-orange-ink": "#FBC8A0"
     },
     "background": {
       "image-url": "/assets/themes/aurora-bg.jpg",

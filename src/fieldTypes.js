@@ -60,12 +60,30 @@ export function isImeKey(event) {
 }
 
 // 带 tone 的选项用主题令牌（跟随主题换色）；无 tone 走 hash 色板。
+// v1.2 白板风格：状态 tone 改用粉彩 pill 配色 token（--pill-*，底/字成对，
+// 见 themes.json 每套主题的 pill-yellow/-green/-blue 与各自 -ink）。
 const TONE_VARS = {
   muted: 'var(--text-muted)',
-  doing: 'var(--color-warning)',
-  done: 'var(--color-success)',
-  inbox: 'var(--color-primary)',
+  doing: 'var(--pill-yellow)',
+  done: 'var(--pill-green)',
+  inbox: 'var(--pill-blue)',
 };
+
+// 粉彩 pill 的底色 token（--pill-*）与配字 token（--pill-*-ink）在 themes.json 里成对存在。
+// inline style 只声明 --pill（既有契约不动）；当底色恰好是 pill token 时，
+// 顺带把 ink 一起带上，供 styles.css 设计层 10 的 color 优先取用 ——
+// 粉彩底上用主题色 color-mix 出来的文字在浅色主题下对比度不够，必须跟 ink。
+function pillInkVar(color) {
+  if (typeof color !== 'string') return '';
+  const match = /^var\(--(pill-[a-z0-9-]+)\)$/.exec(color.trim());
+  return match ? `var(--${match[1]}-ink)` : '';
+}
+
+// 把底色与 ink 拼进 inline style。ink 为空串时输出与旧版完全一致。
+function pillStyle(color) {
+  const ink = pillInkVar(color);
+  return ink ? `--pill:${color};--pill-ink:${ink}` : `--pill:${color}`;
+}
 
 // logs.status 的历史值兼容：老数据 'processed' 显示为「已完成」。
 // 仅在「值不在选项库里」时兜底，不做数据迁移。
@@ -139,7 +157,7 @@ function renderPill(label, color, extraClass = '') {
   const safe = typeof color === 'string' && /^(#[0-9a-f]{6}|var\(--[a-z0-9-]+\))$/i.test(color)
     ? color
     : optionColor(label);
-  return `<span class="ft-pill${extraClass ? ` ${extraClass}` : ''}" style="--pill:${safe}">${escapeHtml(label)}</span>`;
+  return `<span class="ft-pill${extraClass ? ` ${extraClass}` : ''}" style="${pillStyle(safe)}">${escapeHtml(label)}</span>`;
 }
 
 function selectColor(option) {
@@ -155,7 +173,8 @@ function renderSelectCell(field, value, ctx) {
   // 带 tone 的选项（内置状态类字段）渲染为「圆点 + 文字」；
   // 标签库来源的选项渲染为 pill —— 对齐设计稿①的状态列与主分类列。
   if (option.tone && TONE_VARS[option.tone]) {
-    return `<span class="ft-status" style="--pill:${TONE_VARS[option.tone]}"><span class="ft-status-dot"></span>${escapeHtml(option.label)}</span>`;
+    // 状态 = 圆点（粉彩底色）+ 文字（ink，深浅主题都可读，见设计层 10）
+    return `<span class="ft-status" style="${pillStyle(TONE_VARS[option.tone])}"><span class="ft-status-dot"></span>${escapeHtml(option.label)}</span>`;
   }
   return renderPill(option.label, selectColor(option));
 }

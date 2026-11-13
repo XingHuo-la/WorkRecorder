@@ -16342,3 +16342,97 @@ body.cmdk-open { overflow: hidden !important; }
     line-height: 1.72 !important;
   }
 }
+
+/* =========================================================
+   设计层 10 · 白板风格移植 —— 卡片纸感材质 + 粉彩 pill（S1 · 2026-11-13）
+   =========================================================
+   来源：whiteboard.html 参考件。只移植「材质体系」，不动任何布局 /
+   信息架构 / 交互 / 尺寸 / 字号；不新增任何 display 规则。
+
+   本层只消费 5 个新令牌（themes.json 每套主题 14 个，settings.applyTheme
+   逐键 setProperty 注入，无需改 ALIASES）：
+     --card-hi      卡片内高光（inset 高光线，纸感的关键）
+     --shadow-card  柔影（浅色 rgba(16,24,40,*)，深色 rgba(0,0,0,*)，樱花暖调）
+     --pill-*       粉彩 pill 底色（浅色实底 / 深色半透明 tint）
+     --pill-*-ink   粉彩底上的配字色（浅色深字 / 深色提亮同色）
+   所有 var() 都带兜底值：自定义主题 JSON 若没有这些键也不至于裸奔。
+
+   本节为什么这样写：卡片类与 pill 的既有规则全在前面层里且大多带
+   !important，本层只能整条覆盖 box-shadow / background / border-color，
+   绝不碰尺寸与布局；hover 只加深阴影与描边，不改 padding / transform。
+   ========================================================= */
+
+/* ---- 10.1 卡片纸感材质 --------------------------------
+   六个卡片类统一「柔影 + 顶部内高光」。参考件 note 卡的配方是
+   `0 1px 2px rgba(16,24,40,.06), inset 0 1px 0 rgba(255,255,255,.55),
+    0 14px 30px -16px rgba(16,24,40,.45)`，这里把三段拆进令牌以跟随主题。
+   注意：不声明 transition（.sh-sheet-card 等已有自己的过渡列表，整条
+   覆盖反而会把 border-color / transform 的过渡打掉）。 */
+.composer-card,
+.wb-card,
+.today-item,
+.inbox-record,
+.glass-accordion,
+.sh-sheet-card {
+  /* 第一段是贴地的 1px 硬影（参考件原样，中性深色，深浅主题通用）；
+     --shadow-card 是完整的多段阴影列表，只能整段引用，不能拆成颜色用。 */
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.1),
+    inset 0 1px 0 var(--card-hi, rgba(255, 255, 255, 0.55)),
+    var(--shadow-card, 0 14px 30px -16px rgba(16, 24, 40, 0.3)) !important;
+}
+
+/* hover 只增强：阴影加深一档 + 描边向主色靠一点（不碰布局）。 */
+.composer-card:hover,
+.wb-card:hover,
+.today-item:hover,
+.inbox-record:hover,
+.glass-accordion:hover,
+.sh-sheet-card:hover {
+  border-color: color-mix(in srgb, var(--color-primary) 30%, var(--border-light)) !important;
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.12),
+    inset 0 1px 0 var(--card-hi, rgba(255, 255, 255, 0.55)),
+    var(--shadow-card, 0 14px 30px -16px rgba(16, 24, 40, 0.3)),
+    0 18px 36px -16px rgba(16, 24, 40, 0.2) !important;
+}
+
+/* ---- 10.2 pill / 状态轻度材质化 ------------------------
+   契约不变：inline style 仍然是 --pill（fieldTypes.pillStyle 在底色是
+   --pill-* token 时**追加** --pill-ink，不替换机制）。
+   文字色优先取 --pill-ink：粉彩底（浅色主题）上用 color-mix 主题色出
+   来的字对比度不够；没有 ink 的 pill（hash 色板 / muted）走旧公式。
+   [style*='--pill-ink'] 只会命中我们自己生成的 inline style，属于
+   「带 ink 的粉彩 token」的可靠信号 —— 这类 pill 给接近实底的粉彩。 */
+.ft-pill {
+  color: var(--pill-ink, color-mix(in srgb, var(--pill) 74%, var(--text-main))) !important;
+  box-shadow: inset 0 1px 0 var(--card-hi, rgba(255, 255, 255, 0.35)) !important;
+}
+
+.ft-pill[style*='--pill-ink'] {
+  background: color-mix(in srgb, var(--pill) 82%, transparent) !important;
+  border-color: color-mix(in srgb, var(--pill-ink) 18%, transparent) !important;
+}
+
+.ft-pill:hover {
+  border-color: color-mix(in srgb, var(--pill) 48%, transparent) !important;
+}
+
+/* 状态 = 圆点（粉彩底色）+ 文字（ink）。圆点仍用 --pill，文字换 ink：
+   浅色主题下 --pill 是很浅的粉彩，旧公式 color-mix(pill 80%, text-main)
+   会得到近乎白的浅色字 —— 这正是必须跟 ink 的原因。 */
+.ft-status {
+  color: var(--pill-ink, color-mix(in srgb, var(--pill) 80%, var(--text-main))) !important;
+}
+
+/* ---- 10.3 分段控件容器质感 ----------------------------
+   只换容器底色与加内高光；按钮本身的选中态 / 尺寸一律不动。 */
+.nt-seg,
+.segmented-control {
+  background: var(--overlay-light) !important;
+  box-shadow: inset 0 1px 0 var(--card-hi, rgba(255, 255, 255, 0.35)) !important;
+}
+
+/* 本节为什么这样写：见层首注释 —— 材质三件套（柔影 / 内高光 / 粉彩）
+   全部走令牌，深浅主题各配一套值；hover 与 [style*] 的分支都只动
+   box-shadow / border-color / background，零布局属性、零 display 声明。 */
