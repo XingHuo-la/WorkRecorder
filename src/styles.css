@@ -16467,3 +16467,347 @@ body.cmdk-open { overflow: hidden !important; }
    这些值在 themes.json（dark / aurora），此处不重复声明颜色，
    只留一条说明：调深色可读性请改 themes.json，不要在 CSS 里硬编码。 */
 /* 注：浅色主题的 --card-hi (0.55) 与 --shadow-card 未改动。 */
+
+/* =========================================================
+   设计层 11 · 首页重排（对齐「交互重构 v2」设计稿 01-今天 · 2026-10-18）
+   =========================================================
+   本层只做三件事：把顶栏从「两个胶囊块」降级成「一行小字」、给区块标题配
+   quiet 链接、把行内动作降噪到 hover 才出现。
+
+   ★ 本层不新增任何 display 声明 ★
+   起因是 `[hidden]` 事故：给带 hidden 的元素写 display 会把隐藏压掉。
+   所以这里能不用就不用，需要的排布全部靠 order / flex 因子 / width /
+   vertical-align / font-size 这些「不动 display」的属性达成；下面凡是
+   看起来绕的写法（order 重排、宽 100% 的 inline-block 堆叠），都是为了
+   守住这条约束，不是随手写的。
+
+   只覆盖既有层的字色 / 尺寸 / 间距 / 阴影，不改任何早期层；未带 !important
+   的地方都是「本层选择器特异性本来就更高」，带的地方是压既有 !important。
+   ========================================================= */
+
+/* ---- 11.1 顶栏折成两行：第一行 日期 … 统计 / 搜索 / 记一笔，第二行 今天 ----
+   .wb-head 在层 6 是 flex + space-between（一行）。这里只加 flex-wrap 与
+   order，把 .wb-head-left（含 h1）用 flex-basis:100% 顶到第二行。
+   DOM 顺序仍是 h1 在前（读屏与 Tab 顺序正确），视觉顺序靠 order 重排。 */
+#subview-dashboard.wb-v2 .wb-head {
+  flex-wrap: wrap !important;
+  align-items: center !important;
+  row-gap: 2px !important;
+  margin: 0 0 var(--sp-3) !important;
+}
+
+#subview-dashboard.wb-v2 .wb-head > .wb-head-date {
+  order: 1;
+  font-size: 12px !important;
+  color: var(--text-muted) !important;
+}
+
+#subview-dashboard.wb-v2 .wb-head > .wb-head-right {
+  order: 2;
+  margin-left: auto;
+  gap: var(--sp-3, 12px) !important;
+}
+
+#subview-dashboard.wb-v2 .wb-head > .wb-head-left {
+  order: 3;
+  flex: 0 0 100%;
+}
+
+/* ---- 11.2 统计降级成一行小字 -------------------------------------------
+   结构是 `.summary-stat > strong + 文本节点`（不再有 <small>），
+   inline-flex 的 gap 负责数字与文字的间距，所以这里只调字号与色阶：
+   数字用 text-secondary（比正文淡、比说明深），文字回到 text-muted。
+
+   ★ 这里的 !important 是必须的 ★
+   层 5（9647 附近）给 `#subview-dashboard .workspace-summary .summary-stat`
+   写死了胶囊样式（border / 圆角 999 / bg-card / padding 4px 11px / 28px 高），
+   四条全带 !important —— 层 6 的 `#subview-dashboard.wb-v2 .summary-stat`
+   （去掉胶囊的那条）特异性相同但没有 !important，所以一直没压住它。
+   本层要做的正是「杀掉胶囊」，只能整条 !important 覆盖。 */
+#subview-dashboard.wb-v2 .wb-summary-line {
+  gap: 6px !important;
+  font-size: 12px !important;
+  line-height: 1.4 !important;
+  color: var(--text-muted) !important;
+  white-space: nowrap;
+}
+
+#subview-dashboard.wb-v2 .wb-summary-line .summary-stat {
+  gap: 3px !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: none !important;
+  box-shadow: none !important;
+}
+
+#subview-dashboard.wb-v2 .wb-summary-line .summary-stat strong {
+  font-size: 12px !important;
+  line-height: 1.4 !important;
+  font-weight: 700 !important;
+  color: var(--text-secondary) !important;
+  font-variant-numeric: tabular-nums;
+}
+
+#subview-dashboard.wb-v2 .wb-summary-line .summary-sep {
+  color: var(--text-dim, var(--text-muted));
+  opacity: 0.55;
+}
+
+/* ---- 11.3 搜索图标按钮（唤起命令面板） ---------------------------------
+   26×26 的方角按钮，图标居中靠 margin:auto（.wr-icon 是 display:block，
+   不能改它的 display，所以用外边距把自己顶到中间）。
+
+   ★ 本节所有按钮类都带 !important 的原因 ★
+   层 5（5610 行）有一条 `button, .btn { min-height / padding / border-radius /
+   border / background / color / box-shadow / font-size / line-height }`
+   全 !important 的「按钮统一重置」。元素选择器 + !important 能压过任何
+   不带 !important 的类选择器，所以 quiet 链接、图标按钮这些「看起来不像按钮
+   的按钮」必须自己用 !important 抢回来，否则会全部变成方框默认按钮。
+   ——这也是本层唯一需要 !important 的地方（除 11.2 的胶囊重置）。 */
+#subview-dashboard.wb-v2 .wb-icon-btn {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  min-height: 0 !important;
+  margin: 0;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: var(--r-sm, 6px) !important;
+  background: none !important;
+  color: var(--text-muted) !important;
+  box-shadow: none !important;
+  font-size: 0 !important;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+#subview-dashboard.wb-v2 .wb-icon-btn .wr-icon {
+  width: 15px;
+  height: 15px;
+  margin: 5.5px auto;
+}
+
+#subview-dashboard.wb-v2 .wb-icon-btn:hover,
+#subview-dashboard.wb-v2 .wb-icon-btn:focus-visible {
+  background: var(--overlay-hover, rgba(255, 255, 255, 0.1)) !important;
+  color: var(--text-main) !important;
+}
+
+/* ---- 11.4 quiet 链接（区块标题右侧的「查看全部 / 全部记录 / 全部 / 整理全部」）
+   视觉上退到说明文字那一档，只有 hover / 键盘聚焦时才染主色。
+   纯文字按钮：无边框、无底色、无内边距（只留 2px 让聚焦轮廓不至于贴字）。 */
+#subview-dashboard.wb-v2 .wb-quiet-link {
+  flex: none;
+  min-height: 0 !important;
+  margin: 0;
+  padding: 0 2px !important;
+  border: 0 !important;
+  border-radius: var(--r-sm, 6px) !important;
+  background: none !important;
+  color: var(--text-muted) !important;
+  box-shadow: none !important;
+  font-size: 12px !important;
+  font-weight: 400 !important;
+  line-height: 1.4 !important;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 0.12s ease;
+}
+
+#subview-dashboard.wb-v2 .wb-quiet-link:hover,
+#subview-dashboard.wb-v2 .wb-quiet-link:focus-visible {
+  color: var(--color-primary) !important;
+}
+
+/* 标题行里「N 项未完成 / N 条」这类 meta 贴着标题，把右侧空间让给 quiet 链接。
+   .section-heading-row 是 space-between，给 meta 一个 auto 右外边距即可，
+   不需要改 justify-content（那会连带影响没有 quiet 链接的标题行）。 */
+#subview-dashboard.wb-v2 .section-heading-row .wb-section-meta {
+  margin-right: auto;
+}
+
+/* 待整理头部：整理全部 + 收起按钮并排。
+   两个都是 inline-block 按钮，所以父层用 text-align + vertical-align 对齐即可，
+   不需要 flex（守 display 约束）。 */
+#subview-dashboard.wb-v2 .inbox-head-actions {
+  flex: none;
+  text-align: right;
+  white-space: nowrap;
+}
+
+#subview-dashboard.wb-v2 .inbox-head-actions > * {
+  vertical-align: middle;
+}
+
+#subview-dashboard.wb-v2 .inbox-head-actions .wb-quiet-link {
+  margin-right: var(--sp-2, 8px);
+}
+
+/* ---- 11.5 最近笔记卡片 ------------------------------------------------
+   材质与层 10.4 的五个工作台主卡片同配方（贴地 1px 硬影 + 顶部内高光 +
+   --shadow-card 整段），因为 10.4 的选择器清单里没有这个新容器，本层补一份。
+   圆角 / 内边距 / 底色与其它主卡片对齐，右栏三块才像是同一套纸。 *//* 右栏三块的顺序由 DOM 决定，必须先把历史的 order 清掉。
+   层 4/5 为了让工作台从「一个 flex 长单」重排成固定区块，给全局的
+   `#subview-dashboard .inbox-section` 写了 `order: 4`（8392 行还有一份
+   order: 3）。在 .wb-col-side 这个 flex 列里，那条 order 会让「待整理」
+   排到最近笔记和底部链接**后面** —— 真机截图里就是「最近笔记、完整录入、
+   待整理」倒着来。这里只重置右列的直接子元素，左列不碰（它本来就是升序）。 */
+#subview-dashboard.wb-v2 .wb-col-side > * {
+  order: 0;
+}
+
+#subview-dashboard.wb-v2 .wb-recent-section {
+  margin: 0 !important;
+  padding: var(--card-pad, 16px) !important;
+  border: 0 !important;
+  border-radius: var(--r-md, 10px) !important;
+  background: var(--bg-card) !important;
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.1),
+    inset 0 1px 0 var(--card-hi, rgba(255, 255, 255, 0.55)),
+    var(--shadow-card, 0 14px 30px -16px rgba(16, 24, 40, 0.3)) !important;
+  backdrop-filter: none !important;
+}
+
+/* 三行笔记的堆叠：容器 font-size:0 / line-height:0 抹掉 inline-block 之间的
+   空白节点与行盒 strut，子项 width:100% 自然各占一行，vertical-align:top
+   保证每行高度等于按钮自身高度（不留基线以下的空隙）。 */
+#subview-dashboard.wb-v2 .wb-recent-notes {
+  font-size: 0;
+  line-height: 0;
+  text-align: left;
+}
+
+#subview-dashboard.wb-v2 .wb-recent-item {
+  width: 100%;
+  min-height: 0 !important;
+  margin: 0 0 2px;
+  padding: 6px var(--sp-2, 8px) !important;
+  border: 0 !important;
+  border-radius: var(--r-sm, 6px) !important;
+  background: none !important;
+  box-shadow: none !important;
+  color: var(--text-main) !important;
+  font-size: 13.5px !important;
+  font-weight: 400 !important;
+  line-height: 1.45 !important;
+  text-align: left;
+  vertical-align: top;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+#subview-dashboard.wb-v2 .wb-recent-item:last-child {
+  margin-bottom: 0;
+}
+
+#subview-dashboard.wb-v2 .wb-recent-item:hover,
+#subview-dashboard.wb-v2 .wb-recent-item:focus-visible {
+  background: var(--overlay-hover, rgba(255, 255, 255, 0.1)) !important;
+}
+
+#subview-dashboard.wb-v2 .wb-recent-title {
+  font-size: 13.5px;
+  line-height: 1.45;
+  color: var(--text-main);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#subview-dashboard.wb-v2 .wb-recent-meta {
+  margin-top: 1px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 空态：一行字 + 一跳，和卡片里其它行同一档字号 */
+#subview-dashboard.wb-v2 .wb-recent-empty {
+  width: 100%;
+  min-height: 0 !important;
+  margin: 0;
+  padding: 6px var(--sp-2, 8px) !important;
+  border: 0 !important;
+  border-radius: var(--r-sm, 6px) !important;
+  background: none !important;
+  box-shadow: none !important;
+  color: var(--text-muted) !important;
+  font-size: 12px !important;
+  font-weight: 400 !important;
+  line-height: 1.5 !important;
+  text-align: left;
+  vertical-align: top;
+  cursor: pointer;
+}
+
+#subview-dashboard.wb-v2 .wb-recent-empty:hover,
+#subview-dashboard.wb-v2 .wb-recent-empty:focus-visible {
+  background: var(--overlay-hover, rgba(255, 255, 255, 0.1)) !important;
+  color: var(--text-secondary) !important;
+}
+
+/* ---- 11.6 右列底部的「完整录入 · 补录历史」------------------------------
+   原来的「其他入口」卡片整块删掉了，这个入口降级成一行 12px 文字。
+   align-self: flex-start 让它在 flex 列里靠左（不拉伸），也不吃卡片底色。 */
+#subview-dashboard.wb-v2 .wb-foot-link {
+  align-self: flex-start;
+  min-height: 0 !important;
+  margin: 0;
+  padding: 2px var(--sp-2, 8px) !important;
+  border: 0 !important;
+  border-radius: var(--r-sm, 6px) !important;
+  background: none !important;
+  box-shadow: none !important;
+  color: var(--text-muted) !important;
+  font-size: 12px !important;
+  font-weight: 400 !important;
+  line-height: 1.4 !important;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+#subview-dashboard.wb-v2 .wb-foot-link:hover,
+#subview-dashboard.wb-v2 .wb-foot-link:focus-visible {
+  background: var(--overlay-hover, rgba(255, 255, 255, 0.1)) !important;
+  color: var(--text-main) !important;
+}
+
+/* ---- 11.7 行内动作降噪：默认不可见，hover / 键盘聚焦才出现 -------------
+   设计稿里「今天的记录」每行只有 时间 + 正文 + 分类，没有常驻按钮。
+   用 opacity 而不是 display：不产生布局抖动，行高恒定。
+   再补一条 pointer-events:none —— 透明的按钮仍然能点到，不关掉的话
+   用户会在"看不见的地方"误触「完成 / 删除」。
+   键盘用户走 :focus-within：Tab 进按钮即显形。
+   touch（hover:none）设备没有 hover 事件，整组直接常显。 */
+#subview-dashboard.wb-v2 .today-item .today-actions,
+#subview-dashboard.wb-v2 .today-item .today-actions-more {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.14s ease;
+}
+
+#subview-dashboard.wb-v2 .today-item:hover .today-actions,
+#subview-dashboard.wb-v2 .today-item:hover .today-actions-more,
+#subview-dashboard.wb-v2 .today-item:focus-within .today-actions,
+#subview-dashboard.wb-v2 .today-item:focus-within .today-actions-more {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+@media (hover: none) {
+  #subview-dashboard.wb-v2 .today-item .today-actions,
+  #subview-dashboard.wb-v2 .today-item .today-actions-more {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+/* 本节收尾：层 6 的 .wb-links / .wb-link-btn / .advanced-tools-strip 规则仍在，
+   但首页已经不生成这三个类的元素（「其他入口」卡片被删）。按「不改早期层」
+   的约定原样留着，删它们是另一件事。 */

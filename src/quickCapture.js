@@ -1316,6 +1316,33 @@ function setupInboxCollapseToggle() {
   toggle.dataset.bound = '1';
 }
 
+/**
+ * 待整理头部的「整理全部」（v2 首页改版）。
+ *
+ * 「全部」不是批量处理的入口：每条待整理的归宿都不一样（待办 / 笔记 / 流水），
+ * 转换时必须逐条确认标题、分类与时间。所以这里做的是「按时间顺序一条条过」的
+ * 第一步 —— 直接打开**最早那条**的转换弹层；转完 renderInboxRecords 会刷出下一条，
+ * 用户可以接着点。走的是和行内「类型转换」完全相同的路径，不新增第二套转换实现。
+ *
+ * 默认目标取「待办」：待整理的主要归宿就是待办，且转待办的弹层里能改标题、时长、
+ * 分类与任务关系，是三个目标里信息最完整的一个。
+ */
+function setupInboxTidyAll() {
+  const button = document.getElementById('inbox-tidy-all');
+  if (!button || button.dataset.bound === '1') return;
+
+  button.addEventListener('click', () => {
+    const [record] = loadInboxRecords(1);
+    if (!record) {
+      // 这里的 toast 必须是全局的：捕获浮层里的 #quick-capture-toast 关着时看不见。
+      showUndoToast('待整理是空的', null, { duration: 2200 });
+      return;
+    }
+    openQuickConvertModal(record, 'todo');
+  });
+  button.dataset.bound = '1';
+}
+
 export function initQuickCapture() {
   const input = document.getElementById('quick-capture-input');
   const saveBtn = document.getElementById('quick-capture-save');
@@ -1373,6 +1400,7 @@ export function initQuickCapture() {
   saveLogBtn?.addEventListener('click', () => {
     openQuickDirectModal('log', input);
   });
+  setupInboxTidyAll();
   setupInboxCollapseToggle();
   renderInboxRecords();
 }

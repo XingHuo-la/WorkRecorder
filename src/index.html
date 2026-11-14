@@ -125,18 +125,27 @@
       <div class="main-content">
         
         <div id="subview-dashboard" class="subview wb-v2">
+          <!--
+            首页头（对齐 v2 设计稿 01-今天）：
+            DOM 顺序 = 语义顺序（h1 在前），视觉顺序靠样式层 11 的 order 重排成
+            「第一行 日期 + 统计小字 + 搜索 + 记一笔 / 第二行 今天」。
+            #summary-completed-count 已下线：设计稿只留 记录 / 待办 / 笔记 三项，
+            main.js 的 setText 对缺失 id 自带 null 保护。
+          -->
           <header class="wb-head">
             <div class="wb-head-left">
               <h1>今天</h1>
-              <span id="wb-date" class="wb-head-date"></span>
             </div>
+            <span id="wb-date" class="wb-head-date"></span>
             <div class="wb-head-right">
-              <div class="workspace-summary compact-summary" id="workspace-summary" aria-live="polite">
-                <span class="summary-stat"><strong id="summary-pending-count">0</strong><small>待办</small></span>
-                <span class="summary-stat"><strong id="summary-completed-count">0</strong><small>完成</small></span>
-                <span class="summary-stat"><strong id="summary-today-count">0</strong><small>记录</small></span>
-                <span class="summary-stat"><strong id="summary-note-count">0</strong><small>笔记</small></span>
+              <div class="workspace-summary wb-summary-line" id="workspace-summary" aria-live="polite">
+                <span class="summary-stat"><strong id="summary-today-count">0</strong> 条记录</span>
+                <span class="summary-sep">·</span>
+                <span class="summary-stat"><strong id="summary-pending-count">0</strong> 项待办</span>
+                <span class="summary-sep">·</span>
+                <span class="summary-stat"><strong id="summary-note-count">0</strong> 篇笔记</span>
               </div>
+              <button type="button" id="wb-search-btn" class="wb-icon-btn" title="搜索（Ctrl K）" aria-label="打开搜索"><svg class="wr-icon" aria-hidden="true"><use href="#ic-search"/></svg></button>
               <button type="button" id="capture-open-btn" class="primary-btn wb-capture-btn" aria-controls="capture-popover" aria-expanded="false" title="Ctrl+Shift+Space">＋ 记一笔</button>
             </div>
           </header>
@@ -146,6 +155,7 @@
               <div class="section-heading-row">
                 <h2>今日待办</h2>
                 <span id="wb-todo-ratio" class="wb-section-meta"></span>
+                <button type="button" class="wb-quiet-link" data-wb-goto="nav-timeline">查看全部</button>
               </div>
               <div id="todo-list-container" class="task-tree-container"></div>
             </div>
@@ -154,6 +164,7 @@
               <div class="section-heading-row">
                 <h2>今天的记录</h2>
                 <span id="wb-record-count" class="wb-section-meta"></span>
+                <button type="button" class="wb-quiet-link" data-wb-goto="nav-timeline">全部记录</button>
               </div>
               <div id="today-timeline-container"></div>
             </div>
@@ -167,17 +178,23 @@
             <section class="inbox-section" aria-labelledby="inbox-title">
               <div class="inbox-section-head">
                 <div><h2 id="inbox-title">待整理</h2></div>
-                <button type="button" id="inbox-collapse-toggle" class="inbox-collapse-toggle" aria-expanded="true" aria-controls="inbox-records-container" aria-label="收起待整理">-</button>
+                <div class="inbox-head-actions">
+                  <button type="button" id="inbox-tidy-all" class="wb-quiet-link" title="整理最早的一条待整理">整理全部</button>
+                  <button type="button" id="inbox-collapse-toggle" class="inbox-collapse-toggle" aria-expanded="true" aria-controls="inbox-records-container" aria-label="收起待整理">-</button>
+                </div>
               </div>
               <div id="inbox-records-container" class="inbox-records-container"></div>
             </section>
 
-            <div class="advanced-tools-strip wb-links">
-              <h2>其他入口</h2>
-              <button id="legacy-tools-toggle" type="button" class="wb-link-btn" aria-controls="legacy-capture-area" aria-expanded="false">完整录入 · 补录历史</button>
-              <button type="button" class="wb-link-btn" data-wb-goto="nav-notes">全部笔记</button>
-              <button type="button" class="wb-link-btn" data-wb-goto="nav-timeline">时间轴</button>
-            </div>
+            <section class="wb-recent-section" aria-labelledby="recent-notes-title">
+              <div class="inbox-section-head">
+                <div><h2 id="recent-notes-title">最近笔记</h2></div>
+                <button type="button" class="wb-quiet-link" data-wb-goto="nav-notes">全部</button>
+              </div>
+              <div id="wb-recent-notes" class="wb-recent-notes"></div>
+            </section>
+
+            <button id="legacy-tools-toggle" type="button" class="wb-foot-link" aria-controls="legacy-capture-area" aria-expanded="false">完整录入 · 补录历史</button>
           </div>
 
           <div id="capture-popover" class="wb-popover" hidden>

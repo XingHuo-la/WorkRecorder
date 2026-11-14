@@ -8,7 +8,7 @@ import { initQuickCapture } from './quickCapture.js';
 import { renderTodayTimeline } from './todayTimeline.js';
 import { initSearchModule } from './search.js';
 import { initFreeCellModule } from './freecell.js';
-import { initNotesEditor, flushBeforeLeave, refreshNotesCache } from './notesEditor.js';
+import { initNotesEditor, flushBeforeLeave, refreshNotesCache, getNotesCache, openNote } from './notesEditor.js';
 import { initNotesModule } from './notes.js';
 import { setNotesDataPathProvider } from './notesStore.js';
 import { initSheetPage } from './sheetPage.js';
@@ -16,6 +16,7 @@ import { setSheetAdapter } from './sheetStore.js';
 import { setRecordAdapter } from './recordStore.js';
 import { initCommandPalette } from './commandPalette.js';
 import { flushDrawerBody } from './rowDrawer.js';
+import { escapeHtml } from './htmlUtils.js';
 
 // Tauri 全局对象由 withGlobalTauri 同步注入，正常情况可直接取用。
 // 这里做一次防御：万一注入时序异常，也不要让整个模块崩溃。
@@ -166,7 +167,18 @@ async function initApp() {
   }, true); // 注意这里的 true，开启捕获阶段监听内部所有 div 的滚动
   setupTitlebar();
   updateWorkspaceSummary();
+  renderRecentNotes();
 }
+
+// 「完整录入 · 补录历史」的开合。
+//
+// 入口已从右栏「其他入口」卡片降级成右列底部的一行 quiet 链接（层 11），
+// 所以这里不再需要把整块卡片藏起来 —— 旧实现里的 `.advanced-tools-strip`
+// 已随首页重排删除，`strip` 恒为 null，保留判空只是让这段在新旧 DOM 下都能跑。
+// 文案常量放在函数上方：setOpen(false) 时要把按钮恢复成 HTML 里的初始文案，
+// 两处写死字符串迟早会漂（会先闪一下旧字再定住）。
+const LEGACY_TOGGLE_OPEN_TEXT = '收起';
+const LEGACY_TOGGLE_CLOSED_TEXT = '完整录入 · 补录历史';
 
 function setupLegacyToolsToggle() {
   const toggle = document.getElementById('legacy-tools-toggle');
@@ -179,7 +191,7 @@ function setupLegacyToolsToggle() {
     area.classList.toggle('show', isOpen);
     area.setAttribute('aria-hidden', String(!isOpen));
     toggle.setAttribute('aria-expanded', String(isOpen));
-    toggle.innerText = isOpen ? '收起' : '打开完整录入';
+    toggle.innerText = isOpen ? LEGACY_TOGGLE_OPEN_TEXT : LEGACY_TOGGLE_CLOSED_TEXT;
     if (strip) strip.style.display = isOpen ? 'none' : '';
     if (collapse) {
       collapse.setAttribute('aria-expanded', String(isOpen));
@@ -187,7 +199,9 @@ function setupLegacyToolsToggle() {
     }
 
     if (shouldScroll) {
-      const target = isOpen ? area : toggle.closest('.advanced-tools-strip');
+      // 收起时回到入口本身：卡片没了，closest('.advanced-tools-strip') 会返回 null，
+      // 滚回原处会把用户扔到页面顶部。
+      const target = isOpen ? area : toggle;
       target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
   };
@@ -226,6 +240,11 @@ function setupDashboardChrome() {
   };
 
   openBtn.addEventListener('click', () => setOpen(popover.hidden));
+
+  // 顶栏搜索图标：命令面板是全应用唯一搜索入口，这里只是换个位置唤起它。
+  document.getElementById('wb-search-btn')?.addEventListener('click', () => {
+    window.__wrOpenPalette?.();
+  });
 
   document.addEventListener('click', event => {
     if (popover.hidden) return;
@@ -269,6 +288,97 @@ function setupDashboardChrome() {
   // 空当接龙不占导航位，但功能保留在设置里 —— 它是「不想删，但不该和表格并列」的东西。
   document.getElementById('open-freecell-btn')?.addEventListener('click', () => {
     window.__wrRouteTo?.('nav-freecell');
+  });
+}
+
+// ==========================================
+// 右栏「最近笔记」（v2 首页）
+// ==========================================
+
+/** 最近笔记条数：设计稿固定 3 条。 */
+const RECENT_NOTE_LIMIT = 3;
+
+/**
+ * 笔记的一行 meta：`MM-DD · 主分类`。
+ *
+ * updated_at 是 `YYYY-MM-DD HH:mm:ss`，substring(5, 10) 正好是 MM-DD。
+ * 日期缺失时只回分类 —— 不要留下一个孤零零的分隔点。
+ *
+ * @param {{tag?: string, updated_at?: string, created_at?: string}} note
+ * @returns {string} 用于列表第二行的短 meta
+ */
+function formatRecentNoteMeta(note) {
+  const stamp = String(note?.updated_at || note?.created_at || '');
+  const day = stamp.length >= 10 ? stamp.substring(5, 10) : '';
+  const tag = note?.tag || '未分类';
+  return day ? `${day} · ${tag}` : tag;
+}
+
+/**
+ * 取最近 3 篇笔记。
+ *
+ * 数据源有两条：notesEditor 的 notesCache（每次刷盘后重扫磁盘，是真相）、
+ * 启动时 loadData 灌进 appData.notes 的快照（notesCache 还没初始化时的兜底）。
+ * 只认带 rel_path 的条目 —— 没有 rel_path 就打不开。
+ *
+ * @returns {Array<object>} 按 updated_at 倒序的前 3 篇
+ */
+function collectRecentNotes() {
+  const cached = getNotesCache();
+  const source = (Array.isArray(cached) && cached.length) ? cached : (appData?.notes || []);
+  return source
+    .filter(note => note && note.rel_path)
+    .sort((a, b) => String(b.updated_at || b.created_at || '')
+      .localeCompare(String(a.updated_at || a.created_at || '')))
+    .slice(0, RECENT_NOTE_LIMIT);
+}
+
+/**
+ * 点「最近笔记」里的一条：先切到笔记页，再把这篇打开。
+ *
+ * 必须先路由再 openNote —— 笔记编辑器只在自己那一栏可见时渲染才有意义，
+ * 而且 openNote 里有 dirty 确认，提前切页会让确认框出现在空白页上。
+ *
+ * @param {string} relPath 笔记相对路径
+ */
+async function openRecentNote(relPath) {
+  if (!relPath) return;
+  try {
+    await window.__wrRouteTo?.('nav-notes');
+    await openNote(relPath);
+  } catch (error) {
+    logToFile('error', `打开最近笔记失败 ${relPath}: ${error?.stack || error}`);
+  }
+}
+
+/**
+ * 渲染右栏「最近笔记」三行（v2 首页改版）。
+ *
+ * 空态也是一行文字 + 一跳（`data-wb-goto`），但这里是 innerHTML 动态插入，
+ * 吃不到 setupDashboardChrome 里那次一次性 querySelectorAll 绑定，所以自己绑。
+ */
+export function renderRecentNotes() {
+  const container = document.getElementById('wb-recent-notes');
+  if (!container) return;
+
+  const notes = collectRecentNotes();
+  if (!notes.length) {
+    container.innerHTML = '<button type="button" class="wb-recent-empty" data-wb-goto="nav-notes">还没有笔记 · 写一篇</button>';
+    container.querySelector('[data-wb-goto]')?.addEventListener('click', () => {
+      document.getElementById('nav-notes')?.click();
+    });
+    return;
+  }
+
+  container.innerHTML = notes.map(note => `
+    <button type="button" class="wb-recent-item" data-rel="${escapeHtml(note.rel_path)}">
+      <div class="wb-recent-title">${escapeHtml(note.title || '未命名笔记')}</div>
+      <div class="wb-recent-meta">${escapeHtml(formatRecentNoteMeta(note))}</div>
+    </button>
+  `).join('');
+
+  container.querySelectorAll('.wb-recent-item').forEach(item => {
+    item.addEventListener('click', () => { void openRecentNote(item.dataset.rel); });
   });
 }
 
@@ -423,6 +533,9 @@ function setupRouting() {
     localStorage.setItem('workRecorder:lastSubview', id);
 
     if (id === 'nav-timeline') renderTimeline();
+    // 最近笔记 = 磁盘真相，从别的页面回到工作台时重扫一次，
+    // 否则「刚在笔记页写的那篇」不会出现在右栏。
+    if (id === 'nav-dashboard') renderRecentNotes();
     if (id === 'nav-table') {
       try { await initSheetPage(); } catch (error) { logToFile('error', `表格页初始化失败: ${error?.stack || error}`); }
     }
@@ -478,12 +591,12 @@ export function updateWorkspaceSummary() {
   };
 
   const pendingCount = appData.todos.filter(todo => !todo.done).length;
-  const completedCount = appData.todos.filter(todo => todo.done).length;
   const todayCount = (appData.logs[todayStr] || []).length;
   const noteCount = (appData.notes || []).length;
 
+  // 首页头那行小字只留 记录 / 待办 / 笔记 三项（v2 设计稿）。
+  // 已完成数不再展示：它是「今天」页里唯一一个只会增长、不驱动动作的数字。
   setText('summary-pending-count', pendingCount);
-  setText('summary-completed-count', completedCount);
   setText('summary-today-count', todayCount);
   setText('summary-note-count', noteCount);
   setText('wb-todo-ratio', pendingCount ? `${pendingCount} 项未完成` : '全部完成');
