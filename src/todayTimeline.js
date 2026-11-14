@@ -1,6 +1,6 @@
 import { appData, dbExecute, dbQuery, getTodayString, loadData } from './data.js';
 import { openUniversalEditModal } from './formUtils.js';
-import { appendRemarkEntry, escapeHtml } from './htmlUtils.js';
+import { appendRemarkEntry, escapeHtml, shortDeadline } from './htmlUtils.js';
 import { openQuickConvertModal, openScheduleTodoModal, renderInboxRecords, updateQuickRecordProject } from './quickCapture.js';
 import { showUndoToast } from './undoToast.js';
 
@@ -177,10 +177,30 @@ function buildTodoCard(todo) {
   const safeTask = escapeHtml(formatTimelineTitle(todo.task, '待办'));
   const safeTag = escapeHtml(todo.tag || '未分类');
   const endText = getTodoEnd(todo);
-  const safeEnd = escapeHtml(endText);
-  const safeStart = escapeHtml(todo.start_at || '');
+  const startText = todo.start_at || '';
   const title = todo.done ? '已完成' : '待办';
-  const meta = endText ? (safeStart ? `${safeStart} 至 ${safeEnd}` : safeEnd) : '';
+
+  /* 说明行只留 MM-DD / HH:MM —— 原来直接吐 `2026-07-08 00:00:00 ~
+     2026-07-10 23:59:59`，一整行全量时间戳挂在每条记录下面，和「今日待办」
+     的截止时间 chip 是同一个病根。
+     跨天：`07-01 → 07-31`；end 自己就是区间：原样（别再套一个「至」）；
+     同一天或没填起点：`至 07-10 23:59`。 */
+  const endDatePart = (String(endText).match(/\d{4}-\d{2}-\d{2}/) || [''])[0];
+  const startDatePart = (String(startText).match(/\d{4}-\d{2}-\d{2}/) || [''])[0];
+  const shortEnd = endText ? shortDeadline(endText) : '';
+  const shortStart = startText ? shortDeadline(startText) : '';
+  let metaText = '';
+  if (endText) {
+    if (shortStart && startDatePart !== endDatePart) {
+      metaText = `${shortStart} → ${shortEnd}`;
+    } else if (shortEnd.indexOf('→') >= 0) {
+      metaText = shortEnd;
+    } else {
+      metaText = `至 ${shortEnd}`;
+    }
+  }
+  const meta = metaText ? escapeHtml(metaText) : '';
+
   const childTodos = (appData.todos || []).filter(item => item.parent_id === todo.id && !item.done);
   const childPreview = childTodos.length
     ? `<div class="today-children">${childTodos.slice(0, 4).map(child => `<span>${escapeHtml(child.task)}</span>`).join('')}${childTodos.length > 4 ? `<em>还有 ${childTodos.length - 4} 个</em>` : ''}</div>`
