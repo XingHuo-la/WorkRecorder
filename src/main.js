@@ -5,7 +5,7 @@ import { initLogModule, renderHistoryList } from './log.js';
 import { initTimelineModule, renderTimeline } from './timeline.js';
 import { initSettingsModule } from './settings.js';
 import { initQuickCapture } from './quickCapture.js';
-import { renderTodayTimeline } from './todayTimeline.js';
+import { countTodayItems, renderTodayTimeline } from './todayTimeline.js';
 import { initSearchModule } from './search.js';
 import { initFreeCellModule } from './freecell.js';
 import { initNotesEditor, flushBeforeLeave, refreshNotesCache, getNotesCache, openNote } from './notesEditor.js';
@@ -583,8 +583,6 @@ function setupTabs() {
 export function updateWorkspaceSummary() {
   if (!appData) return;
 
-  const today = new Date();
-  const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
   const setText = (id, value) => {
     const el = document.getElementById(id);
     if (el) el.innerText = value;
@@ -593,7 +591,9 @@ export function updateWorkspaceSummary() {
   const todos = appData.todos || [];
   const pendingCount = todos.filter(todo => !todo.done).length;
   const doneCount = todos.length - pendingCount;
-  const todayCount = (appData.logs[todayStr] || []).length;
+  // 今日条数必须和时间线列表同口径（logs + 待办 + 笔记），否则会出现
+  // 「今天的记录 1 条」下面排着 4 行。过滤条件只在 todayTimeline 里写一次。
+  const todayCount = countTodayItems();
   const noteCount = (appData.notes || []).length;
 
   // 首页头那行小字只留 记录 / 待办 / 笔记 三项（v2 设计稿）。

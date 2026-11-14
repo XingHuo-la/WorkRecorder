@@ -16,6 +16,48 @@ import {
 
 const completingTodoIds = new Set();
 
+/**
+ * 把截止时间压成 chip 里读得下去的短文案：去掉年份、去掉秒，区间用 `→` 连接。
+ *
+ * 数据里 end_at 有两种形态：单值 `2026-07-08 00:00:00` 与区间
+ * `2026-07-01 ~ 2026-07-31`。原样塞进 chip 会变成比任务标题还长的一条蓝条，
+ * 是整页视觉噪音最大的一处。这里只保留 `MM-DD` 与 `HH:MM`。
+ *
+ * @param {string} raw 原始时间字符串（可能为空）
+ * @return {string} 形如 `07-08 00:00` / `07-01 → 07-31` 的短文案
+ */
+function shortDeadline(raw) {
+  const text = String(raw || '').trim();
+  if (!text) return '';
+
+  const points = text.split(/\s*(?:~|至|到|—|–)\s*/).filter(Boolean);
+  return points.map(shortDeadlinePoint).join(' → ');
+}
+
+/**
+ * 单个时间点 → `MM-DD HH:MM` / `MM-DD`；解析不了就原样返回。
+ *
+ * @param {string} raw 单个时间点字符串
+ * @return {string} 短文案
+ */
+function shortDeadlinePoint(raw) {
+  const text = String(raw || '').trim();
+  if (!text) return '';
+
+  const dateMatch = /(\d{4})-(\d{1,2})-(\d{1,2})/.exec(text);
+  const timeMatch = /(\d{1,2}):(\d{2})/.exec(text);
+  const datePart = dateMatch
+    ? `${dateMatch[2].padStart(2, '0')}-${dateMatch[3].padStart(2, '0')}`
+    : '';
+  const timePart = timeMatch
+    ? `${String(Number(timeMatch[1])).padStart(2, '0')}:${timeMatch[2]}`
+    : '';
+
+  if (datePart && timePart) return `${datePart} ${timePart}`;
+  if (datePart) return datePart;
+  return text;
+}
+
 function refreshTaskRelatedViews() {
   if (window.renderTodoParents) window.renderTodoParents();
   if (typeof window.renderTodayTimeline === 'function') window.renderTodayTimeline();
@@ -247,39 +289,52 @@ export async function renderTodoList() {
       const safeSubTag = escapeHtml(todo.sub_tag);
       const startAt = todo.start_at || "";
       const endAt = getTodoEnd(todo);
-      const safeStart = escapeHtml(startAt);
-      const safeEnd = escapeHtml(endAt);
       const childTodos = (pendingChildrenByParent.get(todo.id) || []).sort(sortTodos);
       const allChildren = allChildrenByParent.get(todo.id) || [];
       const doneChildren = allChildren.filter(child => child.done).length;
       const childProgressHtml = allChildren.length > 0
         ? `<span class="todo-progress-badge">${doneChildren}/${allChildren.length}</span>`
         : "";
-      let subTagHtml = todo.sub_tag ? `<span style="background: rgba(255,255,255,0.1); padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-left: 8px;">📁 ${safeSubTag}</span>` : "";
+      let subTagHtml = todo.sub_tag ? `<span style="background: rgba(255,255,255,0.1); padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-left: 8px;">${safeSubTag}</span>` : "";
       
       let deadlineHtml = "";
       let accordionThemeClass = depth > 0 ? "border-muted" : "border-primary";
 
       if (endAt) {
           const today = new Date(); today.setHours(0,0,0,0);
-          const dl = new Date(endAt); dl.setHours(0,0,0,0);
+          /* 区间值（`2026-07-01 ~ 2026-07-31`）直接喂 `new Date()` 是 Invalid
+             Date，diff 恒为 NaN，三个状态分支永远只落到「未来」那一支 —— 状态色
+             等于摆设。所以先取**最后一个**日期作为截止日再比。 */
+          const endDates = String(endAt).match(/\d{4}-\d{2}-\d{2}/g) || [];
+          const endDateText = endDates.length ? endDates[endDates.length - 1] : '';
+          const dl = endDateText ? new Date(`${endDateText}T00:00:00`) : new Date(endAt);
+          dl.setHours(0,0,0,0);
           const diff = dl - today;
-          
-          let bg, color, border, text;
+
+          // 文案只留 MM-DD / HH:MM，样式交给层 12 的 .todo-deadline-chip，
+          // 这里不再内联 background / border / padding（那是噪音的来源）。
+          const shortEndFull = shortDeadline(endAt);
+          // start_at 存在时用「起点 → 截止点」；endAt 本身已是区间就取它的末日。
+          const endPoint = shortEndFull.split(' → ').pop();
+          const shortStart = startAt ? shortDeadline(startAt) : '';
+          const rangeText = shortStart ? `${shortStart} → ${endPoint}` : shortEndFull;
+          const hasRange = rangeText.indexOf('→') >= 0;
+          let stateClass = 'is-planned';
+          let text;
+
           if (diff < 0) {
-              bg = 'rgba(var(--color-danger-rgb), 0.15)'; color = 'var(--color-danger)'; border = 'rgba(var(--color-danger-rgb), 0.5)'; 
-              text = startAt ? `已延期 ${safeStart} 至 ${safeEnd}` : `已延期 (${safeEnd})`;
+              stateClass = 'is-overdue';
+              text = `已延期 ${rangeText}`;
               accordionThemeClass = "border-danger";
           } else if (diff === 0) {
-              bg = 'rgba(var(--color-warning-rgb), 0.15)'; color = 'var(--color-warning)'; border = 'rgba(var(--color-warning-rgb), 0.5)'; 
-              text = startAt ? `今日到期 ${safeStart} 至 ${safeEnd}` : `今日到期 (${safeEnd})`;
+              stateClass = 'is-today';
+              text = `今日到期 ${rangeText}`;
               accordionThemeClass = "border-warning";
           } else {
-              bg = 'rgba(var(--color-primary-rgb), 0.15)'; color = 'var(--color-primary)'; border = 'rgba(var(--color-primary-rgb), 0.5)'; 
-              text = startAt ? `${safeStart} 至 ${safeEnd}` : `截至 ${safeEnd}`;
+              text = hasRange ? rangeText : `至 ${rangeText}`;
           }
-          
-          deadlineHtml = `<span style="background: ${bg}; color: ${color}; border: 1px solid ${border}; padding: 2px 6px; border-radius: 4px; font-size: 12px; margin-left: 10px; white-space: nowrap;">${text}</span>`;
+
+          deadlineHtml = `<span class="todo-deadline-chip ${stateClass}">${escapeHtml(text)}</span>`;
       }
       
       let remarkHtml = todo.remark ? `<div class="item-remark">${textWithLineBreaks(todo.remark)}</div>` : "";

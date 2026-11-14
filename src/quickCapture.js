@@ -1148,6 +1148,11 @@ export function renderInboxRecords() {
 
   const allRecords = loadInboxRecords(Number.MAX_SAFE_INTEGER);
   const records = allRecords.slice(0, inboxVisibleLimit);
+
+  // 空态下「整理全部」是个死入口（点了只会弹「待整理是空的」），直接藏掉。
+  const tidyAllBtn = document.getElementById('inbox-tidy-all');
+  if (tidyAllBtn) tidyAllBtn.hidden = allRecords.length === 0;
+
   if (records.length === 0) {
     container.innerHTML = "<div class='inbox-empty' title='修改分类不会完成整理，转为待办、笔记或流水后才会离开这里。'>没有待整理内容</div>";
     return;
@@ -1304,7 +1309,8 @@ function setupInboxCollapseToggle() {
     toggle.setAttribute('aria-expanded', String(!collapsed));
     toggle.setAttribute('aria-label', collapsed ? '展开待整理' : '收起待整理');
     toggle.title = collapsed ? '展开待整理' : '收起待整理';
-    toggle.textContent = collapsed ? '+' : '-';
+    // 图标是 index.html 里的内联 chevron，展开/收起的形态由 CSS 按
+    // `.inbox-section.collapsed` 旋转 90°，这里不再写 textContent（会抹掉 SVG）。
   };
 
   applyState(localStorage.getItem(storageKey) === '1');

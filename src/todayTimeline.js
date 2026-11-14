@@ -30,12 +30,44 @@ function getTodoEnd(todo) {
   return todo.end_at || todo.deadline || '';
 }
 
+/**
+ * 把待办的截止时间压成左列那 52px 窄栏能读的短标签。
+ *
+ * 左列是 monospace 12px 的固定窄列，只容得下 `HH:MM` / `MM-DD` / `今天` / `--:--`
+ * 这几种形态（≤5 个半角字符或 2 个汉字）。历史上这里按下标切字符串
+ * （`endText.substring(11, 16)`），遇到区间值 `"2026-07-01 ~ 2026-07-31"` 时
+ * 第 11~15 位正好是 `"~ 202"`，于是左列出现了 `~ 202` 这种垃圾；纯日期
+ * `"2026-07-08"` 又会落进兜底分支，和旁边的 `.today-badge` 重复显示「待办」。
+ *
+ * 现在按语义解析：
+ * 1. 有 `HH:MM` → 取第一个时间点（区间与单值同义），零填充成 `HH:MM`；
+ * 2. 否则取**最后一个**日期（区间语义下末日才是截止日），是今天则写 `今天`，
+ *    否则写 `MM-DD`；
+ * 3. 两者都没有（无 end_at / 无法解析）→ `--:--`，与 `buildLogCard` 里
+ *    `safeTime || '--:--'` 的既有约定保持一致。
+ *
+ * @param {Object} todo 待办对象
+ * @return {string} 左列要显示的时间标签
+ */
 function getTodoDisplayTime(todo) {
-  const endText = getTodoEnd(todo);
-  if (!endText) return '待办';
-  if (endText.includes(' ')) return endText.substring(11, 16);
-  if (endText.includes(':')) return endText.substring(0, 5);
-  return '待办';
+  const endText = String(getTodoEnd(todo) || '').trim();
+  if (!endText) return '--:--';
+
+  const timeMatch = /(\d{1,2}):(\d{2})/.exec(endText);
+  if (timeMatch) {
+    const hour = String(Number(timeMatch[1])).padStart(2, '0');
+    const minute = timeMatch[2];
+    return `${hour}:${minute}`;
+  }
+
+  const dateMatches = endText.match(/\d{4}-\d{2}-\d{2}/g);
+  if (dateMatches && dateMatches.length) {
+    const lastDate = dateMatches[dateMatches.length - 1];
+    if (lastDate === getTodayString()) return '今天';
+    return lastDate.substring(5);
+  }
+
+  return '--:--';
 }
 
 function hasPendingDescendant(todoId) {
@@ -273,10 +305,17 @@ async function closeRecordReaderAndGoToNote(relPath) {
   }
 }
 
-export function renderTodayTimeline() {
-  const container = document.getElementById('today-timeline-container');
-  if (!container || !appData) return;
-  if (typeof window.updateWorkspaceSummary === 'function') window.updateWorkspaceSummary();
+/**
+ * 今日时间线的**唯一**数据源：已处理的流水 + 未完成待办 + 今日笔记，按时间倒序。
+ *
+ * 抽出来是为了让「列表里排几行」和「标题上写几条」共用同一份过滤条件 ——
+ * 以前 main.js 自己数 `appData.logs[today].length`（不排未整理、不含待办与笔记），
+ * 于是出现了「今天的记录 1 条」下面排着 4 行的口径分裂。
+ *
+ * @return {Array<{kind: string, time: string, html: string}>} 时间线条目
+ */
+function buildTodayItems() {
+  if (!appData) return [];
 
   const today = getTodayString();
   const logs = (appData.logs[today] || [])
@@ -285,11 +324,34 @@ export function renderTodayTimeline() {
   const todos = (appData.todos || []).filter(todo => !todo.done);
   const notes = (appData.notes || []).filter(note => (note.created_at || '').startsWith(today));
 
-  const items = [
+  return [
     ...logs.map(log => ({ kind: 'log', time: getDateTimeValue(log.date || today, log.time), html: buildLogCard({ ...log, date: log.date || today }) })),
     ...todos.map(todo => ({ kind: 'todo', time: getDateTimeValue(today, todo.end_at || todo.deadline || '23:59:59'), html: buildTodoCard(todo) })),
     ...notes.map(note => ({ kind: 'note', time: note.created_at || `${today} 00:00:00`, html: buildNoteCard(note) }))
   ].sort((a, b) => b.time.localeCompare(a.time));
+}
+
+/**
+ * 今日条目数 —— 与时间线列表严格同口径（直接数 buildTodayItems 的产物）。
+ *
+ * @return {number} 今日时间线的行数
+ */
+export function countTodayItems() {
+  return buildTodayItems().length;
+}
+
+export function renderTodayTimeline() {
+  const container = document.getElementById('today-timeline-container');
+  if (!container || !appData) return;
+  if (typeof window.updateWorkspaceSummary === 'function') window.updateWorkspaceSummary();
+
+  const today = getTodayString();
+  const items = buildTodayItems();
+
+  // 标题右侧的「N 条」由这一处写入，空态也要落到「还没有记录」——
+  // 否则清空当天记录后标题会停在旧数字上。
+  const recordCountEl = document.getElementById('wb-record-count');
+  if (recordCountEl) recordCountEl.textContent = items.length ? `${items.length} 条` : '还没有记录';
 
   if (items.length === 0) {
     container.innerHTML = "<div class='empty-state'><strong>今天还没有记录</strong></div>";
