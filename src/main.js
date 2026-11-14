@@ -590,16 +590,20 @@ export function updateWorkspaceSummary() {
     if (el) el.innerText = value;
   };
 
-  const pendingCount = appData.todos.filter(todo => !todo.done).length;
+  const todos = appData.todos || [];
+  const pendingCount = todos.filter(todo => !todo.done).length;
+  const doneCount = todos.length - pendingCount;
   const todayCount = (appData.logs[todayStr] || []).length;
   const noteCount = (appData.notes || []).length;
 
   // 首页头那行小字只留 记录 / 待办 / 笔记 三项（v2 设计稿）。
-  // 已完成数不再展示：它是「今天」页里唯一一个只会增长、不驱动动作的数字。
+  // 已完成数不再作为独立一格展示，但它是「今日待办」标题右侧 N/M 的分子。
   setText('summary-pending-count', pendingCount);
   setText('summary-today-count', todayCount);
   setText('summary-note-count', noteCount);
-  setText('wb-todo-ratio', pendingCount ? `${pendingCount} 项未完成` : '全部完成');
+  // 「今日待办 1/6」= 已完成/总数（设计稿 01-今天 的写法）。
+  // 一条待办都没有时留空 —— 0/0 比不写更像一个坏值。
+  setText('wb-todo-ratio', todos.length ? `${doneCount}/${todos.length}` : '');
   setText('wb-record-count', todayCount ? `${todayCount} 条` : '还没有记录');
 }
 window.updateWorkspaceSummary = updateWorkspaceSummary;

@@ -16513,6 +16513,19 @@ body.cmdk-open { overflow: hidden !important; }
   flex: 0 0 100%;
 }
 
+/* ---- 11.1b 1080 也要两栏（把层 6 的 1120 断点挪到 1000）----------------
+   层 6 的 `@media (max-width:1120px)` 把栅格降成一列，而 Sir 的实际窗口是
+   1080×740 —— 结果右栏（待整理 / 最近笔记）掉到屏幕外，这轮首页改造他根本
+   看不见。这里在 1000–1120 这段把两栏要回来（1000 以下仍按层 6 单列）。
+   只覆盖 grid-template-columns，不动任何 display：切页靠 inline display，
+   与栅格列数无关，不碰。
+   300px 用 var(--wb-side)（层 6 定义），自定义主题改宽度也会跟着走。 */
+@media (min-width: 1000px) and (max-width: 1120px) {
+  #subview-dashboard.wb-v2 {
+    grid-template-columns: minmax(0, 1fr) var(--wb-side, 300px) !important;
+  }
+}
+
 /* ---- 11.2 统计降级成一行小字 -------------------------------------------
    结构是 `.summary-stat > strong + 文本节点`（不再有 <small>），
    inline-flex 的 gap 负责数字与文字的间距，所以这里只调字号与色阶：
@@ -16778,10 +16791,65 @@ body.cmdk-open { overflow: hidden !important; }
   color: var(--text-main) !important;
 }
 
-/* ---- 11.7 行内动作降噪：默认不可见，hover / 键盘聚焦才出现 -------------
-   设计稿里「今天的记录」每行只有 时间 + 正文 + 分类，没有常驻按钮。
-   用 opacity 而不是 display：不产生布局抖动，行高恒定。
-   再补一条 pointer-events:none —— 透明的按钮仍然能点到，不关掉的话
+/* ---- 11.7 行密度 + 行内动作改成悬浮动作条 -----------------------------
+   设计稿「今天的记录」每行只有 时间 + 正文 + 分类，行高 ~56–64px；改版前
+   每行 ~110px，多出来的 38px 就是 `.today-actions`（8px margin + 30px 按钮）
+   还在文档流里。这里把它**移出文档流**（绝对定位到行右侧、垂直居中），
+   行高就只剩下真正的内容。
+   为什么不给行留 padding-right：设计稿的分类标签就贴在最右边，留白会把
+   标签往里推、整行看起来"缺一块"。代价是 hover 时按钮会盖住分类 —— 所以
+   动作条带一层不透明底 + 圆角 + 阴影，视觉上是"浮起来的一条工具条"，
+   被盖住的文字不会从按钮缝里露出来（--bg-elevated 在 5 套主题里都是不透明色）。
+   位置：右 6px、垂直居中；「更多」展开的那块在动作条正下方，不再换行挤高行。 */
+#subview-dashboard.wb-v2 .today-item {
+  position: relative;
+  min-height: 56px;
+  /* 8px 上下 + 单行正文 = 56（min-height 兜住），带第二行说明的 = 62–63，
+     落在设计稿 ~56–64 这一段里。 */
+  padding: 8px var(--sp-1) !important;
+  align-content: center;
+}
+
+#subview-dashboard.wb-v2 .today-item .today-detail {
+  margin-top: 4px !important;
+}
+
+#subview-dashboard.wb-v2 .today-item .today-actions {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  margin: 0 !important;
+  padding: 3px 4px 3px 10px;
+  border-radius: var(--r-pill, 999px);
+  background: var(--bg-elevated, var(--bg-card));
+  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.14);
+}
+
+/* 「更多」展开的二级按钮组：绝对定位到动作条下方，右对齐，限宽后自行换行。
+   z-index 5 + 行 hover 时抬到 3，保证它压在下一行之上（下一行也是
+   position:relative，不抬就会被后来的兄弟盖住）。 */
+#subview-dashboard.wb-v2 .today-item .today-actions-more {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  width: max-content;
+  max-width: 300px;
+  margin: 0 !important;
+  padding: 6px !important;
+  border-radius: var(--r-md, 10px);
+  background: var(--bg-elevated, var(--bg-card));
+  box-shadow: var(--shadow-float, 0 14px 36px rgba(0, 0, 0, 0.42));
+  z-index: 5;
+}
+
+#subview-dashboard.wb-v2 .today-item:hover {
+  z-index: 3;
+}
+
+/* ---- 11.7b 显隐：默认不可见，hover / 键盘聚焦才出现 -------------------
+   用 opacity 而不是 display：不产生布局抖动（动作条已经绝对定位，本来也
+   不占位）。补 pointer-events:none —— 透明的按钮仍然能点到，不关掉的话
    用户会在"看不见的地方"误触「完成 / 删除」。
    键盘用户走 :focus-within：Tab 进按钮即显形。
    touch（hover:none）设备没有 hover 事件，整组直接常显。 */
@@ -16806,6 +16874,52 @@ body.cmdk-open { overflow: hidden !important; }
     opacity: 1;
     pointer-events: auto;
   }
+}
+
+/* ---- 11.8 待整理空态：拉回主题色 --------------------------------------
+   `.inbox-empty`（层 2）写死了 `background: rgba(255,255,255,.64)` —— 深色主题
+   下就是卡片里一块白底黑字，非常扎眼。改成透明底 + 细虚线描边，深浅主题
+   都靠令牌出图（虚线边框也是"空位"的语义，比实心块更轻）。 */
+#subview-dashboard.wb-v2 .inbox-empty {
+  padding: 14px var(--sp-3, 12px) !important;
+  border: 1px dashed var(--border-light, rgba(255, 255, 255, 0.14)) !important;
+  border-radius: var(--r-md, 10px) !important;
+  background: transparent !important;
+  color: var(--text-muted) !important;
+  font-size: 12px !important;
+  text-align: center;
+}
+
+/* ---- 11.9 待整理「收起」圆钮：和「整理全部」同一档视觉 -----------------
+   层 2 的 `.inbox-collapse-toggle` 是 30×30 的浅色圆形按钮（border-radius 50%
+   + rgba(255,255,255,.78) 底 + 18px 字），深色主题下变成卡片里一个灰白圆块。
+   按 quiet 链接同一套思路整条 !important 覆盖（层 5 的 `button` 重置同样带
+   !important，不带抢不回来）：24×24、透明底、无描边、text-muted，hover 才给
+   overlay 底。竖直方向靠 .inbox-head-actions 的 vertical-align:middle 对齐。 */
+#subview-dashboard.wb-v2 .inbox-collapse-toggle {
+  width: 24px;
+  height: 24px;
+  min-width: 0;
+  min-height: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: var(--r-sm, 6px) !important;
+  background: none !important;
+  box-shadow: none !important;
+  color: var(--text-muted) !important;
+  font-size: 13px !important;
+  font-weight: 700 !important;
+  line-height: 1 !important;
+  vertical-align: middle;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+#subview-dashboard.wb-v2 .inbox-collapse-toggle:hover,
+#subview-dashboard.wb-v2 .inbox-collapse-toggle:focus-visible {
+  border: 0 !important;
+  background: var(--overlay-hover, rgba(255, 255, 255, 0.1)) !important;
+  color: var(--text-main) !important;
 }
 
 /* 本节收尾：层 6 的 .wb-links / .wb-link-btn / .advanced-tools-strip 规则仍在，
