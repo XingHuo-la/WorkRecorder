@@ -184,7 +184,9 @@ function buildTodoCard(todo) {
      2026-07-10 23:59:59`，一整行全量时间戳挂在每条记录下面，和「今日待办」
      的截止时间 chip 是同一个病根。
      跨天：`07-01 → 07-31`；end 自己就是区间：原样（别再套一个「至」）；
-     同一天或没填起点：`至 07-10 23:59`。 */
+     同一天或没填起点：`至 07-10 23:59`。
+     今天到期且没填起点：整行省略 —— 左列已经写了「今天」，再写一遍
+     「至 11-14」等于同一条待办摆了两个日期，看着像两条不同的信息。 */
   const endDatePart = (String(endText).match(/\d{4}-\d{2}-\d{2}/) || [''])[0];
   const startDatePart = (String(startText).match(/\d{4}-\d{2}-\d{2}/) || [''])[0];
   const shortEnd = endText ? shortDeadline(endText) : '';
@@ -195,6 +197,8 @@ function buildTodoCard(todo) {
       metaText = `${shortStart} → ${shortEnd}`;
     } else if (shortEnd.indexOf('→') >= 0) {
       metaText = shortEnd;
+    } else if (!startText && endDatePart === getTodayString()) {
+      metaText = '';
     } else {
       metaText = `至 ${shortEnd}`;
     }
@@ -360,6 +364,36 @@ export function countTodayItems() {
   return buildTodayItems().length;
 }
 
+/**
+ * 展开「更多」之后决定下拉方向。
+ *
+ * 「更多」走的是整页重渲染（`expandedMoreActionIds` 变了要重排时间），所以
+ * 点完那一刻面板才刚存在，量高度只能放在渲染之后做。
+ * 默认向下开（贴着动作条下沿）；若行下方到卡片下沿的余量放不下整块面板，
+ * 就翻到行上方开；上方也放不下（行本身就贴着卡片顶）则维持向下 —— 两害相权，
+ * 宁可压住下一行，也不要顶穿卡片。
+ *
+ * @param {string} actionKey 形如 `log-13` / `todo-1`
+ * @return {void}
+ */
+function placeMorePanel(actionKey) {
+  const row = document.querySelector(`.today-item[data-action-key="${actionKey}"]`);
+  const panel = row ? row.querySelector('.today-actions-more') : null;
+  if (!row || !panel) return;
+
+  const card = row.closest('.today-section') || row.closest('#subview-dashboard');
+  const cardRect = card ? card.getBoundingClientRect() : { top: 0, bottom: window.innerHeight };
+  const rowRect = row.getBoundingClientRect();
+  const panelHeight = panel.offsetHeight;
+  const breathing = 8;
+
+  const spaceBelow = cardRect.bottom - rowRect.bottom;
+  const spaceAbove = rowRect.top - cardRect.top;
+
+  if (spaceBelow >= panelHeight + breathing) return;
+  if (spaceAbove >= panelHeight + breathing) panel.classList.add('opens-up');
+}
+
 export function renderTodayTimeline() {
   const container = document.getElementById('today-timeline-container');
   if (!container || !appData) return;
@@ -391,9 +425,12 @@ export function renderTodayTimeline() {
       btn.addEventListener('click', async () => {
         const action = btn.dataset.action;
         if (action === 'more') {
-          if (expandedMoreActionIds.has(actionKey)) expandedMoreActionIds.delete(actionKey);
-          else expandedMoreActionIds.add(actionKey);
+          // 先判定这次是展开还是收起，再重渲染 —— 展开后要量面板高度决定开向。
+          const willExpand = !expandedMoreActionIds.has(actionKey);
+          if (willExpand) expandedMoreActionIds.add(actionKey);
+          else expandedMoreActionIds.delete(actionKey);
           renderTodayTimeline();
+          if (willExpand) placeMorePanel(actionKey);
           return;
         }
 

@@ -17089,7 +17089,16 @@ body.cmdk-open { overflow: hidden !important; }
 }
 
 .todo-deadline-chip.is-planned {
-  color: var(--text-muted);
+  color: color-mix(in srgb, var(--text-muted) 76%, var(--text-main) 24%);
+}
+
+/* 12.3b 末行「更多」面板向上开 ------------------------------------------
+   面板是 `top: calc(100% - 2px)` 无条件向下，最后一行展开时会伸出卡片下沿、
+   压在「已完成」卡片上。方向由 todayTimeline.js 的 placeMorePanel() 在重渲染
+   之后按「行到卡片下沿的实际余量」判定，这里只提供翻上去那一种形态。 */
+#subview-dashboard.wb-v2 .today-item .today-actions-more.opens-up {
+  top: auto;
+  bottom: calc(100% - 2px);
 }
 
 /* ---- 12.4 待整理卡片：动作条不再和正文抢列宽 ------------------------
