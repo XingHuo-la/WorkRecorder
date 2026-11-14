@@ -17091,3 +17091,63 @@ body.cmdk-open { overflow: hidden !important; }
 .todo-deadline-chip.is-planned {
   color: var(--text-muted);
 }
+
+/* ---- 12.4 待整理卡片：动作条不再和正文抢列宽 ------------------------
+   老布局（styles.css:3106 起）是两列 grid：`minmax(0, 1fr) auto`。auto 列
+   按 max-content 定宽，「阅读全文 / 类型转换 / 修改分类 / 编辑」一行约
+   250px；卡片内宽也就 ~250px 时 1fr 被压到 0 —— 中文标题和正文变成一字
+   一行，动作条整体顶出卡片右缘。（`inbox-record-bottom-actions` 这个类名
+   全仓没有任何规则，是历史遗留的孤儿。）
+   这里不碰 3106 那段（工作台其它地方还依赖它），在本层用更高特异性改成
+   单列：正文独占整行，动作条落到正文下方、允许换行成两行。
+   不给 .inbox-records-container 加 max-height/overflow —— 里面「类型转换」
+   是绝对定位下拉，加了会被裁掉。 */
+#subview-dashboard .inbox-record {
+  grid-template-columns: minmax(0, 1fr);
+  align-items: stretch;
+  column-gap: 0;
+}
+
+#subview-dashboard .inbox-record .inbox-record-summary,
+#subview-dashboard .inbox-record .inbox-record-actions {
+  grid-column: 1;
+  min-width: 0;
+}
+
+/* 必须写 grid-row: auto 把老规则的 `grid-row: 1` 顶掉，否则动作条仍挤在第一行。 */
+#subview-dashboard .inbox-record .inbox-record-actions {
+  grid-row: auto;
+  justify-content: flex-start;
+  gap: 4px;
+  margin-top: 8px;
+  transform: none;
+}
+
+/* 四个动作降级成 ghost 小字，和「今天的记录」行内动作条同一套语言。
+   层 5 给全局 `button` 写过带 !important 的 min-height / padding / border /
+   background / font-size，这里全部要 !important 才抢得回来。 */
+#subview-dashboard .inbox-record-actions > button,
+#subview-dashboard .inbox-record-actions .inbox-convert-trigger {
+  height: 24px;
+  min-height: 0 !important;
+  padding: 0 8px !important;
+  border: 0 !important;
+  border-radius: var(--r-sm, 6px) !important;
+  background: none !important;
+  box-shadow: none !important;
+  color: var(--text-secondary) !important;
+  font-size: 11.5px !important;
+  font-weight: 600 !important;
+  line-height: 1 !important;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+#subview-dashboard .inbox-record-actions > button:hover,
+#subview-dashboard .inbox-record-actions > button:focus-visible,
+#subview-dashboard .inbox-record-actions .inbox-convert-trigger:hover,
+#subview-dashboard .inbox-record-actions .inbox-convert-trigger:focus-visible {
+  background: var(--overlay-hover, rgba(255, 255, 255, 0.1)) !important;
+  color: var(--text-main) !important;
+}
