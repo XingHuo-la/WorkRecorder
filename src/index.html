@@ -5,6 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>工作台</title>
     <link rel="stylesheet" href="styles.css" />
+    <!-- 设计层 v3（白板风）。必须在 styles.css 之后：它靠「最后加载 + 重定义令牌」
+         覆盖 17202 行的旧层，作用域锁在 body[data-ui="v3"]，删属性即整体回退。 -->
+    <link rel="stylesheet" href="styles-v3.css" />
     <link rel="stylesheet" href="./assets/flatpickr/flatpickr.min.css">
     <link rel="stylesheet" href="./assets/flatpickr/themes/dark.css">
     <script src="./assets/flatpickr/flatpickr.min.js"></script>
@@ -27,7 +30,7 @@
       })();
     </script>
   </head>
-  <body>
+  <body data-ui="v3">
     <!-- 线性图标 sprite：统一 1.5px 描边、24 网格，替代原先混排的字符图标（⌂ ✎ ◷ ♠ ⌕ ⚙）。
          这些字符来自不同 Unicode 区块，光学校准天然不一致（♠ 明显比 ⌕ 大且重），
          是"界面不像一个整体"的隐性来源。 -->
@@ -71,6 +74,13 @@
       <symbol id="ic-dots" viewBox="0 0 24 24"><circle cx="5.4" cy="12" r="1.5" style="fill:currentColor;stroke:none"/><circle cx="12" cy="12" r="1.5" style="fill:currentColor;stroke:none"/><circle cx="18.6" cy="12" r="1.5" style="fill:currentColor;stroke:none"/></symbol>
       <symbol id="ic-image" viewBox="0 0 24 24"><rect x="3.6" y="4.6" width="16.8" height="14.8" rx="2.4"/><circle cx="9" cy="9.8" r="1.5"/><path d="m4.6 17.4 4.3-4.1 3.3 3.1 3-2.7 4.2 3.9"/></symbol>
       <symbol id="ic-chevron-right" viewBox="0 0 24 24"><path d="m9.6 5.6 6.4 6.4-6.4 6.4"/></symbol>
+      <!-- 白板视图：导航 + 工具组图标。同一套 24 网格 / 1.6px 描边语言。 -->
+      <symbol id="ic-board" viewBox="0 0 24 24"><rect x="3.4" y="4.4" width="17.2" height="12.6" rx="2.2"/><path d="M12 17v3.2"/><path d="M8.4 20.4h7.2"/><path d="M7.2 8.6h4.4"/><path d="M7.2 12h6.6"/></symbol>
+      <symbol id="ic-cursor" viewBox="0 0 24 24"><path d="M5.4 3.8l13 8.2-6.1 1.3-1.8 6z"/></symbol>
+      <symbol id="ic-sticky" viewBox="0 0 24 24"><path d="M4.4 4.4h15.2v9.4l-5.8 5.8H4.4z"/><path d="M19.6 13.8h-5.8v5.8"/></symbol>
+      <symbol id="ic-connector" viewBox="0 0 24 24"><circle cx="6.2" cy="6.2" r="2.5"/><circle cx="17.8" cy="17.8" r="2.5"/><path d="M8.2 8.2l7.6 7.6"/></symbol>
+      <symbol id="ic-hand" viewBox="0 0 24 24"><path d="M18 11V6.6a1.9 1.9 0 0 0-3.8 0V10"/><path d="M14.2 10V4.7a1.9 1.9 0 0 0-3.8 0V10"/><path d="M10.4 10.4V6.7a1.9 1.9 0 0 0-3.8 0V14"/><path d="M18 8.6a1.9 1.9 0 0 1 3.8 0V15a7 7 0 0 1-7 7h-2.1a7 7 0 0 1-6.3-4"/></symbol>
+      <symbol id="ic-fit" viewBox="0 0 24 24"><path d="M4 9V5.6A1.6 1.6 0 0 1 5.6 4H9"/><path d="M20 9V5.6A1.6 1.6 0 0 0 18.4 4H15"/><path d="M4 15v3.4A1.6 1.6 0 0 0 5.6 20H9"/><path d="M20 15v3.4A1.6 1.6 0 0 1 18.4 20H15"/></symbol>
     </svg>
     <div data-tauri-drag-region class="custom-titlebar">
       <div class="titlebar-left" data-tauri-drag-region>
@@ -105,6 +115,9 @@
                搜索不再是页面 —— 它是 Ctrl+K 随时可唤起的命令面板。
                空当接龙移出主导航（入口收在设置页），代码保留。 -->
           <button id="nav-dashboard" class="nav-item active" aria-current="page"><span class="nav-item-icon"><svg class="wr-icon" aria-hidden="true"><use href="#ic-home"/></svg></span><span>今天</span></button>
+          <!-- 白板紧跟「今天」：它和「记录」是同一批数据的两种看法 ——
+               记录按时间排，白板按你摆的位置排。所以放在这里，不是排在功能列表末尾。 -->
+          <button id="nav-board" class="nav-item"><span class="nav-item-icon"><svg class="wr-icon" aria-hidden="true"><use href="#ic-board"/></svg></span><span>白板</span></button>
           <button id="nav-timeline" class="nav-item"><span class="nav-item-icon"><svg class="wr-icon" aria-hidden="true"><use href="#ic-clock"/></svg></span><span>记录</span></button>
           <button id="nav-notes" class="nav-item"><span class="nav-item-icon"><svg class="wr-icon" aria-hidden="true"><use href="#ic-notebook"/></svg></span><span>笔记</span></button>
           <button id="nav-table" class="nav-item"><span class="nav-item-icon"><svg class="wr-icon" aria-hidden="true"><use href="#ic-table"/></svg></span><span>表格</span></button>
@@ -420,6 +433,74 @@
 
 
           <div id="history-list-container" class="legacy-hidden-list"></div>
+        </div>
+
+        <!-- 白板 = 同一批 record 的画布视图。
+             便签不是新数据结构，它就是一条 record：正文 = title，
+             布局（x/y/w/h/颜色/连线）存在 record.custom._bd 里，零迁移。
+             所以「在白板上贴一张」和「在记录里新建一条」是同一件事的两种入口。 -->
+        <div id="subview-board" class="subview bd-view" style="display: none;">
+          <div class="bd-bar">
+            <span class="bd-title">白板</span>
+            <span class="bd-save" id="bd-save"><i></i><span id="bd-save-text">已同步</span></span>
+
+            <div class="bd-tools" id="bd-tools" role="group" aria-label="白板工具">
+              <button type="button" class="bd-tool active" data-bd-tool="select" aria-label="选择">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#ic-cursor"/></svg>
+                <span class="bd-tip">选择 V</span>
+              </button>
+              <button type="button" class="bd-tool" data-bd-tool="note" aria-label="便签">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#ic-sticky"/></svg>
+                <span class="bd-tip">便签 N</span>
+              </button>
+              <button type="button" class="bd-tool" data-bd-tool="connect" aria-label="连线">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#ic-connector"/></svg>
+                <span class="bd-tip">连线 L</span>
+              </button>
+              <button type="button" class="bd-tool" data-bd-tool="pan" aria-label="平移">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#ic-hand"/></svg>
+                <span class="bd-tip">平移 H</span>
+              </button>
+            </div>
+
+            <div class="bd-gap"></div>
+
+            <div class="bd-zoom">
+              <button type="button" id="bd-zoom-out" aria-label="缩小">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/></svg>
+              </button>
+              <span class="bd-zoom-label" id="bd-zoom-label" title="点击回到 100%">100%</span>
+              <button type="button" id="bd-zoom-in" aria-label="放大">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+              </button>
+            </div>
+            <button type="button" id="bd-fit-btn" class="ghost-btn" title="适应画布（Shift+1）">
+              <svg class="wr-icon" aria-hidden="true"><use href="#ic-fit"/></svg>
+            </button>
+            <button type="button" id="bd-new-btn" class="primary-btn">＋ 便签</button>
+          </div>
+
+          <div class="bd-stage" id="bd-stage" data-tool="select">
+            <div class="bd-grid-major"></div>
+            <div class="bd-grid-minor"></div>
+            <svg class="bd-edge-svg" aria-hidden="true">
+              <g id="bd-edge-layer"></g>
+              <g id="bd-temp-layer"></g>
+            </svg>
+            <div class="bd-node-layer" id="bd-node-layer"></div>
+            <div class="bd-marquee" id="bd-marquee" hidden></div>
+
+            <!-- 右键菜单：挂在 stage 内，绝对定位相对 stage，不用 fixed
+                 （fixed 在 WebView2 里遇到 transform 祖先会跑位）。 -->
+            <div class="bd-menu" id="bd-menu" hidden role="menu"></div>
+
+            <div class="bd-empty" id="bd-empty" style="display: none;">
+              <div class="bd-empty-title">白板还是空的</div>
+              <div class="bd-empty-hint">双击任意位置贴一张便签 —— 它同时是一条记录</div>
+            </div>
+
+            <div class="bd-hint"><span id="bd-hint-text">拖拽框选 · 双击便签编辑 · 双击空白新建</span></div>
+          </div>
         </div>
 
         <div id="subview-notes" class="subview" data-pane="source" style="display: none;">

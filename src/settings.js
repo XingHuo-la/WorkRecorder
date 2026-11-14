@@ -151,7 +151,10 @@ export function initSettingsModule() {
       const row = await dbQuery("SELECT name FROM themes WHERE id=?", [currentId]);
       const nameEl = document.getElementById('current-theme-name');
       if (nameEl) {
-          nameEl.innerText = (row && row.length > 0) ? row[0].name : "🌙 标准深色";
+          // themes 表里 name 可能为空（自定义主题从主题编辑器存进来时只写了 colors），
+          // 那时 row[0].name 是 null，直接插值会在设置页印出 "undefined"。
+          const label = (row && row.length > 0) ? row[0].name : '';
+          nameEl.innerText = (label && String(label).trim()) ? String(label) : "🌙 标准深色";
       }
   };
   window.renderCurrentThemeName();

@@ -7,16 +7,24 @@ import { showUndoToast } from './undoToast.js';
 const expandedMoreActionIds = new Set();
 const completingTodoIds = new Set();
 
+/* 标题 / 说明的截断上限。
+   历史上是「超过 10 个字砍到 8 个字 + ...」，中文 8 个字连半句都放不下，
+   于是整列记录全是「给 sir 一份...」「跑完表格轮的 Q...」——读者拿不到信息。
+   单行列表该由 CSS 的 text-overflow 收口，JS 只留一个防超长的保险值
+   （见 styles-v3.css 第 18 节：strong 吃满剩余宽度 + ellipsis）。 */
+const TIMELINE_TITLE_MAX = 60;
+const TIMELINE_CONTENT_MAX = 120;
+
 function formatTimelineTitle(text, fallback = '') {
   const clean = (text || fallback || '').trim().replace(/\s+/g, ' ');
   if (!clean) return fallback;
-  return clean.length > 10 ? `${clean.substring(0, 8)}...` : clean;
+  return clean.length > TIMELINE_TITLE_MAX ? `${clean.slice(0, TIMELINE_TITLE_MAX)}…` : clean;
 }
 
 function formatTimelineContent(text) {
   const clean = (text || '').trim().replace(/\s+/g, ' ');
   if (!clean) return '';
-  return clean.length > 20 ? `${clean.substring(0, 18)}...` : clean;
+  return clean.length > TIMELINE_CONTENT_MAX ? `${clean.slice(0, TIMELINE_CONTENT_MAX)}…` : clean;
 }
 
 function getDateTimeValue(dateStr, timeStr) {

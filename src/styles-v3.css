@@ -1,0 +1,2068 @@
+/* =====================================================================
+   设计层 v3 · 白板风（2026-11-14）
+
+   为什么是独立文件而不是继续往 styles.css 尾部追加：
+     styles.css 已 17202 行、1516 处 !important、13 个追加层互相覆盖。
+     再追加一层只是把债务往后挪。v3 的目标是「用一层把外观收成一套」，
+     所以单独成文件、作为最后一个 stylesheet 加载，作用域锁在
+     body[data-ui="v3"] —— 删掉这个属性就整体退回旧外观。
+
+   两个杠杆（这是本层能一次收掉全应用观感的原因，不要再逐条硬怼）：
+
+   ① **重定义 legacy 令牌**。styles.css 里有一大批这样的规则：
+        button, .btn { min-height: var(--control-height-md) !important;
+                       border-radius: var(--radius-sm) !important;
+                       font-size: var(--font-size-md) !important; … }
+      它们全走令牌。令牌声明在 :root，主题引擎的 applyTheme 把颜色写在
+      documentElement 的 inline style 上 —— 都在 <html>。本层把几何/排版
+      令牌重新声明在 <body>，**body 比 html 更近，继承即胜出**，
+      不需要 !important，也不用知道那几百条规则长什么样。
+
+   ② **本层的每条属性都带 !important**。这不是懒：旧层有 1516 处
+      !important，还有 `#workspace-view .sidebar` 这种 id 级选择器
+      （特异性 1,1,0 压过任何 .class 组合）。不带 !important 的规则
+      一律白写 —— 第一版就是这么失效的。作用域前缀 + !important，
+      两个都留。
+
+   唯一**不能**带 !important 的是 display 与 visibility：
+   路由靠 inline style.display 切视图，旧层给 .subview 写过
+   display !important 压掉行内 none，导致过「笔记视图叠在所有页面」
+   的真机事故（a27bc98）。本层不碰 .subview 的 display。
+
+   风格基准：whiteboard.html（2026-11-12）。
+     · 底 = 单色 + 24px 细网格 / 120px 主线，纸感
+     · 边框几乎不存在，分层靠「大而柔的扩散阴影」
+     · 字号小（10.5–14px），行高松（1.5–1.6），留白多
+     · 圆角 8 / 11 / 14 三档，控件高度 26 / 32 / 36 三档
+     · 动效快而轻：.12–.16s，active 缩放到 .96
+   ===================================================================== */
+
+/* =====================================================================
+   1. 令牌重定（唯一不需要 !important 的一段 —— 靠继承距离取胜）
+   ===================================================================== */
+
+body[data-ui="v3"] {
+  /* 控件三档：32/38/44 → 26/32/36 */
+  --control-height-sm: 26px;
+  --control-height-md: 32px;
+  --control-height-lg: 36px;
+
+  --radius-sm: 8px;
+  --radius-md: 11px;
+  --radius-lg: 14px;
+  --radius-xl: 18px;
+
+  /* 字号五档：12/13/14/16/20 → 10.5/11.5/12.5/14/16 */
+  --font-size-xs: 10.5px;
+  --font-size-sm: 11.5px;
+  --font-size-md: 12.5px;
+  --font-size-lg: 14px;
+  --font-size-xl: 16px;
+
+  --space-1: 4px;
+  --space-2: 6px;
+  --space-3: 10px;
+  --space-4: 14px;
+  --space-5: 18px;
+  --space-6: 22px;
+  --space-8: 30px;
+
+  /* 阴影：远扩散 + 低不透明度。不用描边分层 */
+  --shadow-sm: 0 1px 2px rgba(2, 6, 23, .34);
+  --shadow-md: 0 10px 28px -14px rgba(2, 6, 23, .58), 0 2px 6px rgba(2, 6, 23, .26);
+  --shadow-lg: 0 20px 48px -18px rgba(2, 6, 23, .66), 0 3px 10px rgba(2, 6, 23, .3);
+
+  /* v3 自用
+     分隔线用**文字色**调透明度，不用 --color-border：浅色主题的 border 本身
+     就是浅灰（#E2E8F0 一档），再乘 38% 直接归零 —— 侧栏右缘、分组标题线
+     在白底上肉眼看不见，整个界面糊成一张白纸。文字色在明暗两套主题里都是
+     高对比的，乘 8%/15% 才是同一条看得见的细线。 */
+  --v3-line: color-mix(in srgb, var(--color-text) 15%, transparent);
+  --v3-line-soft: color-mix(in srgb, var(--color-text) 8%, transparent);
+  --v3-float: color-mix(in srgb, var(--color-surface) 92%, var(--color-bg));
+  --v3-grid-minor: color-mix(in srgb, var(--color-text) 3.2%, transparent);
+  --v3-grid-major: color-mix(in srgb, var(--color-text) 5.4%, transparent);
+  --v3-ease: cubic-bezier(.2, .8, .2, 1);
+
+  font-size: 13px !important;
+  line-height: 1.55;
+}
+
+/* =====================================================================
+   2. 画布：网格纸
+
+   whiteboard 的底是白 + 24px 细网格 + 120px 主线。深色下把网格改成
+   「文字色微透明」，密度与主线比不变 —— 这是整套观感的骨相，
+   不是装饰：它让「空」看起来是有结构的空，而不是缺东西的黑。
+
+   必须写 #workspace-view：旧层有 `.main-content { background: …!important }`
+   （styles.css:2108，浅色硬编码）和 `#workspace-view .main-content`
+   的 padding 覆盖，只有 id 级前缀 + !important 才盖得住。
+   ===================================================================== */
+
+body[data-ui="v3"] #workspace-view .main-content {
+  padding: 18px 26px 72px !important;
+  background-color: transparent !important;
+  background-image:
+    linear-gradient(to right, var(--v3-grid-major) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--v3-grid-major) 1px, transparent 1px),
+    linear-gradient(to right, var(--v3-grid-minor) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--v3-grid-minor) 1px, transparent 1px) !important;
+  background-size: 120px 120px, 120px 120px, 24px 24px, 24px 24px !important;
+  background-attachment: local, local, local, local !important;
+}
+
+body[data-ui="v3"] ::-webkit-scrollbar { width: 9px !important; height: 9px !important; }
+body[data-ui="v3"] ::-webkit-scrollbar-thumb {
+  border: 2px solid transparent !important;
+  border-radius: 999px !important;
+  background-clip: content-box !important;
+  background-color: color-mix(in srgb, var(--color-text) 12%, transparent) !important;
+}
+body[data-ui="v3"] ::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in srgb, var(--color-text) 22%, transparent) !important;
+}
+body[data-ui="v3"] ::-webkit-scrollbar-track { background: transparent !important; }
+
+/* =====================================================================
+   3. 标题栏：36px → 30px，压到「一条边」的厚度
+   ===================================================================== */
+
+body[data-ui="v3"] #workspace-view .custom-titlebar,
+body[data-ui="v3"] .custom-titlebar {
+  height: 30px !important;
+  min-height: 30px !important;
+  background: transparent !important;
+  border-bottom: 1px solid var(--v3-line-soft) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+body[data-ui="v3"] .titlebar-left { padding-left: 14px !important; }
+body[data-ui="v3"] .titlebar-left span {
+  color: var(--text-muted) !important;
+  font-size: 11px !important;
+  letter-spacing: .04em !important;
+}
+body[data-ui="v3"] .titlebar-btn {
+  width: 34px !important;
+  height: 24px !important;
+  min-height: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 6px !important;
+  background: transparent !important;
+  color: var(--text-muted) !important;
+  font-size: 11px !important;
+  line-height: 24px !important;
+  box-shadow: none !important;
+}
+body[data-ui="v3"] .titlebar-btn:hover {
+  background: color-mix(in srgb, var(--color-text) 9%, transparent) !important;
+  color: var(--text-main) !important;
+}
+body[data-ui="v3"] .titlebar-btn.close-btn:hover {
+  background: var(--color-danger) !important;
+  color: #fff !important;
+}
+
+/* =====================================================================
+   4. 侧栏：从「一块面板」降成「一条边」
+
+   whiteboard 没有侧栏 —— 它的工具栏压在顶栏里。这里保留侧栏（4+1 项导航
+   需要一个稳定位置），但把存在感压到和顶栏同一级：透明底、无阴影、一条 1px 线。
+   ===================================================================== */
+
+body[data-ui="v3"] #workspace-view .sidebar {
+  width: 208px !important;
+  padding: 14px 10px 12px !important;
+  background-color: transparent !important;
+  border-right: 1px solid var(--v3-line-soft) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+body[data-ui="v3"] .sidebar-brand {
+  gap: 9px !important;
+  padding: 2px 6px 14px !important;
+  border: 0 !important;
+  margin: 0 !important;
+}
+body[data-ui="v3"] .sidebar-brand-mark {
+  width: 26px !important;
+  height: 26px !important;
+  border-radius: 8px !important;
+  background: linear-gradient(140deg,
+      color-mix(in srgb, var(--color-primary) 82%, #a06bff),
+      var(--color-primary)) !important;
+  box-shadow: 0 4px 14px -3px color-mix(in srgb, var(--color-primary) 62%, transparent) !important;
+  color: #fff !important;
+  font-size: 12px !important;
+  font-weight: 700 !important;
+}
+body[data-ui="v3"] .sidebar-brand h2 {
+  margin: 0 !important;
+  color: var(--text-main) !important;
+  font-size: 12.5px !important;
+  font-weight: 600 !important;
+}
+body[data-ui="v3"] .sidebar-brand p {
+  margin: 1px 0 0 !important;
+  color: var(--text-muted) !important;
+  font-size: 10.5px !important;
+}
+
+body[data-ui="v3"] .nav-menu { gap: 1px !important; padding: 0 !important; }
+
+/* 导航项：30px、圆角 7、字号 12.5。激活态不用主色实底（4 个实底块
+   会把侧栏变成红绿灯），用「字变亮 + 一层薄面 + 右端一条主色短杠」。 */
+body[data-ui="v3"] .sidebar .nav-item {
+  position: relative !important;
+  height: 30px !important;
+  min-height: 0 !important;
+  padding: 0 8px !important;
+  border: 0 !important;
+  border-radius: 7px !important;
+  background: transparent !important;
+  color: var(--text-muted) !important;
+  font-size: 12.5px !important;
+  font-weight: 450 !important;
+  box-shadow: none !important;
+  justify-content: flex-start !important;
+  transition: background .13s var(--v3-ease), color .13s var(--v3-ease) !important;
+}
+body[data-ui="v3"] .sidebar .nav-item:hover {
+  background: color-mix(in srgb, var(--color-text) 6%, transparent) !important;
+  color: var(--text-secondary) !important;
+  transform: none !important;
+}
+body[data-ui="v3"] .sidebar .nav-item.active {
+  background: color-mix(in srgb, var(--color-text) 8%, transparent) !important;
+  color: var(--text-main) !important;
+  font-weight: 550 !important;
+  box-shadow: none !important;
+}
+body[data-ui="v3"] .sidebar .nav-item.active::after {
+  content: "" !important;
+  position: absolute !important;
+  right: 5px !important;
+  top: 50% !important;
+  width: 2.5px !important;
+  height: 13px !important;
+  margin-top: -6.5px !important;
+  border-radius: 2px !important;
+  background: var(--color-primary) !important;
+  opacity: .9 !important;
+}
+body[data-ui="v3"] .sidebar .nav-item .nav-item-icon {
+  width: 20px !important;
+  height: 20px !important;
+  margin-right: 7px !important;
+  color: inherit !important;
+  opacity: .82 !important;
+}
+body[data-ui="v3"] .sidebar .nav-item.active .nav-item-icon { opacity: 1 !important; }
+body[data-ui="v3"] .wr-icon {
+  width: 15px !important;
+  height: 15px !important;
+  stroke-width: 1.65 !important;
+}
+
+body[data-ui="v3"] .sidebar-foot {
+  gap: 1px !important;
+  padding-top: 8px !important;
+  border-top: 1px solid var(--v3-line-soft) !important;
+  margin-top: 8px !important;
+}
+
+body[data-ui="v3"] .sidebar-cmdk {
+  height: 28px !important;
+  min-height: 0 !important;
+  padding: 0 8px !important;
+  border: 1px solid var(--v3-line-soft) !important;
+  border-radius: 7px !important;
+  background: color-mix(in srgb, var(--color-text) 3%, transparent) !important;
+  color: var(--text-muted) !important;
+  font-size: 11.5px !important;
+  box-shadow: none !important;
+  justify-content: flex-start !important;
+}
+body[data-ui="v3"] .sidebar-cmdk:hover {
+  border-color: var(--v3-line) !important;
+  background: color-mix(in srgb, var(--color-text) 6%, transparent) !important;
+  color: var(--text-secondary) !important;
+  transform: none !important;
+}
+body[data-ui="v3"] .sidebar-cmdk-kbd {
+  margin-left: auto !important;
+  padding: 1px 4px !important;
+  border: 0 !important;
+  border-radius: 4px !important;
+  background: color-mix(in srgb, var(--color-text) 8%, transparent) !important;
+  color: var(--text-muted) !important;
+  font-family: inherit !important;
+  font-size: 9.5px !important;
+}
+
+/* =====================================================================
+   5. 页头：所有视图统一成「一行 34px」
+
+   现状是每页各写一套（wb-head / rec-head / subview-page-head / nt-doc-head），
+   字号 20–26px、带 kicker、带说明。v3 统一压成：标题 14px + meta 小字 +
+   右侧动作，34px 高，下面一条 1px 线。
+   ===================================================================== */
+
+body[data-ui="v3"] .wb-head,
+body[data-ui="v3"] .rec-head,
+body[data-ui="v3"] .subview-page-head,
+body[data-ui="v3"] .freecell-gamebar {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  gap: 10px !important;
+  min-height: 34px !important;
+  padding: 0 0 10px !important;
+  margin: 0 0 4px !important;
+  border: 0 !important;
+  border-bottom: 1px solid var(--v3-line-soft) !important;
+  background: transparent !important;
+}
+
+body[data-ui="v3"] .wb-head h1,
+body[data-ui="v3"] .rec-head h1,
+body[data-ui="v3"] .subview-page-head h1,
+body[data-ui="v3"] .freecell-game-title h1 {
+  margin: 0 !important;
+  color: var(--text-main) !important;
+  font-size: 14px !important;
+  font-weight: 600 !important;
+  letter-spacing: .01em !important;
+  line-height: 1.2 !important;
+}
+body[data-ui="v3"] .subview-page-head p,
+body[data-ui="v3"] .subview-kicker,
+body[data-ui="v3"] .freecell-kicker {
+  display: none !important;
+}
+body[data-ui="v3"] .wb-head-left { gap: 8px !important; }
+body[data-ui="v3"] .wb-head-date {
+  color: var(--text-muted) !important;
+  font-size: 11.5px !important;
+  font-variant-numeric: tabular-nums !important;
+}
+body[data-ui="v3"] .wb-head-right { gap: 6px !important; }
+body[data-ui="v3"] .wb-summary-line {
+  gap: 6px !important;
+  color: var(--text-muted) !important;
+  font-size: 11.5px !important;
+  font-variant-numeric: tabular-nums !important;
+  order: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+}
+body[data-ui="v3"] .wb-summary-line strong {
+  color: var(--text-secondary) !important;
+  font-weight: 600 !important;
+}
+body[data-ui="v3"] .wb-summary-line .summary-sep { opacity: .45 !important; }
+
+/* 区块标题：12px 弱色。whiteboard 里没有一个区块标题比正文还粗。 */
+body[data-ui="v3"] .section-heading-row,
+body[data-ui="v3"] .inbox-section-head {
+  min-height: 26px !important;
+  margin: 0 0 2px !important;
+  padding: 0 !important;
+  gap: 7px !important;
+  border: 0 !important;
+}
+body[data-ui="v3"] .section-heading-row h2,
+body[data-ui="v3"] .inbox-section-head h2 {
+  margin: 0 !important;
+  color: var(--text-muted) !important;
+  font-size: 11.5px !important;
+  font-weight: 550 !important;
+  letter-spacing: .02em !important;
+}
+body[data-ui="v3"] .wb-section-meta,
+body[data-ui="v3"] .wb-section-count {
+  color: var(--text-muted) !important;
+  font-size: 10.5px !important;
+  opacity: .78 !important;
+  font-variant-numeric: tabular-nums !important;
+}
+
+body[data-ui="v3"] .wb-quiet-link {
+  height: 22px !important;
+  min-height: 0 !important;
+  padding: 0 6px !important;
+  border: 0 !important;
+  border-radius: 6px !important;
+  background: transparent !important;
+  color: var(--text-muted) !important;
+  font-size: 10.5px !important;
+  box-shadow: none !important;
+  opacity: .62 !important;
+  transition: opacity .13s, background .13s, color .13s !important;
+}
+body[data-ui="v3"] .wb-quiet-link:hover {
+  opacity: 1 !important;
+  background: color-mix(in srgb, var(--color-text) 7%, transparent) !important;
+  color: var(--text-secondary) !important;
+  transform: none !important;
+}
+
+/* =====================================================================
+   6. 控件
+   ===================================================================== */
+
+/* 按钮默认「无色无形的浅面」，只有主按钮有颜色 */
+body[data-ui="v3"] button,
+body[data-ui="v3"] .btn {
+  min-height: var(--control-height-md) !important;
+  padding: 0 11px !important;
+  border: 1px solid transparent !important;
+  border-radius: var(--radius-sm) !important;
+  background: color-mix(in srgb, var(--color-text) 6%, transparent) !important;
+  color: var(--text-secondary) !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  line-height: 1 !important;
+  box-shadow: none !important;
+  transition: background .13s var(--v3-ease), color .13s var(--v3-ease),
+              border-color .13s var(--v3-ease), transform .1s var(--v3-ease) !important;
+}
+body[data-ui="v3"] button:hover,
+body[data-ui="v3"] .btn:hover {
+  border-color: var(--v3-line-soft) !important;
+  background: color-mix(in srgb, var(--color-text) 10%, transparent) !important;
+  color: var(--text-main) !important;
+  transform: none !important;
+}
+body[data-ui="v3"] button:active,
+body[data-ui="v3"] .btn:active { transform: scale(.975) !important; }
+
+/* 主按钮 = whiteboard 的 share：实底 + 同色辉光 + 顶部 1px 高光 */
+body[data-ui="v3"] button.primary-btn,
+body[data-ui="v3"] .btn-primary,
+body[data-ui="v3"] .quick-save-btn,
+body[data-ui="v3"] .hero-btn {
+  border-color: transparent !important;
+  background:
+    linear-gradient(180deg,
+      color-mix(in srgb, var(--color-primary) 88%, #fff),
+      var(--color-primary)) !important;
+  color: #fff !important;
+  font-weight: 600 !important;
+  box-shadow:
+    0 5px 16px -6px color-mix(in srgb, var(--color-primary) 78%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, .22) !important;
+}
+body[data-ui="v3"] button.primary-btn:hover,
+body[data-ui="v3"] .btn-primary:hover,
+body[data-ui="v3"] .quick-save-btn:hover {
+  filter: brightness(1.07) !important;
+  transform: none !important;
+}
+body[data-ui="v3"] button:disabled,
+body[data-ui="v3"] .btn:disabled {
+  opacity: .4 !important;
+  background: color-mix(in srgb, var(--color-text) 4%, transparent) !important;
+  color: var(--text-muted) !important;
+  box-shadow: none !important;
+}
+body[data-ui="v3"] button.danger-btn,
+body[data-ui="v3"] .btn-danger {
+  border-color: transparent !important;
+  background: color-mix(in srgb, var(--color-danger) 12%, transparent) !important;
+  color: var(--color-danger) !important;
+  box-shadow: none !important;
+}
+body[data-ui="v3"] button.danger-btn:hover,
+body[data-ui="v3"] .btn-danger:hover {
+  background: color-mix(in srgb, var(--color-danger) 20%, transparent) !important;
+  color: var(--color-danger) !important;
+}
+
+/* 图标按钮 */
+body[data-ui="v3"] .icon-btn,
+body[data-ui="v3"] .wb-icon-btn,
+body[data-ui="v3"] .nt-icon-btn,
+body[data-ui="v3"] .ghost-btn {
+  height: var(--control-height-sm) !important;
+  min-height: 0 !important;
+  padding: 0 7px !important;
+  border: 0 !important;
+  border-radius: 6px !important;
+  background: transparent !important;
+  color: var(--text-muted) !important;
+  font-size: 11px !important;
+  box-shadow: none !important;
+}
+body[data-ui="v3"] .icon-btn:hover,
+body[data-ui="v3"] .wb-icon-btn:hover,
+body[data-ui="v3"] .nt-icon-btn:hover,
+body[data-ui="v3"] .ghost-btn:hover {
+  background: color-mix(in srgb, var(--color-text) 9%, transparent) !important;
+  color: var(--text-main) !important;
+  transform: none !important;
+}
+body[data-ui="v3"] .wb-icon-btn,
+body[data-ui="v3"] .nt-icon-btn {
+  width: var(--control-height-sm) !important;
+  padding: 0 !important;
+  display: inline-grid !important;
+  place-items: center !important;
+}
+
+/* 输入：26–32px 浅槽，聚焦才出现一圈主色 */
+body[data-ui="v3"] input[type="text"],
+body[data-ui="v3"] input[type="search"],
+body[data-ui="v3"] input[type="number"],
+body[data-ui="v3"] input[type="date"],
+body[data-ui="v3"] select,
+body[data-ui="v3"] textarea {
+  min-height: 0 !important;
+  height: var(--control-height-md) !important;
+  padding: 0 9px !important;
+  border: 1px solid var(--v3-line-soft) !important;
+  border-radius: 7px !important;
+  background: color-mix(in srgb, var(--color-text) 4%, transparent) !important;
+  color: var(--text-main) !important;
+  font-size: 12px !important;
+  line-height: 1.4 !important;
+  box-shadow: none !important;
+  transition: border-color .13s, background .13s, box-shadow .13s !important;
+}
+body[data-ui="v3"] textarea {
+  height: auto !important;
+  min-height: 64px !important;
+  padding: 7px 9px !important;
+  line-height: 1.55 !important;
+  resize: none !important;
+}
+body[data-ui="v3"] input[type="text"]:focus,
+body[data-ui="v3"] input[type="search"]:focus,
+body[data-ui="v3"] input[type="number"]:focus,
+body[data-ui="v3"] select:focus,
+body[data-ui="v3"] textarea:focus {
+  border-color: color-mix(in srgb, var(--color-primary) 58%, transparent) !important;
+  background: color-mix(in srgb, var(--color-text) 6%, transparent) !important;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 13%, transparent) !important;
+  outline: none !important;
+}
+body[data-ui="v3"] input::placeholder,
+body[data-ui="v3"] textarea::placeholder {
+  color: var(--text-muted) !important;
+  opacity: .62 !important;
+}
+body[data-ui="v3"] select {
+  padding-right: 24px !important;
+  appearance: none !important;
+  background-image:
+    linear-gradient(45deg, transparent 50%, currentColor 50%),
+    linear-gradient(135deg, currentColor 50%, transparent 50%) !important;
+  background-position: calc(100% - 13px) 50%, calc(100% - 9px) 50% !important;
+  background-size: 4px 4px, 4px 4px !important;
+  background-repeat: no-repeat !important;
+  cursor: pointer !important;
+}
+body[data-ui="v3"] select option {
+  background: var(--bg-elevated) !important;
+  color: var(--text-main) !important;
+}
+
+/* 分段控件 = whiteboard 的 .tools 组 */
+body[data-ui="v3"] .nt-seg {
+  display: inline-flex !important;
+  gap: 1px !important;
+  padding: 2px !important;
+  border: 1px solid var(--v3-line-soft) !important;
+  border-radius: 8px !important;
+  background: color-mix(in srgb, var(--color-text) 3%, transparent) !important;
+}
+body[data-ui="v3"] .nt-seg-btn {
+  height: 22px !important;
+  min-height: 0 !important;
+  padding: 0 9px !important;
+  border: 0 !important;
+  border-radius: 6px !important;
+  background: transparent !important;
+  color: var(--text-muted) !important;
+  font-size: 11px !important;
+  font-weight: 500 !important;
+  box-shadow: none !important;
+}
+body[data-ui="v3"] .nt-seg-btn:hover {
+  background: color-mix(in srgb, var(--color-text) 7%, transparent) !important;
+  color: var(--text-secondary) !important;
+}
+body[data-ui="v3"] .nt-seg-btn[aria-pressed="true"],
+body[data-ui="v3"] .nt-seg-btn.active {
+  background: color-mix(in srgb, var(--color-text) 11%, transparent) !important;
+  color: var(--text-main) !important;
+  font-weight: 600 !important;
+  box-shadow: 0 1px 3px rgba(2, 6, 23, .3) !important;
+}
+
+/* =====================================================================
+   7. 去卡片化 —— 简洁的最大来源
+
+   现状：几乎每个区块都是「底色 + 边框 + 阴影 + 24px padding」的卡片，
+   一屏能叠四层。whiteboard 里没有任何卡片容器：内容直接坐在纸上，
+   需要分组时只画一条 1px 线。保留「面」的只有浮层和便签本身。
+   ===================================================================== */
+
+body[data-ui="v3"] .settings-card,
+body[data-ui="v3"] .inbox-section,
+body[data-ui="v3"] .wb-recent-section,
+body[data-ui="v3"] .task-tree-section,
+body[data-ui="v3"] .today-section,
+body[data-ui="v3"] .completed-todos-section,
+body[data-ui="v3"] .input-card,
+body[data-ui="v3"] .composer-card,
+body[data-ui="v3"] .freecell-game-shell,
+body[data-ui="v3"] .record-card,
+body[data-ui="v3"] .note-card {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+body[data-ui="v3"] .today-section,
+body[data-ui="v3"] .task-tree-section,
+body[data-ui="v3"] .wb-recent-section {
+  padding-top: 14px !important;
+  margin-top: 14px !important;
+  border-top: 1px solid var(--v3-line-soft) !important;
+}
+body[data-ui="v3"] .wb-col-main > .task-tree-section:first-child,
+body[data-ui="v3"] .wb-col-side > .inbox-section:first-child {
+  padding-top: 6px !important;
+  margin-top: 6px !important;
+  border-top: 0 !important;
+}
+
+body[data-ui="v3"] .settings-card {
+  padding: 14px 0 4px !important;
+  border-top: 1px solid var(--v3-line-soft) !important;
+}
+body[data-ui="v3"] .settings-card:first-child { border-top: 0 !important; }
+body[data-ui="v3"] .settings-card-head { gap: 9px !important; margin-bottom: 6px !important; }
+body[data-ui="v3"] .settings-card-head h2 {
+  margin: 0 !important;
+  color: var(--text-main) !important;
+  font-size: 12.5px !important;
+  font-weight: 600 !important;
+}
+body[data-ui="v3"] .settings-card-head p {
+  margin: 1px 0 0 !important;
+  color: var(--text-muted) !important;
+  font-size: 10.5px !important;
+}
+body[data-ui="v3"] .settings-card-icon {
+  width: 24px !important;
+  height: 24px !important;
+  border-radius: 7px !important;
+  background: color-mix(in srgb, var(--color-text) 6%, transparent) !important;
+  color: var(--text-muted) !important;
+}
+body[data-ui="v3"] .settings-list { gap: 1px !important; }
+body[data-ui="v3"] .settings-row {
+  padding: 9px 8px !important;
+  border-radius: 8px !important;
+  border: 0 !important;
+  background: transparent !important;
+}
+body[data-ui="v3"] .settings-row:hover {
+  background: color-mix(in srgb, var(--color-text) 4%, transparent) !important;
+}
+body[data-ui="v3"] .settings-row-copy strong {
+  font-size: 12px !important;
+  font-weight: 550 !important;
+  color: var(--text-main) !important;
+}
+body[data-ui="v3"] .settings-row-copy span {
+  margin-top: 1px !important;
+  font-size: 10.5px !important;
+  color: var(--text-muted) !important;
+  line-height: 1.45 !important;
+}
+
+/* =====================================================================
+   8. 首页
+   ===================================================================== */
+
+body[data-ui="v3"] .wb-v2 { gap: 26px !important; padding: 0 !important; }
+
+body[data-ui="v3"] .todo-item,
+body[data-ui="v3"] .record-item,
+body[data-ui="v3"] .today-item,
+body[data-ui="v3"] .inbox-record-card,
+body[data-ui="v3"] .wb-recent-item,
+body[data-ui="v3"] .timeline-item {
+  border: 0 !important;
+  border-radius: 8px !important;
+  background: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+  transition: background .12s var(--v3-ease) !important;
+}
+body[data-ui="v3"] .todo-item:hover,
+body[data-ui="v3"] .record-item:hover,
+body[data-ui="v3"] .today-item:hover,
+body[data-ui="v3"] .inbox-record-card:hover,
+body[data-ui="v3"] .wb-recent-item:hover,
+body[data-ui="v3"] .timeline-item:hover {
+  background: color-mix(in srgb, var(--color-text) 4.5%, transparent) !important;
+  transform: none !important;
+}
+
+body[data-ui="v3"] .inbox-record-card {
+  display: block !important;
+  padding: 8px 9px !important;
+}
+body[data-ui="v3"] .inbox-record-title,
+body[data-ui="v3"] .wb-recent-title {
+  color: var(--text-secondary) !important;
+  font-size: 12px !important;
+  font-weight: 450 !important;
+  line-height: 1.5 !important;
+}
+body[data-ui="v3"] .inbox-record-meta,
+body[data-ui="v3"] .wb-recent-meta {
+  margin-top: 2px !important;
+  color: var(--text-muted) !important;
+  font-size: 10.5px !important;
+  opacity: .8 !important;
+  font-variant-numeric: tabular-nums !important;
+}
+body[data-ui="v3"] .inbox-record-bottom-actions {
+  display: flex !important;
+  gap: 2px !important;
+  margin-top: 5px !important;
+  opacity: 0 !important;
+  transition: opacity .13s !important;
+}
+body[data-ui="v3"] .inbox-record-card:hover .inbox-record-bottom-actions { opacity: 1 !important; }
+body[data-ui="v3"] .inbox-record-bottom-actions button {
+  height: 22px !important;
+  min-height: 0 !important;
+  padding: 0 7px !important;
+  border-radius: 6px !important;
+  font-size: 10.5px !important;
+}
+
+body[data-ui="v3"] .today-time,
+body[data-ui="v3"] .record-time {
+  color: var(--text-muted) !important;
+  font-size: 10.5px !important;
+  font-variant-numeric: tabular-nums !important;
+  letter-spacing: .01em !important;
+  opacity: .85 !important;
+}
+
+body[data-ui="v3"] .chip,
+body[data-ui="v3"] .tag-pill,
+body[data-ui="v3"] .sub-tag-pill,
+body[data-ui="v3"] .note-chip-btn,
+body[data-ui="v3"] .status-pill {
+  height: 19px !important;
+  min-height: 0 !important;
+  padding: 0 6px !important;
+  border: 0 !important;
+  border-radius: 5px !important;
+  font-size: 10px !important;
+  font-weight: 500 !important;
+  line-height: 19px !important;
+  box-shadow: none !important;
+}
+
+/* =====================================================================
+   9. 记录页
+   ===================================================================== */
+
+body[data-ui="v3"] .records-v2 { padding: 0 !important; }
+body[data-ui="v3"] .rec-head-count {
+  color: var(--text-muted) !important;
+  font-size: 10.5px !important;
+  font-variant-numeric: tabular-nums !important;
+  opacity: .82 !important;
+}
+body[data-ui="v3"] .rec-head-right { gap: 6px !important; }
+body[data-ui="v3"] .rec-filter select {
+  height: 26px !important;
+  min-height: 0 !important;
+  font-size: 11px !important;
+}
+body[data-ui="v3"] .timeline-group-head,
+body[data-ui="v3"] .timeline-date-label {
+  color: var(--text-muted) !important;
+  font-size: 10.5px !important;
+  font-weight: 550 !important;
+  letter-spacing: .04em !important;
+  opacity: .8 !important;
+}
+
+/* =====================================================================
+   10. 笔记页
+   ===================================================================== */
+
+body[data-ui="v3"] .notes-workbench {
+  gap: 0 !important;
+  /* 列宽必须和下面 .notes-list-pane 的实际宽度一致。旧写法是「列 210px
+     （--nt-list-w）+ 面板自己 width:236px」，面板超出列 26px 压在编辑器上，
+     左列表的 1px 圆角描边就从编辑器左边框里穿出来，看着像画错了一块。 */
+  grid-template-columns: 236px minmax(0, 1fr) !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+body[data-ui="v3"] .notes-list-pane {
+  width: auto !important;
+  border: 0 !important;
+  border-right: 1px solid var(--v3-line-soft) !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+body[data-ui="v3"] .nt-list-head {
+  height: 32px !important;
+  min-height: 32px !important;
+  padding: 0 2px 0 4px !important;
+  border-bottom: 1px solid var(--v3-line-soft) !important;
+}
+body[data-ui="v3"] .nt-list-title {
+  color: var(--text-secondary) !important;
+  font-size: 11.5px !important;
+  font-weight: 600 !important;
+}
+body[data-ui="v3"] .notes-list-meta {
+  color: var(--text-muted) !important;
+  font-size: 10.5px !important;
+  opacity: .8 !important;
+}
+body[data-ui="v3"] .notes-list-scroll { padding: 4px 0 20px !important; }
+body[data-ui="v3"] .notes-list-item {
+  border: 0 !important;
+  border-radius: 7px !important;
+  padding: 7px 8px !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+body[data-ui="v3"] .notes-list-item:hover {
+  background: color-mix(in srgb, var(--color-text) 5%, transparent) !important;
+}
+body[data-ui="v3"] .notes-list-item.active {
+  background: color-mix(in srgb, var(--color-text) 8%, transparent) !important;
+}
+body[data-ui="v3"] .notes-list-item-title {
+  color: var(--text-secondary) !important;
+  font-size: 12px !important;
+  font-weight: 450 !important;
+}
+body[data-ui="v3"] .notes-list-item.active .notes-list-item-title {
+  color: var(--text-main) !important;
+  font-weight: 550 !important;
+}
+body[data-ui="v3"] .notes-list-item-meta {
+  color: var(--text-muted) !important;
+  font-size: 10px !important;
+  opacity: .76 !important;
+}
+
+body[data-ui="v3"] .note-editor-pane {
+  padding: 0 0 0 22px !important;
+  /* 编辑器不要外框：旧的 1px 描边 + 16px 圆角把它包成一张「文档卡片」，
+     和去卡片化的其余页面不是一套语言。分隔交给左列表的右缘细线。 */
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+body[data-ui="v3"] .nt-doc-head {
+  gap: 8px !important;
+  padding: 4px 0 8px !important;
+  border-bottom: 1px solid var(--v3-line-soft) !important;
+  margin-bottom: 4px !important;
+}
+body[data-ui="v3"] .nt-title-input {
+  height: 30px !important;
+  min-height: 0 !important;
+  padding: 0 6px !important;
+  border: 0 !important;
+  background: transparent !important;
+  color: var(--text-main) !important;
+  font-size: 15px !important;
+  font-weight: 600 !important;
+  box-shadow: none !important;
+}
+body[data-ui="v3"] .nt-title-input:focus {
+  background: color-mix(in srgb, var(--color-text) 4%, transparent) !important;
+  box-shadow: none !important;
+  border: 0 !important;
+}
+body[data-ui="v3"] .note-source-input {
+  padding: 10px 8px !important;
+  border: 0 !important;
+  background: transparent !important;
+  color: var(--text-secondary) !important;
+  font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace !important;
+  font-size: 12.5px !important;
+  line-height: 1.75 !important;
+  box-shadow: none !important;
+}
+body[data-ui="v3"] .note-source-input:focus {
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+body[data-ui="v3"] .nt-doc-foot {
+  color: var(--text-muted) !important;
+  font-size: 10px !important;
+  opacity: .7 !important;
+  border-top: 1px solid var(--v3-line-soft) !important;
+  padding-top: 6px !important;
+}
+
+/* =====================================================================
+   11. 浮层：唯一保留「面」的地方
+   ===================================================================== */
+
+body[data-ui="v3"] .wb-popover,
+body[data-ui="v3"] .nt-menu,
+body[data-ui="v3"] .cmdk,
+body[data-ui="v3"] .custom-modal,
+body[data-ui="v3"] .sh-menu,
+body[data-ui="v3"] .sh-panel {
+  border: 1px solid var(--v3-line) !important;
+  border-radius: var(--radius-lg) !important;
+  background: var(--v3-float) !important;
+  box-shadow: var(--shadow-lg) !important;
+  backdrop-filter: blur(14px) !important;
+  -webkit-backdrop-filter: blur(14px) !important;
+}
+body[data-ui="v3"] .cmdk-overlay {
+  background: color-mix(in srgb, var(--bg-body) 62%, transparent) !important;
+  backdrop-filter: blur(3px) !important;
+  -webkit-backdrop-filter: blur(3px) !important;
+}
+body[data-ui="v3"] .cmdk-input {
+  height: 38px !important;
+  min-height: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  font-size: 14px !important;
+  box-shadow: none !important;
+}
+
+/* =====================================================================
+   12. 白板（.bd-*）—— 全部新增类名，没有历史包袱
+
+   注意：.bd-view 是 position:fixed 的整屏层。**绝不给它写 display !important**
+   —— 路由靠 inline style.display 切显隐，!important 会压掉行内 none，
+   那正是 11-13 真机「笔记视图叠在所有页面」的复发路径。
+   ===================================================================== */
+
+body[data-ui="v3"] .bd-view {
+  position: fixed !important;
+  left: 208px !important;
+  right: 0 !important;
+  top: 30px !important;
+  bottom: 0 !important;
+  /* 必须显式写 width/height:auto —— fixed 元素一旦被别处给了 width:100%，
+     就变成「left + width」超约束，right:0 被忽略，白板会右溢 200px
+     （实测 .bd-bar 宽 1374 > 视口可用的 1192，右侧按钮整排被推到屏幕外）。 */
+  width: auto !important;
+  height: auto !important;
+  max-width: none !important;
+  max-height: none !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
+  z-index: 6 !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  background: var(--bg-body) !important;
+}
+
+/* 顶栏：whiteboard 的 .topbar，60px 压到 46px（我们的标题栏已经占了 30px） */
+body[data-ui="v3"] .bd-bar {
+  flex: 0 0 46px !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 10px !important;
+  padding: 0 14px !important;
+  border-bottom: 1px solid var(--v3-line-soft) !important;
+  background: color-mix(in srgb, var(--bg-body) 72%, transparent) !important;
+  backdrop-filter: blur(12px) !important;
+  -webkit-backdrop-filter: blur(12px) !important;
+  z-index: 30 !important;
+}
+body[data-ui="v3"] .bd-title {
+  color: var(--text-main) !important;
+  font-size: 12.5px !important;
+  font-weight: 600 !important;
+  white-space: nowrap !important;
+}
+body[data-ui="v3"] .bd-save {
+  display: flex !important;
+  align-items: center !important;
+  gap: 5px !important;
+  color: var(--text-muted) !important;
+  font-size: 10px !important;
+  white-space: nowrap !important;
+}
+body[data-ui="v3"] .bd-save i {
+  width: 4px !important;
+  height: 4px !important;
+  border-radius: 50% !important;
+  background: var(--color-success) !important;
+  box-shadow: 0 0 6px color-mix(in srgb, var(--color-success) 80%, transparent) !important;
+  transition: background .2s, box-shadow .2s !important;
+}
+body[data-ui="v3"] .bd-save.busy i {
+  background: var(--color-warning) !important;
+  box-shadow: 0 0 6px color-mix(in srgb, var(--color-warning) 80%, transparent) !important;
+}
+
+body[data-ui="v3"] .bd-tools {
+  display: flex !important;
+  gap: 1px !important;
+  padding: 2px !important;
+  border: 1px solid var(--v3-line-soft) !important;
+  border-radius: 8px !important;
+  background: color-mix(in srgb, var(--color-text) 4%, transparent) !important;
+  margin-left: 2px !important;
+}
+body[data-ui="v3"] .bd-tool {
+  position: relative !important;
+  width: 26px !important;
+  height: 26px !important;
+  min-height: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 6px !important;
+  background: transparent !important;
+  color: var(--text-muted) !important;
+  display: grid !important;
+  place-items: center !important;
+  box-shadow: none !important;
+  transition: background .13s, color .13s, transform .1s !important;
+}
+body[data-ui="v3"] .bd-tool svg { width: 15px !important; height: 15px !important; }
+body[data-ui="v3"] .bd-tool:hover {
+  background: color-mix(in srgb, var(--color-text) 9%, transparent) !important;
+  color: var(--text-main) !important;
+  transform: none !important;
+}
+body[data-ui="v3"] .bd-tool.active {
+  background: linear-gradient(180deg,
+      color-mix(in srgb, var(--color-primary) 86%, #fff),
+      var(--color-primary)) !important;
+  color: #fff !important;
+  box-shadow:
+    0 3px 12px -3px color-mix(in srgb, var(--color-primary) 72%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, .24) !important;
+}
+body[data-ui="v3"] .bd-tool .bd-tip {
+  position: absolute !important;
+  top: calc(100% + 8px) !important;
+  left: 50% !important;
+  transform: translate(-50%, -3px) !important;
+  padding: 4px 7px !important;
+  border: 1px solid var(--v3-line) !important;
+  border-radius: 6px !important;
+  background: var(--v3-float) !important;
+  color: var(--text-main) !important;
+  font-size: 10px !important;
+  line-height: 1 !important;
+  white-space: nowrap !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+  transition: opacity .14s, transform .14s !important;
+  box-shadow: var(--shadow-md) !important;
+  z-index: 80 !important;
+}
+body[data-ui="v3"] .bd-tool:hover .bd-tip {
+  opacity: 1 !important;
+  transform: translate(-50%, 0) !important;
+}
+body[data-ui="v3"] .bd-gap { flex: 1 !important; }
+
+body[data-ui="v3"] .bd-stage {
+  position: relative !important;
+  flex: 1 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+  touch-action: none !important;
+  background-color: var(--bg-body) !important;
+}
+body[data-ui="v3"] .bd-grid-minor,
+body[data-ui="v3"] .bd-grid-major {
+  position: absolute !important;
+  inset: 0 !important;
+  pointer-events: none !important;
+  z-index: 0 !important;
+}
+body[data-ui="v3"] .bd-grid-minor {
+  background-image:
+    linear-gradient(to right, var(--v3-grid-minor) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--v3-grid-minor) 1px, transparent 1px) !important;
+  background-size: 24px 24px !important;
+}
+body[data-ui="v3"] .bd-grid-major {
+  background-image:
+    linear-gradient(to right, var(--v3-grid-major) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--v3-grid-major) 1px, transparent 1px) !important;
+  background-size: 120px 120px !important;
+}
+body[data-ui="v3"] .bd-edge-svg {
+  position: absolute !important;
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  overflow: visible !important;
+  pointer-events: none !important;
+  z-index: 2 !important;
+}
+body[data-ui="v3"] .bd-node-layer {
+  position: absolute !important;
+  inset: 0 !important;
+  transform-origin: 0 0 !important;
+  pointer-events: none !important;
+  z-index: 3 !important;
+  will-change: transform !important;
+}
+
+/* 便签 = 一条 record。尺寸/圆角/阴影照抄 whiteboard 的 .note */
+body[data-ui="v3"] .bd-note {
+  position: absolute !important;
+  padding: 11px 12px !important;
+  border: 0 !important;
+  border-radius: var(--radius-md) !important;
+  font-size: 12.5px !important;
+  line-height: 1.55 !important;
+  color: var(--bd-ink, #1e293b) !important;
+  letter-spacing: .005em !important;
+  pointer-events: auto !important;
+  user-select: none !important;
+  cursor: grab !important;
+  background: var(--bd-note-bg, #FFE790) !important;
+  background-image: none !important;
+  box-shadow:
+    0 1px 2px rgba(16, 24, 40, .10),
+    inset 0 1px 0 rgba(255, 255, 255, .45),
+    0 14px 28px -16px rgba(2, 6, 23, .62) !important;
+  transition: box-shadow .15s var(--v3-ease), transform .1s var(--v3-ease) !important;
+}
+body[data-ui="v3"] .bd-note:hover {
+  box-shadow:
+    0 2px 4px rgba(16, 24, 40, .12),
+    inset 0 1px 0 rgba(255, 255, 255, .45),
+    0 18px 34px -16px rgba(2, 6, 23, .68) !important;
+}
+body[data-ui="v3"] .bd-note.selected {
+  box-shadow:
+    0 0 0 2px var(--color-primary),
+    0 2px 4px rgba(16, 24, 40, .12),
+    0 18px 34px -16px rgba(2, 6, 23, .6) !important;
+}
+body[data-ui="v3"] .bd-note.dragging {
+  cursor: grabbing !important;
+  box-shadow:
+    0 0 0 2px var(--color-primary),
+    0 26px 48px -18px rgba(2, 6, 23, .7) !important;
+}
+body[data-ui="v3"] .bd-note.editing {
+  cursor: text !important;
+  box-shadow:
+    0 0 0 2px var(--color-primary),
+    0 18px 40px -18px rgba(2, 6, 23, .66) !important;
+}
+body[data-ui="v3"] .bd-note.drop-target {
+  box-shadow:
+    0 0 0 3px var(--color-primary),
+    0 18px 34px -16px rgba(2, 6, 23, .6) !important;
+}
+
+body[data-ui="v3"] .bd-note-head {
+  display: flex !important;
+  align-items: center !important;
+  gap: 4px !important;
+  margin-bottom: 4px !important;
+  color: color-mix(in srgb, var(--bd-ink, #1e293b) 58%, transparent) !important;
+  font-size: 9.5px !important;
+  letter-spacing: .02em !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+body[data-ui="v3"] .bd-note-dot {
+  width: 4px !important;
+  height: 4px !important;
+  border-radius: 50% !important;
+  flex: 0 0 auto !important;
+  background: currentColor !important;
+}
+body[data-ui="v3"] .bd-note-body {
+  outline: none !important;
+  min-height: 1.55em !important;
+  white-space: pre-wrap !important;
+  word-break: break-word !important;
+  cursor: inherit !important;
+}
+body[data-ui="v3"] .bd-note.editing .bd-note-body {
+  cursor: text !important;
+  user-select: text !important;
+}
+body[data-ui="v3"] .bd-note-body:empty::before {
+  content: attr(data-ph) !important;
+  color: color-mix(in srgb, var(--bd-ink, #1e293b) 38%, transparent) !important;
+  pointer-events: none !important;
+}
+body[data-ui="v3"] .bd-note-foot {
+  display: flex !important;
+  align-items: center !important;
+  gap: 4px !important;
+  margin-top: 5px !important;
+  color: color-mix(in srgb, var(--bd-ink, #1e293b) 46%, transparent) !important;
+  font-size: 9px !important;
+  font-variant-numeric: tabular-nums !important;
+  opacity: 0 !important;
+  transition: opacity .13s !important;
+}
+body[data-ui="v3"] .bd-note:hover .bd-note-foot { opacity: 1 !important; }
+
+body[data-ui="v3"] .bd-handle {
+  position: absolute !important;
+  width: 8px !important;
+  height: 8px !important;
+  border: 1.5px solid var(--color-primary) !important;
+  border-radius: 2px !important;
+  background: var(--bg-body) !important;
+  display: none !important;
+  z-index: 5 !important;
+  box-shadow: 0 1px 3px rgba(2, 6, 23, .3) !important;
+}
+body[data-ui="v3"] .bd-note.single .bd-handle { display: block !important; }
+body[data-ui="v3"] .bd-note.editing .bd-handle { display: none !important; }
+body[data-ui="v3"] .bd-handle.nw { left: -4.5px !important; top: -4.5px !important; cursor: nwse-resize !important; }
+body[data-ui="v3"] .bd-handle.ne { right: -4.5px !important; top: -4.5px !important; cursor: nesw-resize !important; }
+body[data-ui="v3"] .bd-handle.sw { left: -4.5px !important; bottom: -4.5px !important; cursor: nesw-resize !important; }
+body[data-ui="v3"] .bd-handle.se { right: -4.5px !important; bottom: -4.5px !important; cursor: nwse-resize !important; }
+
+body[data-ui="v3"] .bd-edge-line {
+  fill: none !important;
+  stroke: color-mix(in srgb, var(--color-text) 46%, transparent) !important;
+  stroke-width: 1.7 !important;
+  stroke-linecap: round !important;
+  transition: stroke .15s !important;
+}
+body[data-ui="v3"] .bd-edge-arrow {
+  fill: color-mix(in srgb, var(--color-text) 46%, transparent) !important;
+  stroke: none !important;
+  transition: fill .15s !important;
+}
+body[data-ui="v3"] .bd-edge-hit {
+  fill: none !important;
+  stroke: transparent !important;
+  stroke-width: 14 !important;
+  pointer-events: stroke !important;
+  cursor: pointer !important;
+}
+body[data-ui="v3"] .bd-edge:hover .bd-edge-line { stroke: var(--text-secondary) !important; }
+body[data-ui="v3"] .bd-edge:hover .bd-edge-arrow { fill: var(--text-secondary) !important; }
+body[data-ui="v3"] .bd-edge.selected .bd-edge-line {
+  stroke: var(--color-primary) !important;
+  stroke-width: 2 !important;
+}
+body[data-ui="v3"] .bd-edge.selected .bd-edge-arrow { fill: var(--color-primary) !important; }
+body[data-ui="v3"] .bd-temp-line {
+  fill: none !important;
+  stroke: var(--color-primary) !important;
+  stroke-width: 2 !important;
+  stroke-dasharray: 5 5 !important;
+  stroke-linecap: round !important;
+  opacity: .9 !important;
+}
+
+body[data-ui="v3"] .bd-marquee {
+  position: absolute !important;
+  z-index: 5 !important;
+  pointer-events: none !important;
+  border: 1.5px solid var(--color-primary) !important;
+  border-radius: 4px !important;
+  background: color-mix(in srgb, var(--color-primary) 8%, transparent) !important;
+}
+
+body[data-ui="v3"] .bd-hint {
+  position: absolute !important;
+  left: 14px !important;
+  bottom: 14px !important;
+  z-index: 26 !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  padding: 5px 10px !important;
+  border: 1px solid var(--v3-line-soft) !important;
+  border-radius: 9px !important;
+  background: color-mix(in srgb, var(--bg-body) 78%, transparent) !important;
+  backdrop-filter: blur(8px) !important;
+  -webkit-backdrop-filter: blur(8px) !important;
+  color: var(--text-muted) !important;
+  font-size: 10.5px !important;
+  box-shadow: 0 8px 22px -12px rgba(2, 6, 23, .5) !important;
+  pointer-events: none !important;
+}
+body[data-ui="v3"] .bd-hint b { color: var(--text-secondary) !important; font-weight: 600 !important; }
+
+body[data-ui="v3"] .bd-zoom {
+  display: flex !important;
+  align-items: center !important;
+  gap: 1px !important;
+  height: 26px !important;
+  padding: 0 2px !important;
+  border: 1px solid var(--v3-line-soft) !important;
+  border-radius: 7px !important;
+  background: color-mix(in srgb, var(--color-text) 3%, transparent) !important;
+}
+body[data-ui="v3"] .bd-zoom button {
+  width: 22px !important;
+  height: 20px !important;
+  min-height: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 5px !important;
+  background: transparent !important;
+  color: var(--text-muted) !important;
+  display: grid !important;
+  place-items: center !important;
+  box-shadow: none !important;
+}
+body[data-ui="v3"] .bd-zoom button:hover {
+  background: color-mix(in srgb, var(--color-text) 9%, transparent) !important;
+  color: var(--text-main) !important;
+}
+body[data-ui="v3"] .bd-zoom svg { width: 12px !important; height: 12px !important; }
+body[data-ui="v3"] .bd-zoom-label {
+  min-width: 38px !important;
+  text-align: center !important;
+  color: var(--text-secondary) !important;
+  font-size: 10.5px !important;
+  font-variant-numeric: tabular-nums !important;
+  cursor: pointer !important;
+}
+body[data-ui="v3"] .bd-zoom-label:hover { color: var(--text-main) !important; }
+
+/* 右键菜单 = whiteboard 的 .menu */
+body[data-ui="v3"] .bd-menu {
+  position: absolute !important;
+  z-index: 70 !important;
+  min-width: 178px !important;
+  padding: 5px !important;
+  border: 1px solid var(--v3-line) !important;
+  border-radius: var(--radius-md) !important;
+  background: var(--v3-float) !important;
+  box-shadow: var(--shadow-lg) !important;
+  backdrop-filter: blur(14px) !important;
+  -webkit-backdrop-filter: blur(14px) !important;
+  animation: bd-pop .12s ease-out !important;
+}
+@keyframes bd-pop {
+  from { opacity: 0; transform: scale(.97); }
+  to { opacity: 1; transform: scale(1); }
+}
+body[data-ui="v3"] .bd-menu-item {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 16px !important;
+  width: 100% !important;
+  height: 28px !important;
+  min-height: 0 !important;
+  padding: 0 8px !important;
+  border: 0 !important;
+  border-radius: 6px !important;
+  background: transparent !important;
+  color: var(--text-secondary) !important;
+  font-size: 12px !important;
+  font-weight: 450 !important;
+  box-shadow: none !important;
+  text-align: left !important;
+}
+body[data-ui="v3"] .bd-menu-item:hover {
+  background: color-mix(in srgb, var(--color-text) 8%, transparent) !important;
+  color: var(--text-main) !important;
+  transform: none !important;
+}
+body[data-ui="v3"] .bd-menu-item.danger { color: var(--color-danger) !important; }
+body[data-ui="v3"] .bd-menu-item.danger:hover {
+  background: color-mix(in srgb, var(--color-danger) 14%, transparent) !important;
+  color: var(--color-danger) !important;
+}
+body[data-ui="v3"] .bd-menu-key {
+  color: var(--text-muted) !important;
+  font-size: 10px !important;
+  opacity: .72 !important;
+}
+body[data-ui="v3"] .bd-menu-label {
+  padding: 4px 8px 5px !important;
+  color: var(--text-muted) !important;
+  font-size: 10px !important;
+  letter-spacing: .04em !important;
+  opacity: .8 !important;
+}
+body[data-ui="v3"] .bd-menu-colors {
+  display: flex !important;
+  gap: 6px !important;
+  padding: 0 8px 5px !important;
+}
+body[data-ui="v3"] .bd-swatch {
+  width: 18px !important;
+  height: 18px !important;
+  min-height: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 50% !important;
+  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, .14) !important;
+  cursor: pointer !important;
+  transition: transform .12s, box-shadow .12s !important;
+}
+body[data-ui="v3"] .bd-swatch:hover { transform: scale(1.12) !important; }
+body[data-ui="v3"] .bd-swatch.active {
+  box-shadow:
+    0 0 0 2px var(--v3-float),
+    0 0 0 3.5px var(--color-primary) !important;
+}
+body[data-ui="v3"] .bd-menu-sep {
+  height: 1px !important;
+  margin: 4px 6px !important;
+  background: var(--v3-line-soft) !important;
+}
+
+/* 空态：whiteboard 的空态是「一句话 + 一个动作」，不是插图 */
+/* 空态：**不要写 display** —— 显隐由 JS 的 inline style 控制。
+   写成 `display: flex !important` 会让 `style="display:none"` 失效，
+   于是有便签的画布中间仍然浮着「白板还是空的」。 */
+body[data-ui="v3"] .bd-empty {
+  position: absolute !important;
+  left: 50% !important;
+  top: 44% !important;
+  transform: translate(-50%, -50%) !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  gap: 6px !important;
+  pointer-events: none !important;
+  text-align: center !important;
+}
+body[data-ui="v3"] .bd-empty-title {
+  color: var(--text-secondary) !important;
+  font-size: 13px !important;
+  font-weight: 500 !important;
+}
+body[data-ui="v3"] .bd-empty-hint {
+  color: var(--text-muted) !important;
+  font-size: 11px !important;
+  opacity: .82 !important;
+}
+
+/* =====================================================================
+   13. 空态
+   ===================================================================== */
+
+body[data-ui="v3"] .empty-state,
+body[data-ui="v3"] .notes-empty {
+  padding: 18px 8px !important;
+  color: var(--text-muted) !important;
+  font-size: 11.5px !important;
+  text-align: left !important;
+  opacity: .82 !important;
+}
+body[data-ui="v3"] .empty-state h3,
+body[data-ui="v3"] .empty-state p {
+  margin: 0 !important;
+  font-size: 11.5px !important;
+  font-weight: 450 !important;
+  color: var(--text-muted) !important;
+}
+body[data-ui="v3"] .empty-state .empty-icon,
+body[data-ui="v3"] .empty-state > svg {
+  display: none !important;
+}
+body[data-ui="v3"] .wb-recent-empty {
+  height: 24px !important;
+  min-height: 0 !important;
+  padding: 0 6px !important;
+  border: 0 !important;
+  background: transparent !important;
+  text-align: left !important;
+  font-size: 11px !important;
+  opacity: .82 !important;
+}
+
+/* =====================================================================
+   14. 表格页（浅覆盖）
+
+   sheetPage 是 2690 行的自渲染系统，`.sh-*` 有自己的追加层。
+   这里只收外框与字号，不动它的表格机制（列宽 / 选区 / 剪贴板都在里面）。
+   ===================================================================== */
+
+body[data-ui="v3"] #subview-table { padding: 0 !important; }
+body[data-ui="v3"] .sh-toolbar {
+  height: 34px !important;
+  border-bottom: 1px solid var(--v3-line-soft) !important;
+  background: transparent !important;
+}
+body[data-ui="v3"] .sh-toolbar .sh-btn,
+body[data-ui="v3"] .sh-toolbar button {
+  height: 24px !important;
+  min-height: 0 !important;
+  padding: 0 8px !important;
+  font-size: 11px !important;
+}
+body[data-ui="v3"] .sh-head-cell {
+  color: var(--text-muted) !important;
+  font-size: 10.5px !important;
+  font-weight: 550 !important;
+  letter-spacing: .02em !important;
+}
+body[data-ui="v3"] .sh-cell {
+  font-size: 12px !important;
+  color: var(--text-secondary) !important;
+}
+
+/* =====================================================================
+   15. id 级补丁 —— 为什么必须有这一段
+
+   上面 2–14 节用的是 `body[data-ui="v3"] .class`（特异性 0,2,0）。但旧层
+   大量存在 `#subview-dashboard .inbox-section { padding: 20px !important }`
+   这类 **id 级 + !important**（1,1,0）的规则 —— 同是 !important 时比特异性，
+   0,2,0 压不过 1,1,0。第一版就是在这里失效的（卡片仍是卡片）。
+
+   还有一条更隐蔽的：`.sidebar` 同时被写了
+   `flex: 0 0 280px !important; width: 280px !important; max-width: 280px !important`。
+   **flex 容器里 flex-basis 优先于 width** —— 只改 width 改不动宽度，
+   必须把 flex-basis 与 max-width 一起改。
+
+   这一段只补这两类：被 id 压住的容器外观，以及 flex-basis 决定的尺寸。
+   原则不变：不改任何 display（路由靠行内 style 切换）。
+   ===================================================================== */
+
+/* 侧栏宽度：flex-basis + width + max-width 三处必须同时改 */
+body[data-ui="v3"] #workspace-view .sidebar {
+  flex: 0 0 208px !important;
+  width: 208px !important;
+  max-width: 208px !important;
+  padding: 14px 10px 12px !important;
+}
+
+/* 侧栏导航项：旧层 button 规则把 min-height 锁在 38px */
+body[data-ui="v3"] #workspace-view .sidebar .nav-item,
+body[data-ui="v3"] #workspace-view .sidebar .sidebar-cmdk {
+  min-height: 0 !important;
+}
+body[data-ui="v3"] #workspace-view .sidebar .nav-item {
+  height: 30px !important;
+  font-size: 12.5px !important;
+}
+body[data-ui="v3"] #workspace-view .sidebar .sidebar-cmdk { height: 28px !important; font-size: 11.5px !important; }
+
+/* 首页四个区块：旧层的 #subview-dashboard 前缀把它们留在卡片形态 */
+body[data-ui="v3"] #subview-dashboard .task-tree-section,
+body[data-ui="v3"] #subview-dashboard .today-section,
+body[data-ui="v3"] #subview-dashboard .completed-todos-section,
+body[data-ui="v3"] #subview-dashboard .inbox-section,
+body[data-ui="v3"] #subview-dashboard .wb-recent-section {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+/* 右栏第一块（待整理）不画上分割线，其余区块画 */
+body[data-ui="v3"] #subview-dashboard .task-tree-section,
+body[data-ui="v3"] #subview-dashboard .today-section,
+body[data-ui="v3"] #subview-dashboard .wb-recent-section {
+  border-top: 1px solid var(--v3-line-soft) !important;
+  padding-top: 14px !important;
+  margin-top: 14px !important;
+}
+body[data-ui="v3"] #subview-dashboard .wb-col-main > .task-tree-section:first-child,
+body[data-ui="v3"] #subview-dashboard .wb-col-side > .inbox-section:first-child {
+  border-top: 0 !important;
+  padding-top: 6px !important;
+  margin-top: 6px !important;
+}
+body[data-ui="v3"] #subview-dashboard .inbox-section-head,
+body[data-ui="v3"] #subview-dashboard .section-heading-row {
+  margin: 0 0 2px !important;
+  padding: 0 !important;
+  border: 0 !important;
+}
+
+/* 首页行/卡片：旧层把底色、边框写在 id 级规则里 */
+body[data-ui="v3"] #subview-dashboard .todo-item,
+body[data-ui="v3"] #subview-dashboard .today-item,
+body[data-ui="v3"] #subview-dashboard .inbox-record-card,
+body[data-ui="v3"] #subview-dashboard .wb-recent-item {
+  border: 0 !important;
+  border-radius: 8px !important;
+  background: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
+/* 记录页 */
+body[data-ui="v3"] #subview-timeline .timeline-item,
+body[data-ui="v3"] #subview-timeline .record-item {
+  border: 0 !important;
+  border-radius: 8px !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+/* 笔记页两栏壳 */
+body[data-ui="v3"] #subview-notes .notes-workbench {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+body[data-ui="v3"] #subview-notes .notes-list-item {
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+/* 设置页卡片墙 */
+body[data-ui="v3"] #subview-settings .settings-card {
+  border: 0 !important;
+  border-top: 1px solid var(--v3-line-soft) !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  padding: 14px 0 4px !important;
+}
+body[data-ui="v3"] #subview-settings .settings-card:first-child {
+  border-top: 0 !important;
+}
+
+/* =====================================================================
+   16. 宽度塌陷修复 —— 这一节修的是「一字一行」
+
+   现象：记录页每条记录的文字竖着一列下来，每行 3–5 个字。
+   机制：`.timeline-day-records { display: grid; gap: 9px }` **没有写
+   grid-template-columns**，隐式列是 `auto`；而子项里的
+   `.timeline-record-title { overflow-wrap: anywhere }` 允许每个字都断行。
+   两者一凑，auto 列的最小内容宽度就变成「1 个字」—— 列塌成 40px，
+   卡片却被别的东西撑满，于是看起来是「宽卡片 + 一条竖排文字」。
+
+   待整理右栏 2026-11-14 那次是同一族问题的另一个变体
+   （`grid-template-columns: minmax(0,1fr) auto` + 中间列可断行）。
+   凡是「grid 容器里放可断行长文本」，列定义必须显式给 minmax(0,1fr)。
+   ===================================================================== */
+
+body[data-ui="v3"] .timeline-day-records,
+body[data-ui="v3"] .inbox-records-container,
+body[data-ui="v3"] .completed-todos-container,
+body[data-ui="v3"] .task-tree-container,
+body[data-ui="v3"] .wb-recent-notes {
+  grid-template-columns: minmax(0, 1fr) !important;
+  min-width: 0 !important;
+}
+
+/* 首页两栏：旧层写死 `grid-template-columns: 669px 300px`（设计稿 1360 宽时的
+   实测值）。窗口一窄，669px 会把右栏整体推出可视区，出现「中间一条、右边全空」。 */
+body[data-ui="v3"] #subview-dashboard .wb-v2 {
+  grid-template-columns: minmax(0, 1fr) 300px !important;
+}
+
+/* 页头顺序：DOM 里 h1 在最前（语义顺序），旧层设计层 11 用 order 把它挪到
+   第二行（日期在上、标题在下）。v3 是一行头，三者都要回到 0。 */
+body[data-ui="v3"] .wb-head > .wb-head-left,
+body[data-ui="v3"] .wb-head > .wb-head-date,
+body[data-ui="v3"] .wb-head > .wb-head-right {
+  order: 0 !important;
+}
+body[data-ui="v3"] .wb-head > .wb-head-left { flex: 0 0 auto !important; }
+body[data-ui="v3"] .wb-head > .wb-head-date { flex: 0 0 auto !important; }
+body[data-ui="v3"] .wb-head > .wb-head-right {
+  flex: 1 1 auto !important;
+  justify-content: flex-end !important;
+  margin-left: auto !important;
+}
+
+/* 侧栏激活项：旧层是主色 12% 实底 + 主色文字，和 whiteboard 的「薄面 + 短杠」
+   两种气质打架。统一成薄面，主色只留给那条 2.5px 短杠。 */
+body[data-ui="v3"] #workspace-view .sidebar .nav-item.active {
+  background: color-mix(in srgb, var(--color-text) 8%, transparent) !important;
+  color: var(--text-main) !important;
+  border: 0 !important;
+  box-shadow: none !important;
+}
+
+/* 笔记编辑器：源码/预览两半在旧层是两张卡（底色 + 内嵌阴影）。
+   v3 里正文应该直接坐在纸上，只有分隔线。 */
+body[data-ui="v3"] #subview-notes .note-split-half,
+body[data-ui="v3"] #subview-notes .note-split-source,
+body[data-ui="v3"] #subview-notes .note-split-preview {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+body[data-ui="v3"] #subview-notes .note-source-input,
+body[data-ui="v3"] #subview-notes textarea.note-source-input {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  padding: 10px 8px !important;
+  font-size: 12.5px !important;
+  line-height: 1.75 !important;
+}
+body[data-ui="v3"] #subview-notes .note-preview {
+  padding: 10px 8px !important;
+  border: 0 !important;
+  background: transparent !important;
+}
+body[data-ui="v3"] #subview-notes .note-split {
+  gap: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+}
+body[data-ui="v3"] #subview-notes .note-editor-pane-inner,
+body[data-ui="v3"] #subview-notes .notes-workbench {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+/* 记录卡片的 summary 是 `display:grid; grid-template-columns: 72px 12px minmax(0,1fr)`
+   （styles.css:4808），而 `.log-summary::before` 那个 ▶ 箭头（styles.css:723）
+   **也是 grid item** —— 它抢占第 1 列，把 log-time / node / log-text 整体挤到
+   第二行，于是 log-text 落在 72px 列里，配合 overflow-wrap:anywhere 变成一字一行。
+
+   这是「加一条伪元素毁掉一个 grid」的典型：视觉上只多了一个小箭头，
+   布局上多了一个格子。v3 去掉它（展开态由整行 hover 和卡片阴影表达）。 */
+body[data-ui="v3"] .timeline-record-card > .log-summary::before,
+body[data-ui="v3"] #subview-timeline .log-summary::before {
+  content: none !important;
+  display: none !important;
+}
+body[data-ui="v3"] #subview-timeline .log-summary {
+  grid-template-columns: 46px 12px minmax(0, 1fr) !important;
+  align-items: start !important;
+  padding: 10px 14px !important;
+  gap: 0 !important;
+}
+body[data-ui="v3"] #subview-timeline .log-text {
+  display: block !important;
+  min-width: 0 !important;
+  grid-template-columns: none !important;
+}
+body[data-ui="v3"] #subview-timeline .log-time {
+  width: auto !important;
+  margin: 0 !important;
+  font-size: 10.5px !important;
+  line-height: 1.9 !important;
+  color: var(--text-muted) !important;
+}
+body[data-ui="v3"] #subview-timeline .timeline-record-title {
+  font-size: 12.5px !important;
+  font-weight: 500 !important;
+  line-height: 1.55 !important;
+}
+body[data-ui="v3"] #subview-timeline .timeline-record-title b {
+  margin-right: 6px !important;
+  font-size: 10px !important;
+  font-weight: 600 !important;
+  color: var(--text-muted) !important;
+}
+/* 卡片本体：v3 里记录不再是「一块玻璃」，是一条可悬停的行 */
+body[data-ui="v3"] #subview-timeline .timeline-record-card {
+  border: 0 !important;
+  border-radius: 8px !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  margin: 0 !important;
+}
+body[data-ui="v3"] #subview-timeline .timeline-record-card:hover {
+  background: color-mix(in srgb, var(--color-text) 4%, transparent) !important;
+}
+body[data-ui="v3"] #subview-timeline .expanded-content {
+  border-top: 1px solid var(--v3-line-soft) !important;
+  border-bottom: 0 !important;
+  padding: 10px 14px 12px 58px !important;
+  font-size: 11.5px !important;
+  color: var(--text-muted) !important;
+}
+
+/* 记录页顶部「今天应该做什么 / 明天提前看一眼 / 昨天做了什么」：
+   三张 plan-card 在旧层是实底卡片，和 v3 的纸感打架。
+   压成一块横向信息条 —— 保留信息，去掉盒子。 */
+body[data-ui="v3"] #subview-timeline .timeline-focus-grid {
+  gap: 10px !important;
+  margin: 0 0 18px !important;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+}
+body[data-ui="v3"] #subview-timeline .plan-card {
+  border: 1px solid var(--v3-line-soft) !important;
+  border-radius: var(--radius-md) !important;
+  background: color-mix(in srgb, var(--color-text) 3%, transparent) !important;
+  box-shadow: none !important;
+  padding: 10px 12px !important;
+}
+body[data-ui="v3"] #subview-timeline .plan-card h3,
+body[data-ui="v3"] #subview-timeline .plan-card h2 {
+  margin: 0 0 6px !important;
+  color: var(--text-muted) !important;
+  font-size: 10.5px !important;
+  font-weight: 550 !important;
+  letter-spacing: .02em !important;
+}
+body[data-ui="v3"] #subview-timeline .plan-card .log-summary {
+  padding: 4px 0 !important;
+  grid-template-columns: none !important;
+  display: flex !important;
+  gap: 6px !important;
+  align-items: center !important;
+}
+body[data-ui="v3"] #subview-timeline .plan-card .log-summary::before {
+  content: none !important;
+  display: none !important;
+}
+body[data-ui="v3"] #subview-timeline .plan-card .log-text {
+  display: block !important;
+  min-width: 0 !important;
+  font-size: 11.5px !important;
+  color: var(--text-secondary) !important;
+}
+body[data-ui="v3"] #subview-timeline .plan-card .log-time {
+  width: auto !important;
+  margin: 0 !important;
+  font-size: 10px !important;
+  color: var(--text-muted) !important;
+}
+
+/* 日期分组标题：18px 在这个密度下过大 */
+body[data-ui="v3"] #subview-timeline .timeline-date {
+  min-height: 30px !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+}
+body[data-ui="v3"] #subview-timeline .timeline-date strong {
+  font-size: 12px !important;
+  font-weight: 600 !important;
+}
+body[data-ui="v3"] #subview-timeline .timeline-date small {
+  font-size: 10.5px !important;
+  color: var(--text-muted) !important;
+  opacity: .82 !important;
+}
+body[data-ui="v3"] #subview-timeline .timeline-date-count {
+  font-size: 10px !important;
+  color: var(--text-muted) !important;
+  opacity: .76 !important;
+}
+body[data-ui="v3"] #subview-timeline .timeline-dot {
+  width: 7px !important;
+  height: 7px !important;
+  border-width: 0 !important;
+  background: var(--color-primary) !important;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 16%, transparent) !important;
+}
+body[data-ui="v3"] #subview-timeline .timeline-item::before {
+  background: var(--v3-line-soft) !important;
+}
+
+/* 设置页：让内容按主区宽度铺开，不留右侧一大块空白 */
+body[data-ui="v3"] #subview-settings .settings-layout {
+  max-width: none !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  gap: 0 !important;
+}
+body[data-ui="v3"] #subview-settings .settings-row {
+  padding: 9px 8px !important;
+}
+
+/* ============================================================================
+   18. 首页「今天的记录」收口 —— 正文铺满 + 分类贴右
+
+   病根不在 CSS 而在 JS：`formatTimelineTitle()` 按字符砍到 8 个再加「...」，
+   中文 8 个字连半句标题都放不下，整列全是「给 sir 一份...」「跑完表格轮的 Q...」。
+   JS 侧已放宽到 60 字（只做防爆保险），收口交给这里：
+
+   `strong` 原来 `flex: 0 1 auto`，宽度 = 文字宽，于是紧跟其后的 `.today-tag`
+   缩在 74px 处，右边留下 500px 空白 —— 整行像"缺一块"。设计稿的原意是
+   「分类标签贴最右边」（见 styles.css:16800 的注释），所以让 strong 吃满
+   剩余空间把 tag 顶到行尾，超长时自己省略。
+   ========================================================================== */
+body[data-ui="v3"] #subview-dashboard .today-line strong {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  overflow-wrap: normal !important;
+  word-break: normal !important;
+}
+body[data-ui="v3"] #subview-dashboard .today-line .today-tag {
+  flex: 0 0 auto !important;
+  padding-left: 10px !important;
+}
+/* 说明行最多两行；再长就截断，不许把行高撑成三段 */
+body[data-ui="v3"] #subview-dashboard .today-detail {
+  display: -webkit-box !important;
+  -webkit-box-orient: vertical !important;
+  -webkit-line-clamp: 2 !important;
+  overflow: hidden !important;
+  white-space: normal !important;
+}
+
+/* ============================================================================
+   19. 设置页排版 / 表格库页去卡片
+
+   设置页的「外观和主题」是 .settings-card-head（图标 + 标题 + 说明），下面才是
+   .settings-row。卡片边框被第 7 节去掉之后，卡头读起来和普通行一模一样，可
+   它偏偏被 14px 图标的列宽往右推了 22px —— 于是同一列文字有两种左边距。
+   这里把图标去掉、卡头压成「小标题 + 一行说明」，两种左边距并成一条线。
+
+   表格库页（sheetPage 的 .sh-page）是另一套自渲染系统，第 14 节只覆盖了表内
+   单元格，没管库视图：卡片还是 .sh-sheet-card 的深色面板 + 圆角 + 阴影，
+   和去卡片化的其余页面不是一套语言。
+   ========================================================================== */
+
+body[data-ui="v3"] #subview-settings .settings-card-icon { display: none !important; }
+body[data-ui="v3"] #subview-settings .settings-card-head {
+  display: block !important;
+  padding: 12px 0 6px !important;
+  margin: 0 !important;
+  gap: 0 !important;
+}
+body[data-ui="v3"] #subview-settings .settings-card-head h2 {
+  margin: 0 !important;
+  font-size: 12.5px !important;
+  font-weight: 600 !important;
+  letter-spacing: .01em !important;
+  color: var(--text-main) !important;
+}
+body[data-ui="v3"] #subview-settings .settings-card-head p {
+  margin: 2px 0 0 !important;
+  font-size: 11px !important;
+  line-height: 1.5 !important;
+  color: var(--text-muted) !important;
+  opacity: .92 !important;
+}
+body[data-ui="v3"] #subview-settings .settings-card {
+  padding: 0 0 10px !important;
+}
+body[data-ui="v3"] #subview-settings .settings-row {
+  padding: 8px 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  gap: 14px !important;
+}
+
+/* —— 表格库页 —— */
+body[data-ui="v3"] #subview-table .sh-page {
+  padding: 0 0 40px !important;
+  gap: 12px !important;
+}
+body[data-ui="v3"] #subview-table .sh-page-head {
+  min-height: 34px !important;
+  margin: 0 0 6px !important;
+  padding: 0 0 10px !important;
+  border-bottom: 1px solid var(--v3-line-soft) !important;
+}
+body[data-ui="v3"] #subview-table .sh-page-head h1 {
+  font-size: 15px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0 !important;
+}
+body[data-ui="v3"] #subview-table .sh-group {
+  margin: 0 0 14px !important;
+}
+body[data-ui="v3"] #subview-table .sh-group-head {
+  margin: 0 0 4px !important;
+}
+body[data-ui="v3"] #subview-table .sh-group-name {
+  font-size: 11.5px !important;
+  font-weight: 600 !important;
+  color: var(--text-secondary) !important;
+}
+body[data-ui="v3"] #subview-table .sh-group-count {
+  height: 16px !important;
+  min-width: 18px !important;
+  line-height: 16px !important;
+  background: color-mix(in srgb, var(--color-text) 8%, transparent) !important;
+  font-size: 10px !important;
+}
+body[data-ui="v3"] #subview-table .sh-group-list {
+  gap: 0 !important;
+}
+body[data-ui="v3"] #subview-table .sh-sheet-card {
+  padding: 9px 6px !important;
+  border: 0 !important;
+  border-bottom: 1px solid var(--v3-line-soft) !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  gap: 10px !important;
+}
+body[data-ui="v3"] #subview-table .sh-sheet-card:hover {
+  background: color-mix(in srgb, var(--color-text) 5%, transparent) !important;
+  box-shadow: none !important;
+  transform: none !important;
+}
+body[data-ui="v3"] #subview-table .sh-sheet-card:active { transform: none !important; }
+body[data-ui="v3"] #subview-table .sh-card-icon {
+  width: 22px !important;
+  height: 22px !important;
+  border-radius: 6px !important;
+  background: color-mix(in srgb, var(--color-primary) 11%, transparent) !important;
+}
+body[data-ui="v3"] #subview-table .sh-card-icon .wr-icon { width: 13px !important; height: 13px !important; }
+body[data-ui="v3"] #subview-table .sh-card-name {
+  font-size: 12.5px !important;
+  font-weight: 550 !important;
+}
+body[data-ui="v3"] #subview-table .sh-card-meta {
+  font-size: 10.5px !important;
+  opacity: .85 !important;
+}
+body[data-ui="v3"] #subview-table .sh-card-fields {
+  font-size: 10.5px !important;
+  color: var(--text-muted) !important;
+  opacity: .8 !important;
+}
+
+/* ============================================================================
+   20. 计划卡内层去框（.plan-row）
+
+   记录页顶部三张计划卡是「卡里套框」：外层 .plan-card 已经有描边 + 3% 底，
+   里层 .plan-row 又给每条计划加了 1px 描边 + 4% 底 + 8px 圆角。浅色主题下
+   那圈描边像输入框，读者会以为它可以点进去输入。
+   计划本身只是「一句话 + 时间」，不需要自己的框。
+   ========================================================================== */
+body[data-ui="v3"] #subview-timeline .plan-card .plan-row {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  padding: 2px 0 !important;
+}
+body[data-ui="v3"] #subview-timeline .plan-card .plan-row + .plan-row {
+  border-top: 1px solid var(--v3-line-soft) !important;
+}

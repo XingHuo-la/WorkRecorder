@@ -18,6 +18,7 @@ import { setRecordAdapter } from './recordStore.js';
 import { initCommandPalette } from './commandPalette.js';
 import { flushDrawerBody } from './rowDrawer.js';
 import { escapeHtml } from './htmlUtils.js';
+import { initBoardPage, flushBoard, setBoardAdapter } from './board.js';
 
 // Tauri 全局对象由 withGlobalTauri 同步注入，正常情况可直接取用。
 // 这里做一次防御：万一注入时序异常，也不要让整个模块崩溃。
@@ -94,6 +95,10 @@ async function initApp() {
   // 记录页的表格视图（tablePage.js）同样走注入式 adapter，理由同上：
   // 写库失败必须抛，让表格把「保存失败」弹出来，而不是当成已保存。
   setTableAdapter({ dbQuery: dbQueryStrict, dbExecute: dbExecuteStrict });
+  // 白板的读取走注入；写入统一走 recordStore.patchRecord（同一个 adapter），
+  // 所以这里的 dbExecute 实际不会被 board.js 直接用到，仍然一起传是为了
+  // 将来需要批量写时不必再改签名。
+  setBoardAdapter({ dbQuery: dbQueryStrict, dbExecute: dbExecuteStrict });
 
   await import('./settings.js').then(async (m) => {
       await m.applySavedThemeFromDB();
@@ -502,6 +507,7 @@ function setupRouting() {
   // 它的按钮不存在但视图还在，所以 btn 必须允许为空。
   const routes = [
     { id: 'nav-dashboard', view: 'subview-dashboard' },
+    { id: 'nav-board', view: 'subview-board' },
     { id: 'nav-timeline', view: 'subview-timeline' },
     { id: 'nav-notes', view: 'subview-notes' },
     { id: 'nav-table', view: 'subview-table' },
@@ -512,6 +518,13 @@ function setupRouting() {
     btn: document.getElementById(route.id),
     view: document.getElementById(route.view)
   })).filter(route => route.view);
+
+  // 各视图自己的默认 display。写死 display 会压掉样式表里的布局，所以
+  // 「用样式表默认值」的视图一律给空字符串。
+  //   dashboard → .wb-v2 是 grid
+  //   notes     → #subview-notes 是 flex 两栏壳（9.7 层，不能带 !important）
+  //   board     → .bd-view 是 fixed + flex
+  const VIEW_DISPLAY = { 'nav-dashboard': '', 'nav-notes': '', 'nav-board': 'flex' };
 
   const show = async (id) => {
     const target = routes.find(route => route.id === id);
@@ -524,6 +537,13 @@ function setupRouting() {
       try { await window.__wrFlushNotes(); } catch (error) { console.warn('笔记刷盘失败', error); }
     }
 
+    // 离开白板前把还没落库的位置刷下去：拖完立刻切页是最常见的丢位置场景
+    const boardView = document.getElementById('subview-board');
+    const leavingBoard = boardView && boardView.style.display !== 'none' && id !== 'nav-board';
+    if (leavingBoard) {
+      try { await flushBoard(); } catch (error) { logToFile('error', `白板落库失败: ${error?.stack || error}`); }
+    }
+
     routes.forEach(route => {
       route.view.style.display = 'none';
       route.btn?.classList.remove('active');
@@ -534,7 +554,7 @@ function setupRouting() {
     // notes 同理（#subview-notes 是 flex 两栏壳，9.7 层的 display 不能带 !important，
     // 否则会压掉上面的行内 none —— 11-13 真机「笔记视图叠在所有页面」事故的另一半）。
     // 其余页面用 block。这里写死 display 会压掉样式表里的布局。
-    target.view.style.display = (id === 'nav-dashboard' || id === 'nav-notes') ? '' : 'block';
+    target.view.style.display = VIEW_DISPLAY[id] ?? 'block';
     target.btn?.classList.add('active');
     target.btn?.setAttribute('aria-current', 'page');
     localStorage.setItem('workRecorder:lastSubview', id);
@@ -543,6 +563,9 @@ function setupRouting() {
     // 最近笔记 = 磁盘真相，从别的页面回到工作台时重扫一次，
     // 否则「刚在笔记页写的那篇」不会出现在右栏。
     if (id === 'nav-dashboard') renderRecentNotes();
+    if (id === 'nav-board') {
+      try { await initBoardPage(); } catch (error) { logToFile('error', `白板初始化失败: ${error?.stack || error}`); }
+    }
     if (id === 'nav-table') {
       try { await initSheetPage(); } catch (error) { logToFile('error', `表格页初始化失败: ${error?.stack || error}`); }
     }
