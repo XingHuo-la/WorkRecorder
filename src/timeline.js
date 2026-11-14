@@ -266,15 +266,22 @@ export function renderTimeline() {
       });
     });
 
-    document.querySelectorAll('.quick-note').forEach(box => {
+    /* `.quick-note-inline` 也带 `quick-note` 这个类，但它是「设为待办 / 设为流水…」
+       那排按钮容器（log.js:210），里面**没有** input / select / 追加按钮。
+       以前这里用 `.quick-note` 全选，遇到它就 `input.addEventListener` 抛
+       TypeError —— renderTimeline 整个中断，下面的补述、编辑、删除按钮全部
+       绑不上，记录页按钮变成点不动。所以这里必须把 inline 那种排除掉，
+       循环体里再补一道守卫，防止以后又多出一种没有输入框的变体。 */
+    document.querySelectorAll('.quick-note:not(.quick-note-inline)').forEach(box => {
       const input = box.querySelector('.quick-note-input');
       const typeSelect = box.querySelector('.quick-note-type');
       const btn = box.querySelector('.quick-note-btn');
+      if (!input || !btn) return;
       const save = async () => {
         const note = input.value.trim();
         if (!note) return;
         btn.disabled = true;
-        await appendLogRemark(parseInt(box.dataset.id), box.dataset.date, note, typeSelect.value);
+        await appendLogRemark(parseInt(box.dataset.id), box.dataset.date, note, typeSelect?.value || '过程');
       };
       btn.addEventListener('click', save);
       input.addEventListener('keydown', (e) => {
