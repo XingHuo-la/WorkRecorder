@@ -16662,7 +16662,9 @@ body.cmdk-open { overflow: hidden !important; }
 /* ---- 11.5 最近笔记卡片 ------------------------------------------------
    材质与层 10.4 的五个工作台主卡片同配方（贴地 1px 硬影 + 顶部内高光 +
    --shadow-card 整段），因为 10.4 的选择器清单里没有这个新容器，本层补一份。
-   圆角 / 内边距 / 底色与其它主卡片对齐，右栏三块才像是同一套纸。 *//* 右栏三块的顺序由 DOM 决定，必须先把历史的 order 清掉。
+   圆角 / 内边距 / 底色与其它主卡片对齐，右栏三块才像是同一套纸。 */
+
+/* 右栏三块的顺序由 DOM 决定，必须先把历史的 order 清掉。
    层 4/5 为了让工作台从「一个 flex 长单」重排成固定区块，给全局的
    `#subview-dashboard .inbox-section` 写了 `order: 4`（8392 行还有一份
    order: 3）。在 .wb-col-side 这个 flex 列里，那条 order 会让「待整理」
@@ -16820,27 +16822,117 @@ body.cmdk-open { overflow: hidden !important; }
   top: 50%;
   transform: translateY(-50%);
   margin: 0 !important;
-  padding: 3px 4px 3px 10px;
+  padding: 2px 4px !important;
   border-radius: var(--r-pill, 999px);
+  /* 条底只做两件事：让 ghost 按钮悬空有个依托、遮住被盖住的那截文字。
+     不加任何主色 / 白底 —— 轻量是靠按钮 ghost 化拿到的，不是靠条底。 */
   background: var(--bg-elevated, var(--bg-card));
   box-shadow: 0 2px 10px rgba(15, 23, 42, 0.14);
 }
 
-/* 「更多」展开的二级按钮组：绝对定位到动作条下方，右对齐，限宽后自行换行。
-   z-index 5 + 行 hover 时抬到 3，保证它压在下一行之上（下一行也是
-   position:relative，不抬就会被后来的兄弟盖住）。 */
+/* 11.7a 一级动作（完成 / 转待办 … 更多 / 收起）：ghost。
+   层 2 把这些按钮画成实心蓝主按钮 + 白底描边按钮，层 5 的 `button` 重置又
+   带 !important，所以这里整条抢回：透明底、零描边、12px、26px 高、hover 才给
+   一层 overlay 底。
+   ★ 用 `> button` 而不是后代选择器 ★ —— 「更多」面板里的按钮是同一批 class，
+   后代选择器会把下拉条目也变成 26px 的行内按钮。 */
+#subview-dashboard.wb-v2 .today-item .today-actions > button {
+  height: 26px;
+  min-height: 0 !important;
+  margin: 0;
+  padding: 0 10px !important;
+  border: 0 !important;
+  border-radius: var(--r-sm, 6px) !important;
+  background: none !important;
+  box-shadow: none !important;
+  color: var(--color-primary) !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  line-height: 1 !important;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+#subview-dashboard.wb-v2 .today-item .today-actions > button:hover,
+#subview-dashboard.wb-v2 .today-item .today-actions > button:focus-visible {
+  background: var(--overlay-hover, rgba(255, 255, 255, 0.1)) !important;
+  color: var(--color-primary) !important;
+}
+
+/* 更多 / 收起：同规格，但退到次级文字色 —— 它不是动作，是"打开更多动作"。 */
+#subview-dashboard.wb-v2 .today-item .today-actions > .more-action {
+  color: var(--text-secondary) !important;
+}
+
+/* 11.7b「更多」展开 = 一个正经下拉面板 --------------------------------
+   之前是 flex-wrap 的一堆散件：两条宽条 + 四个按钮各自散开、压住下面两行、
+   「删除」还溢出卡片右边缘。现在改成 176px 宽的单列下拉：贴着动作条下沿，
+   条目等高（30px）、左对齐、单行 ellipsis（文案逻辑一个字没改，长文案靠
+   ellipsis + title 兜住）。
+   z-index 30 落在行的 z-index 3 之上（行 hover 时抬到 3），所以它压得住下一行。
+   —— 关于宽度：`max-width` 的百分比是相对「动作条」而不是「行」算的
+   （动作条是它的定位父级，宽度只有 ~120px），写 calc(100% - 12px) 会把它裁到
+   108px、所有条目都变省略号。这里按绝对值限宽，再用断言保证四边都在卡片内。 */
 #subview-dashboard.wb-v2 .today-item .today-actions-more {
   position: absolute;
-  right: 0;
-  top: calc(100% + 6px);
-  width: max-content;
-  max-width: 300px;
+  right: 6px;
+  top: calc(100% - 2px);
+  width: 176px;
+  max-width: 176px;
   margin: 0 !important;
-  padding: 6px !important;
-  border-radius: var(--r-md, 10px);
-  background: var(--bg-elevated, var(--bg-card));
-  box-shadow: var(--shadow-float, 0 14px 36px rgba(0, 0, 0, 0.42));
-  z-index: 5;
+  padding: 4px !important;
+  flex-direction: column !important;
+  flex-wrap: nowrap !important;
+  align-items: stretch !important;
+  justify-content: flex-start !important;
+  gap: 2px !important;
+  border: 1px solid var(--border-light, rgba(255, 255, 255, 0.14)) !important;
+  border-radius: var(--r-md, 10px) !important;
+  background: var(--bg-elevated, var(--bg-card)) !important;
+  box-shadow: var(--shadow-card, 0 14px 30px -16px rgba(16, 24, 40, 0.3)) !important;
+  z-index: 30;
+}
+
+#subview-dashboard.wb-v2 .today-item .today-actions-more > button {
+  display: block;
+  width: 100%;
+  height: 30px;
+  min-height: 0 !important;
+  margin: 0;
+  padding: 0 10px !important;
+  border: 0 !important;
+  border-radius: var(--r-sm, 6px) !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  color: var(--text-secondary) !important;
+  font-size: 12.5px !important;
+  font-weight: 500 !important;
+  /* 不用 flex 居中：高度固定 30px + 等值行高，单行文字自然居中。 */
+  line-height: 30px !important;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+#subview-dashboard.wb-v2 .today-item .today-actions-more > button:hover,
+#subview-dashboard.wb-v2 .today-item .today-actions-more > button:focus-visible {
+  background: var(--overlay-hover, rgba(255, 255, 255, 0.1)) !important;
+  color: var(--text-main) !important;
+}
+
+/* 危险动作在下拉里保留红字，但同样是 ghost（只换颜色，不换底）。 */
+#subview-dashboard.wb-v2 .today-item .today-actions-more > .danger-action {
+  color: var(--color-danger) !important;
+}
+
+#subview-dashboard.wb-v2 .today-item .today-actions-more > .danger-action:hover,
+#subview-dashboard.wb-v2 .today-item .today-actions-more > .danger-action:focus-visible {
+  background: color-mix(in srgb, var(--color-danger) 14%, transparent) !important;
+  color: var(--color-danger) !important;
 }
 
 #subview-dashboard.wb-v2 .today-item:hover {
