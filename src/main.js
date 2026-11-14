@@ -13,6 +13,7 @@ import { initNotesModule } from './notes.js';
 import { setNotesDataPathProvider } from './notesStore.js';
 import { initSheetPage } from './sheetPage.js';
 import { setSheetAdapter } from './sheetStore.js';
+import { setTableAdapter, initTablePage } from './tablePage.js';
 import { setRecordAdapter } from './recordStore.js';
 import { initCommandPalette } from './commandPalette.js';
 import { flushDrawerBody } from './rowDrawer.js';
@@ -90,6 +91,9 @@ async function initApp() {
   // 一律走 recordStore，不要在 UI 里自己拼 SQL —— 可空列的 null 陷阱
   // 与「删记录三步」都在那一层兜住了。
   setRecordAdapter({ dbQuery: dbQueryStrict, dbExecute: dbExecuteStrict });
+  // 记录页的表格视图（tablePage.js）同样走注入式 adapter，理由同上：
+  // 写库失败必须抛，让表格把「保存失败」弹出来，而不是当成已保存。
+  setTableAdapter({ dbQuery: dbQueryStrict, dbExecute: dbExecuteStrict });
 
   await import('./settings.js').then(async (m) => {
       await m.applySavedThemeFromDB();
@@ -124,6 +128,9 @@ async function initApp() {
   safeRun('notes-editor', initNotesEditor);
   safeRun('today-timeline', renderTodayTimeline);
   safeRun('timeline', initTimelineModule);
+  // 记录页视图切换（时间流 / 表格）。表格页数据走自己的 adapter，不依赖 appData，
+  // 但放在 timeline 之后：先把时间流画出来，再决定是否叠加表格。
+  safeRun('records-view', setupRecordsView);
   safeRun('settings', initSettingsModule);
   safeRun('quick-capture', initQuickCapture);
   safeRun('search', initSearchModule);
@@ -550,6 +557,63 @@ function setupRouting() {
 
   const lastSubview = localStorage.getItem('workRecorder:lastSubview');
   show(routes.some(route => route.id === lastSubview) ? lastSubview : 'nav-dashboard');
+}
+
+// 记录页的视图切换：时间流 / 表格（表格即 tablePage.js 渲染的 logs 表）。
+// 用 inline style.display 而不是 hidden 属性或 classList —— 早期层给容器写过
+// display !important，hidden 会被压掉（笔记视图泄漏事故同源的坑）。
+// 选择保存在 localStorage，路由切回来时保持用户上次停的那个视图。
+function setupRecordsView() {
+  const panes = {
+    timeline: document.getElementById('timeline-container'),
+    table: document.getElementById('rec-table-pane')
+  };
+  const segBtns = Array.from(document.querySelectorAll('[data-rec-view]'));
+  if (!panes.timeline || !panes.table || !segBtns.length) return;
+
+  let currentView = '';
+
+  const applyRecordsView = async (view) => {
+    const next = view === 'table' ? 'table' : 'timeline';
+    const firstApply = currentView === '';
+    currentView = next;
+
+    panes.timeline.style.display = next === 'timeline' ? '' : 'none';
+    panes.table.style.display = next === 'table' ? '' : 'none';
+    // 筛选只对时间流有意义；表格自带字段面板，不需要这两个下拉。
+    document.querySelectorAll('.rec-filter').forEach(el => {
+      el.style.display = next === 'timeline' ? '' : 'none';
+    });
+    segBtns.forEach(btn => {
+      btn.setAttribute('aria-pressed', String(btn.dataset.recView === next));
+    });
+    localStorage.setItem('workRecorder:recordsView', next);
+
+    if (next === 'table') {
+      await initTablePage();
+      return;
+    }
+    // 启动时首次落到时间流：initApp 刚 loadData + renderTimeline 过，不必重读。
+    if (firstApply) return;
+    // 从表格切回来必须重新读库：表格里的就地编辑只改了它自己的 rows，
+    // appData 还是旧缓存，直接重绘会显示改之前的值。
+    await loadData();
+    renderTimeline();
+    updateWorkspaceSummary();
+  };
+
+  segBtns.forEach(btn => {
+    btn.addEventListener('click', () => {
+      applyRecordsView(btn.dataset.recView).catch(error => {
+        logToFile('error', `[records-view] 切换失败: ${error?.stack || error}`);
+      });
+    });
+  });
+
+  applyRecordsView(localStorage.getItem('workRecorder:recordsView') === 'table' ? 'table' : 'timeline')
+    .catch(error => {
+      logToFile('error', `[records-view] 初始化失败: ${error?.stack || error}`);
+    });
 }
 
 function setupTabs() {

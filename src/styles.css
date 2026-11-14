@@ -17160,3 +17160,43 @@ body.cmdk-open { overflow: hidden !important; }
   background: var(--overlay-hover, rgba(255, 255, 255, 0.1)) !important;
   color: var(--text-main) !important;
 }
+
+/* ==========================================================================
+   13. 记录页：时间流 / 表格视图切换
+   --------------------------------------------------------------------------
+   分段控件复用笔记页的 .nt-seg / .nt-seg-btn（16xxx 行），这里只补本页的间距与高度；
+   表格本体（.wr-table-shell / .wr-table-td …，10053 行起）不动。
+   ========================================================================== */
+
+.rec-seg {
+  flex: 0 0 auto;
+  margin-left: 10px;
+}
+
+.rec-seg .nt-seg-btn {
+  height: 26px;
+  padding: 0 12px;
+  font-size: 12px;
+}
+
+.rec-table-pane {
+  margin-top: 6px;
+}
+
+.rec-table-bar {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.rec-table-bar .ghost-btn {
+  height: 28px;
+  min-height: 0;
+  padding: 0 12px;
+  font-size: 12px;
+}
+
+#rec-table-pane .table-view-root {
+  min-height: 360px;
+}

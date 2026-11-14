@@ -514,6 +514,12 @@
             <div class="rec-head-left">
               <h1>记录</h1>
               <span id="rec-count" class="rec-head-count"></span>
+              <!-- 时间流 / 表格 分段控件。放左侧（紧跟计数）而不是右侧：
+                   右侧已有两个筛选 + 「记一笔」，1080 宽时再挤一个分段会把它们压扁。 -->
+              <div class="nt-seg rec-seg" role="group" aria-label="记录视图">
+                <button type="button" class="nt-seg-btn" data-rec-view="timeline" aria-pressed="true">时间流</button>
+                <button type="button" class="nt-seg-btn" data-rec-view="table" aria-pressed="false">表格</button>
+              </div>
             </div>
             <div class="rec-head-right">
               <label class="rec-filter">
@@ -527,6 +533,17 @@
           </header>
 
           <div id="timeline-container"></div>
+
+          <!-- 表格视图：默认不渲染（inline display:none，不用 hidden 属性 ——
+               早期层给容器写过 display !important，hidden 会被压掉，笔记视图泄漏事故同源）。
+               #table-fields-btn 必须静态存在：tablePage.js 的 bindToolbar() 只在首次 init 绑一次，
+               那时按钮还不在 DOM 里就永远绑不上。 -->
+          <div id="rec-table-pane" class="rec-table-pane" style="display: none;">
+            <div class="rec-table-bar">
+              <button type="button" id="table-fields-btn" class="ghost-btn">字段</button>
+            </div>
+            <div id="table-view-root" class="table-view-root"></div>
+          </div>
         </div>
 
         <div id="subview-freecell" class="subview freecell-view" style="display: none;">
