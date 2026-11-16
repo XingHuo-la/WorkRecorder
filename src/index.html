@@ -8,6 +8,9 @@
     <!-- 设计层 v3（白板风）。必须在 styles.css 之后：它靠「最后加载 + 重定义令牌」
          覆盖 17202 行的旧层，作用域锁在 body[data-ui="v3"]，删属性即整体回退。 -->
     <link rel="stylesheet" href="styles-v3.css" />
+    <!-- 设计层 v4（收敛 / 去网格 / 单色界面）。作用域锁在 body[data-skin="v4"]，
+         与 v3 叠加而非替换：删 data-skin 即回到 v3。 -->
+    <link rel="stylesheet" href="styles-v4.css" />
     <link rel="stylesheet" href="./assets/flatpickr/flatpickr.min.css">
     <link rel="stylesheet" href="./assets/flatpickr/themes/dark.css">
     <script src="./assets/flatpickr/flatpickr.min.js"></script>
@@ -30,7 +33,7 @@
       })();
     </script>
   </head>
-  <body data-ui="v3">
+  <body data-ui="v3" data-skin="v4">
     <!-- 线性图标 sprite：统一 1.5px 描边、24 网格，替代原先混排的字符图标（⌂ ✎ ◷ ♠ ⌕ ⚙）。
          这些字符来自不同 Unicode 区块，光学校准天然不一致（♠ 明显比 ⌕ 大且重），
          是"界面不像一个整体"的隐性来源。 -->
@@ -106,21 +109,17 @@
           <div class="sidebar-brand-mark">W</div>
           <div>
             <h2>WorkRecorder</h2>
-            <p>本地工作记录空间</p>
           </div>
         </div>
         
         <div class="nav-menu">
-          <!-- 导航按「一批数据的几种看法」组织，不再按页面堆功能。
-               搜索不再是页面 —— 它是 Ctrl+K 随时可唤起的命令面板。
-               空当接龙移出主导航（入口收在设置页），代码保留。 -->
-          <button id="nav-dashboard" class="nav-item active" aria-current="page"><span class="nav-item-icon"><svg class="wr-icon" aria-hidden="true"><use href="#ic-home"/></svg></span><span>今天</span></button>
-          <!-- 白板紧跟「今天」：它和「记录」是同一批数据的两种看法 ——
-               记录按时间排，白板按你摆的位置排。所以放在这里，不是排在功能列表末尾。 -->
+          <!-- v4：导航只留「一批数据的三种看法」——表格 / 白板 / 笔记。
+               「今天」降级为表内的筛选 chip（见 #base-table-tools），不再占一个页面；
+               「记录」时间轴与表格同源，已下线，行内改 + 抽屉取代只读时间轴。
+               表格页是两层：先看表库（#table-library），点进去才是表（#table-detail）。 -->
+          <button id="nav-table" class="nav-item active" aria-current="page"><span class="nav-item-icon"><svg class="wr-icon" aria-hidden="true"><use href="#ic-table"/></svg></span><span>表格</span></button>
           <button id="nav-board" class="nav-item"><span class="nav-item-icon"><svg class="wr-icon" aria-hidden="true"><use href="#ic-board"/></svg></span><span>白板</span></button>
-          <button id="nav-timeline" class="nav-item"><span class="nav-item-icon"><svg class="wr-icon" aria-hidden="true"><use href="#ic-clock"/></svg></span><span>记录</span></button>
           <button id="nav-notes" class="nav-item"><span class="nav-item-icon"><svg class="wr-icon" aria-hidden="true"><use href="#ic-notebook"/></svg></span><span>笔记</span></button>
-          <button id="nav-table" class="nav-item"><span class="nav-item-icon"><svg class="wr-icon" aria-hidden="true"><use href="#ic-table"/></svg></span><span>表格</span></button>
         </div>
 
         <div style="flex: 1;"></div>
@@ -227,7 +226,7 @@
                               <button id="quick-add-todo" type="button" class="icon-btn quick-todo-btn">转待办</button>
                               <button id="quick-save-note" type="button" class="icon-btn quick-note-direct-btn">转笔记</button>
                               <button id="quick-save-log" type="button" class="icon-btn quick-log-direct-btn">记流水</button>
-                              <button id="quick-capture-save" type="button" class="primary-btn quick-save-btn">收进待整理</button>
+                              <button id="quick-capture-save" type="button" class="primary-btn quick-save-btn">保存</button>
                             </div>
                           </div>
 
@@ -440,8 +439,27 @@
              布局（x/y/w/h/颜色/连线）存在 record.custom._bd 里，零迁移。
              所以「在白板上贴一张」和「在记录里新建一条」是同一件事的两种入口。 -->
         <div id="subview-board" class="subview bd-view" style="display: none;">
+          <!-- 白板同样两层：先看到「有哪些白板」，点进去才是画布。 -->
+          <div id="board-library" class="lib-page">
+            <header class="lib-head">
+              <h1 class="lib-title">白板</h1>
+              <span id="bd-lib-count" class="lib-count"></span>
+              <div class="lib-head-actions">
+                <button type="button" id="bd-lib-new" class="primary-btn">＋ 新建白板</button>
+              </div>
+            </header>
+            <div id="bd-lib-list" class="lib-list" role="list" aria-label="白板列表"></div>
+            <p id="bd-lib-empty" class="lib-empty" style="display: none;">
+              一块白板就是一个不受表格约束的思考区，便签同时是记录。
+            </p>
+          </div>
+
+          <div id="board-canvas" class="bd-canvas" style="display: none;">
           <div class="bd-bar">
-            <span class="bd-title">白板</span>
+            <button type="button" id="bd-back-btn" class="rec-back" title="回到白板列表" aria-label="回到白板列表">
+              <svg class="wr-icon" aria-hidden="true"><use href="#ic-chevron-right"/></svg>
+            </button>
+            <span class="bd-title" id="bd-board-name">白板</span>
             <span class="bd-save" id="bd-save"><i></i><span id="bd-save-text">已同步</span></span>
 
             <div class="bd-tools" id="bd-tools" role="group" aria-label="白板工具">
@@ -500,6 +518,7 @@
             </div>
 
             <div class="bd-hint"><span id="bd-hint-text">拖拽框选 · 双击便签编辑 · 双击空白新建</span></div>
+          </div>
           </div>
         </div>
 
@@ -582,48 +601,72 @@
           </div>
         </div>
 
-        <div id="subview-table" class="subview" style="display: none;">
-          <!-- 表格页整体由 src/sheetPage.js 渲染（库视图 / 表视图共用这个容器），
-               这里只留挂载点，避免静态表头和动态表头打架。 -->
-          <div id="sheet-app" class="sheet-app"></div>
-        </div>
-
         <div id="subview-timeline" class="subview records-v2" style="display: none;">
-          <!-- 「记录」= 过去的时间轴。页面头压成一行：标题 + 计数 + 内联筛选。
-               原设计是 kicker + 大标题 + 说明 + 独立筛选卡，四层才轮到内容。 -->
-          <header class="rec-head">
-            <div class="rec-head-left">
-              <h1>记录</h1>
-              <span id="rec-count" class="rec-head-count"></span>
-              <!-- 时间流 / 表格 分段控件。放左侧（紧跟计数）而不是右侧：
-                   右侧已有两个筛选 + 「记一笔」，1080 宽时再挤一个分段会把它们压扁。 -->
-              <div class="nt-seg rec-seg" role="group" aria-label="记录视图">
-                <button type="button" class="nt-seg-btn" data-rec-view="timeline" aria-pressed="true">时间流</button>
-                <button type="button" class="nt-seg-btn" data-rec-view="table" aria-pressed="false">表格</button>
+          <!-- 表格页 = 两层，像打开文件夹：
+               ① 表库（默认）—— 基础表固定第一行，自建表跟在后面；
+               ② 表内 —— 点某一行才进来，左上角退回表库。
+               不再用一排 tab 把所有表摊在顶上：表多了一眼全是名字，分不清层级。 -->
+
+          <div id="table-library" class="lib-page">
+            <header class="lib-head">
+              <h1 class="lib-title">表格</h1>
+              <span id="lib-count" class="lib-count"></span>
+              <div class="lib-head-actions">
+                <button type="button" id="lib-new-sheet" class="primary-btn">＋ 新建表格</button>
               </div>
-            </div>
-            <div class="rec-head-right">
-              <label class="rec-filter">
-                <select id="timeline-main-filter" aria-label="按主分类筛选"></select>
-              </label>
-              <label class="rec-filter">
-                <select id="timeline-sub-filter" aria-label="按子项目筛选"></select>
-              </label>
-              <button type="button" id="rec-add-btn" class="primary-btn">＋ 记一笔</button>
-            </div>
-          </header>
+            </header>
+            <div id="lib-list" class="lib-list" role="list" aria-label="表格列表"></div>
+            <p id="lib-empty" class="lib-empty" style="display: none;">
+              还没有自建表。新建一张，字段、视图、图片附件都可以自己定。
+            </p>
+          </div>
 
-          <div id="timeline-container"></div>
+          <div id="table-detail" class="rec-detail" style="display: none;">
+            <header class="rec-detail-head">
+              <button type="button" id="rec-back-btn" class="rec-back" title="回到表格列表" aria-label="回到表格列表">
+                <svg class="wr-icon" aria-hidden="true"><use href="#ic-chevron-right"/></svg>
+              </button>
+              <h2 id="rec-title" class="rec-title">基础表</h2>
+              <span id="rec-count" class="rec-head-count"></span>
+              <!-- 基础表专用控件：切到自建表时整体隐藏（工作表自带一整套工具栏）。 -->
+              <div id="base-table-tools" class="rec-detail-tools" role="group" aria-label="基础表筛选">
+                <div class="v4-chips" role="group" aria-label="快速筛选">
+                  <button type="button" class="v4-chip is-on" data-rec-filter="all" aria-pressed="true">全部</button>
+                  <button type="button" class="v4-chip" data-rec-filter="today" aria-pressed="false">今天</button>
+                  <button type="button" class="v4-chip" data-rec-filter="inbox" aria-pressed="false">待整理</button>
+                </div>
+                <span class="rec-tabs-sep" aria-hidden="true"></span>
+                <button type="button" id="table-fields-btn" class="ghost-btn">字段</button>
+                <label class="rec-filter">
+                  <select id="timeline-main-filter" aria-label="按主分类筛选"></select>
+                </label>
+                <label class="rec-filter">
+                  <select id="timeline-sub-filter" aria-label="按子项目筛选"></select>
+                </label>
+                <button type="button" id="rec-add-btn" class="primary-btn">＋ 新建</button>
+              </div>
+              <!-- 自建表的重命名 / 改所属任务 / 删除。基础表不给入口 —— 它是固定项，
+                   从"没有按钮"这件事上删不掉，而不是点了再弹"不可删除"。 -->
+              <button type="button" id="sheet-more-btn" class="rec-tab-more" aria-label="表格操作" title="重命名 / 删除" style="display: none;">
+                <svg class="wr-icon" aria-hidden="true"><use href="#ic-dots"/></svg>
+              </button>
+            </header>
 
-          <!-- 表格视图：默认不渲染（inline display:none，不用 hidden 属性 ——
-               早期层给容器写过 display !important，hidden 会被压掉，笔记视图泄漏事故同源）。
-               #table-fields-btn 必须静态存在：tablePage.js 的 bindToolbar() 只在首次 init 绑一次，
-               那时按钮还不在 DOM 里就永远绑不上。 -->
-          <div id="rec-table-pane" class="rec-table-pane" style="display: none;">
-            <div class="rec-table-bar">
-              <button type="button" id="table-fields-btn" class="ghost-btn">字段</button>
+            <!-- 时间流已下线，容器留着：timeline.js 在模块顶层取了这个 id，
+                 删掉会让它拿到 null。 -->
+            <div id="timeline-container" style="display: none;"></div>
+
+            <!-- 基础表：默认不渲染（inline display:none，不用 hidden 属性 ——
+                 早期层给容器写过 display !important，hidden 会被压掉）。
+                 #table-fields-btn 必须静态存在：tablePage.js 的 bindToolbar() 只在首次 init 绑一次。 -->
+            <div id="rec-table-pane" class="rec-table-pane" style="display: none;">
+              <div id="table-view-root" class="table-view-root"></div>
             </div>
-            <div id="table-view-root" class="table-view-root"></div>
+
+            <!-- 自建表：src/sheetPage.js 的挂载点。 -->
+            <div id="sheet-pane" class="sheet-pane" style="display: none;">
+              <div id="sheet-app" class="sheet-app"></div>
+            </div>
           </div>
         </div>
 
@@ -680,7 +723,7 @@
           <header class="subview-page-head settings-page-head">
             <div>
               <span class="subview-kicker">PREFERENCES</span>
-              <h1>系统设置</h1>
+              <h1>设置</h1>
               <p>管理外观、记录行为、游戏偏好与本地数据。</p>
             </div>
           </header>

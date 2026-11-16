@@ -14,6 +14,9 @@ import { searchAll } from './search.js';
 const MAX_PER_GROUP = 8;
 const DEBOUNCE_MS = 140;
 
+// v4 的导航只有「表格 / 白板 / 笔记」三项，命令面板因此承担了第二层入口：
+// 工作表（多表）和设置都在这里，而不是在侧栏占位。
+// 注意 route id 必须与 main.js 的 routes[] 一致 —— 对不上就是点了没反应。
 const ACTIONS = [
   {
     id: 'new-record',
@@ -22,28 +25,28 @@ const ACTIONS = [
     run: () => window.__wrOpenCapture?.(),
   },
   {
-    id: 'goto-today',
-    label: '回到今天',
-    hint: '工作台',
-    run: () => window.__wrRouteTo?.('nav-dashboard'),
-  },
-  {
     id: 'goto-records',
-    label: '查看记录',
-    hint: '按时间回看',
-    run: () => window.__wrRouteTo?.('nav-timeline'),
+    label: '打开表格',
+    hint: '全部记录 · 可筛选可编辑',
+    run: () => window.__wrRouteTo?.('nav-table'),
   },
   {
-    id: 'goto-table',
-    label: '打开表格',
-    hint: '全部表格与字段',
-    run: () => window.__wrRouteTo?.('nav-table'),
+    id: 'goto-board',
+    label: '打开白板',
+    hint: '把记录摆成便签',
+    run: () => window.__wrRouteTo?.('nav-board'),
   },
   {
     id: 'goto-notes',
     label: '打开笔记',
     hint: '全部笔记',
     run: () => window.__wrRouteTo?.('nav-notes'),
+  },
+  {
+    id: 'new-sheet',
+    label: '新建表格',
+    hint: '在表格页加一张自建表',
+    run: () => window.__wrNewSheet?.(),
   },
   {
     id: 'goto-settings',
@@ -173,13 +176,15 @@ function openRecord(record, type) {
   }
 
   if (type === 'sheet') {
+    // 自建表已经和基础表并列在同一个页面里，这里只要回到表格页
+    // （用户可以在表 tab 条上继续切到那张表）。
     window.__wrRouteTo?.('nav-table');
     return;
   }
 
   const reader = window.__wrOpenRecordReader;
   if (typeof reader !== 'function') {
-    window.__wrRouteTo?.('nav-timeline');
+    window.__wrRouteTo?.('nav-table');
     return;
   }
 

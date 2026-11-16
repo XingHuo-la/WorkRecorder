@@ -8,6 +8,7 @@
 // 不能在顶层 import data.js —— 否则调试壳（无 __TAURI__）无法加载本模块。
 
 import { escapeHtml } from './htmlUtils.js';
+import { pickAttachmentItems, storeImageFile, filesFromDataTransfer, setAttachmentNotifier, convertSrc } from './attachmentOps.js';
 import {
   FIELD_TYPE_ORDER,
   FIELD_TYPE_LABELS,
@@ -38,6 +39,32 @@ let inited = false;
 let fields = [];         // field_def 行（entity='log'，按 sort 排序）
 let rows = [];           // logs 行
 let optionCache = { tags: [], sub_tags: [] };
+/* 成功写库的次数。刷新是「先查再渲染」，若查询在途时有写入落地，
+   这份快照就比库旧 —— 直接渲染会把用户刚改的值刷回去（实测缺陷）。
+   refresh 拿它做版本校验，读到旧版本就重读一次。 */
+let writeTick = 0;
+// v4 快速筛选：mode = all | today | inbox，另外可按主分类/子项目收窄。
+// 过滤只影响渲染，不改变 rows —— 「今天」切回「全部」时不用重读库。
+let activeFilter = { mode: 'all', tag: '', subTag: '' };
+
+export function setTableFilter(patch = {}) {
+  activeFilter = { ...activeFilter, ...patch };
+  if (document.getElementById('table-view-root')) render();
+}
+
+function filterRows(list) {
+  const today = todayString();
+  return list.filter(row => {
+    if (activeFilter.tag && row.tag !== activeFilter.tag) return false;
+    if (activeFilter.subTag) {
+      const subs = String(row.sub_tag || '').split(',').map(item => item.trim()).filter(Boolean);
+      if (!subs.includes(activeFilter.subTag)) return false;
+    }
+    if (activeFilter.mode === 'today' && row.date !== today) return false;
+    if (activeFilter.mode === 'inbox' && row.status !== 'unprocessed') return false;
+    return true;
+  });
+}
 
 // ==========================================
 // 工具
@@ -188,10 +215,22 @@ async function loadOptionCache() {
   }));
 }
 
-async function refresh() {
+let refreshGen = 0;
+
+async function refresh(depth = 0) {
+  const gen = ++refreshGen;
+  const tick = writeTick;
   const logs = await adapter.dbQuery('SELECT * FROM logs ORDER BY date DESC, time DESC, id DESC');
-  rows = Array.isArray(logs) ? logs : [];
+  // 读取期间有写入落地：这份快照可能不含刚写进去的值，重读（最多重试 2 次，避免写多时打转）
+  if (tick !== writeTick && depth < 2) { await refresh(depth + 1); return; }
+  const nextRows = Array.isArray(logs) ? logs : [];
   await loadOptionCache();
+  // loadOptionCache 也是两次 IO，这里到 render() 之间还有一段异步窗口：
+  // 若期间用户刚提交了一次就地编辑，这份快照就是过期的，直接渲染会把新值冲回旧文案
+  // （实测缺陷：库已更新、界面回退）。有更新的刷新接管时也一样，让位给它。
+  if (gen !== refreshGen) return;
+  if (tick !== writeTick && depth < 2) { await refresh(depth + 1); return; }
+  rows = nextRows;
   render();
 }
 
@@ -257,7 +296,7 @@ export function renderTable(rootEl, data = {}) {
   if (data.optionCache) optionCache = data.optionCache;
 
   const useFields = fields;
-  const useRows = rows;
+  const useRows = filterRows(rows);
 
   const visibleFields = useFields.filter(field => Number(field.visible) !== 0);
   // 列宽用百分比（基准权重见 DEFAULT_WIDTHS）：
@@ -293,11 +332,32 @@ function closeTransientEditors() {
   document.querySelectorAll('.ft-cell-editing').forEach(el => el.classList.remove('ft-cell-editing'));
 }
 
-function rerenderCell(cellEl, field, row) {
-  // inline 输入框开着时不重绘（输入中）；下拉面板挂在 body 上，重绘 cell 内容不受影响
-  if (cellEl.querySelector('.ft-inline-input')) return;
+// 提交发生在「输入框还在 cell 里」的瞬间：这里直接 return 会让单元格停在旧值，
+// 用户要重新进表才看到新内容（实测缺陷）。改成挂一个观察器，等编辑器收掉再画一次。
+const pendingCellPaints = new WeakMap();
+
+function paintCell(cellEl, field, row) {
+  if (!cellEl || !cellEl.isConnected) return;
   const value = readFieldValue(field, row);
   cellEl.innerHTML = renderCell(field, value, cellCtxFor(field, row));
+}
+
+function rerenderCell(cellEl, field, row) {
+  if (cellEl.querySelector('.ft-inline-input')) {
+    if (!pendingCellPaints.has(cellEl)) {
+      const observer = new MutationObserver(() => {
+        if (!cellEl.isConnected) { observer.disconnect(); pendingCellPaints.delete(cellEl); return; }
+        if (cellEl.querySelector('.ft-inline-input')) return;
+        observer.disconnect();
+        pendingCellPaints.delete(cellEl);
+        paintCell(cellEl, field, row);
+      });
+      observer.observe(cellEl, { childList: true, subtree: true });
+      pendingCellPaints.set(cellEl, observer);
+    }
+    return;
+  }
+  paintCell(cellEl, field, row);
 }
 
 function render() {
@@ -311,11 +371,27 @@ function render() {
 // 就地编辑
 // ==========================================
 
+// 提交瞬间表格可能被整体重绘（切表 / 刷新 / 筛选），旧 cell 已脱离文档：
+// 对旧节点渲染等于没画，界面会停在旧值，直到重新进表才看到新内容。
+// 这里按 row.id + field.key 重新定位一次单元格再画。
+function repaintRowCell(row, field) {
+  const root = document.getElementById('table-view-root');
+  if (!root || !row || !field) return;
+  const id = String(row.id);
+  const key = String(field.key);
+  const fresh = [...root.querySelectorAll('.wr-table-row')]
+    .find(tr => tr.dataset.id === id)
+    ?.querySelector(`.wr-cell[data-key="${key}"]`);
+  if (fresh) paintCell(fresh, field, row);
+}
+
 async function commitCellValue(field, row, cellEl, newValue) {
   if (!adapter) return;
   try {
     await writeFieldValue(field, row, newValue);
+    writeTick += 1;
     rerenderCell(cellEl, field, row);
+    if (!cellEl.isConnected) repaintRowCell(row, field);
   } catch (error) {
     showTableToast(`保存失败：${error?.message || error}`, 'danger');
   }
@@ -376,8 +452,147 @@ function handleCellClick(cellEl) {
     commit: next => commitCellValue(field, row, cellEl, next),
     toast: showTableToast,
     placeholder: field.key === 'text' ? '未命名' : undefined,
-    onAttachmentEdit: () => showTableToast('附件功能正在开发，稍后接入', 'info'),
+    onAttachmentEdit: () => openAttachPanel(cellEl, field, row),
   });
+}
+
+// ==========================================
+// 附件单元格：粘贴 / 选择 / 移除
+// ==========================================
+
+// 单元格里的图片列。值形如 [{ path, name, w, h }] 或 [{ kind:'file', path, name }]，
+// 统一存进 logs.custom.attachments（writeFieldValue 里特判），不需要加列。
+function attachItemsOf(field, row) {
+  const value = readFieldValue(field, row);
+  return Array.isArray(value) ? value.filter(item => item && item.path) : [];
+}
+
+function openAttachPanel(cellEl, field, row) {
+  const panel = openFloatingPanel(cellEl, 'wr-attpanel');
+  panel.innerHTML = `
+    <div class="wr-att-zone" data-zone>
+      <svg class="wr-icon" aria-hidden="true"><use href="#ic-image"/></svg>
+      <span>Ctrl+V 粘贴截图，或把图片拖进来</span>
+    </div>
+    <div class="wr-att-list" data-list></div>
+    <div class="wr-att-foot">
+      <button type="button" class="wr-att-pick" data-pick title="图片会复制进应用目录，其他文件只保存链接">添加附件…</button>
+      <span class="wr-att-gap"></span>
+      <button type="button" class="wr-att-done" data-done>完成</button>
+    </div>`;
+
+  const listEl = panel.querySelector('[data-list]');
+  const zone = panel.querySelector('[data-zone]');
+
+  // openFloatingPanel 量的是「还没填内容」的空壳（offsetWidth = 0），
+  // 于是它按 220 兜底算右边界；这张面板实际 300 宽，靠右的列会被推出屏幕。
+  // 内容填好后再按真实宽度夹一次。
+  const cellRect = cellEl.getBoundingClientRect();
+  const panelWidth = panel.offsetWidth || 300;
+  const clampedLeft = Math.min(cellRect.left, Math.max(8, window.innerWidth - panelWidth - 8));
+  panel.style.left = `${Math.max(8, clampedLeft)}px`;
+
+  const paint = () => {
+    const items = attachItemsOf(field, row);
+    listEl.innerHTML = items.length
+      ? items
+          .map((item, index) => {
+            if (item.kind === 'file') {
+              return `<span class="wr-att-item is-file" title="${escapeHtml(item.path)}">
+                  <span class="wr-att-file">${escapeHtml(item.name || String(item.path).split(/[\\/]/).pop() || '文件')}</span>
+                  <button type="button" class="wr-att-del" data-remove="${index}" aria-label="移除">×</button>
+                </span>`;
+            }
+            return `<span class="wr-att-item">
+                <img src="${escapeHtml(convertSrc(item.path))}" alt="${escapeHtml(item.name || '附件')}" />
+                <button type="button" class="wr-att-del" data-remove="${index}" aria-label="移除">×</button>
+              </span>`;
+          })
+          .join('')
+      : '<div class="wr-att-empty">还没有图片或文件</div>';
+  };
+
+  // 写回：先把数组落到 custom.attachments，再重画这一格，面板本身留在原地
+  const apply = async next => {
+    await commitCellValue(field, row, cellEl, next);
+    paint();
+  };
+
+  const append = async extra => {
+    if (!extra.length) return;
+    await apply([...attachItemsOf(field, row), ...extra]);
+    showTableToast(`已添加 ${extra.length} 个附件`);
+  };
+
+  panel.addEventListener('click', async event => {
+    if (event.target.closest('[data-done]')) { closeFloatingPanel(); return; }
+    if (event.target.closest('[data-pick]')) {
+      const items = await pickAttachmentItems();
+      await append(items);
+      return;
+    }
+    const del = event.target.closest('[data-remove]');
+    if (del) {
+      const index = Number(del.dataset.remove);
+      const next = attachItemsOf(field, row).filter((item, i) => i !== index);
+      await apply(next);
+    }
+  });
+
+  // 粘贴：面板开着时 Ctrl+V 直接把图片塞进这一格
+  const onPaste = async event => {
+    const { files } = filesFromDataTransfer(event.clipboardData);
+    if (!files.length) return;
+    event.preventDefault();
+    const items = [];
+    let skipped = 0;
+    for (const file of files) {
+      // 剪贴板里的非图片文件拿不到真实路径（只有 name），存下来就是个点不开的死链。
+      // 这类文件走「添加附件…」的系统选择框，才能拿到路径。
+      if (!String(file.type || '').startsWith('image/')) { skipped += 1; continue; }
+      try { items.push(await storeImageFile(file)); }
+      catch (error) { showTableToast(`图片处理失败：${error?.message || error}`, 'danger'); }
+    }
+    if (skipped) showTableToast(`粘贴只能收图片，其他文件请用「添加附件…」`, 'info');
+    await append(items);
+  };
+  document.addEventListener('paste', onPaste, true);
+
+  // 拖拽：整块面板当投放区，免得非要精确落在小方块里
+  const onDragOver = event => { event.preventDefault(); zone.classList.add('is-over'); };
+  const onDragLeave = () => zone.classList.remove('is-over');
+  const onDrop = async event => {
+    event.preventDefault();
+    zone.classList.remove('is-over');
+    const { files } = filesFromDataTransfer(event.dataTransfer);
+    const items = [];
+    let skippedDrop = 0;
+    for (const file of files) {
+      if (!String(file.type || '').startsWith('image/')) { skippedDrop += 1; continue; }
+      try { items.push(await storeImageFile(file)); }
+      catch (error) { showTableToast(`图片处理失败：${error?.message || error}`, 'danger'); }
+    }
+    if (skippedDrop) showTableToast(`拖进来的非图片文件没有路径，请用「添加附件…」`, 'info');
+    await append(items);
+  };
+  panel.addEventListener('dragover', onDragOver);
+  panel.addEventListener('dragleave', onDragLeave);
+  panel.addEventListener('drop', onDrop);
+
+  // 面板关掉时把全局粘贴监听一起撤掉，否则在别处 Ctrl+V 也会写进这一格
+  const stop = () => {
+    document.removeEventListener('paste', onPaste, true);
+    panel.removeEventListener('dragover', onDragOver);
+    panel.removeEventListener('dragleave', onDragLeave);
+    panel.removeEventListener('drop', onDrop);
+    observer.disconnect();
+  };
+  const observer = new MutationObserver(() => {
+    if (!document.body.contains(panel)) stop();
+  });
+  observer.observe(document.body, { childList: true });
+
+  paint();
 }
 
 // ==========================================
@@ -718,6 +933,7 @@ export async function initTablePage() {
 
   if (!inited) {
     inited = true;
+    setAttachmentNotifier(showTableToast);
     bindToolbar();
     bindTableEvents(root);
   }

@@ -1,0 +1,145 @@
+// 附件（图片 / 文件）读写的公共部分。
+//
+// 为什么单独抽出来：表格页（sheetPage）和基础表（tablePage）都要能插图，
+// 而扩展名白名单、图片落盘、系统选择框这些一旦各写一份必然漂移 ——
+// 历史 bug 就是 `file.type.split('/')[1]` 把 image/svg+xml 推成 "svg+xml"，
+// 后端兜底存成 .png，文件内容却是 SVG，缩略图全裂。
+//
+// 本模块只做「文件 → 附件项」的转换与选择框，不碰 DOM、不碰表格状态：
+// 上层自己决定把返回的 items 写回哪一格。
+
+let notify = () => {};
+
+/** 注入提示函数（宿主有 toast 就接上，没有就静默）。 */
+export function setAttachmentNotifier(fn) {
+  if (typeof fn === 'function') notify = fn;
+}
+
+function invoke(cmd, args) {
+  const fn = window.__TAURI__?.core?.invoke;
+  if (!fn) throw new Error('Tauri 不可用');
+  return fn(cmd, args);
+}
+
+export function convertSrc(path) {
+  try {
+    if (window.__TAURI__?.core?.convertFileSrc) return window.__TAURI__.core.convertFileSrc(path);
+  } catch (error) { /* 调试壳直接回退原路径 */ }
+  return path || '';
+}
+
+// MIME → 落盘扩展名。必须白名单，不能让浏览器给什么就信什么。
+export const MIME_IMAGE_EXT = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/webp': 'webp',
+  'image/gif': 'gif',
+  'image/bmp': 'bmp',
+};
+export const IMAGE_EXT_ALLOWED = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'];
+export const IMAGE_EXTS = IMAGE_EXT_ALLOWED;
+
+export function extOfPath(path) {
+  const match = String(path).toLowerCase().match(/\.([a-z0-9]+)$/);
+  return match ? match[1] : '';
+}
+
+export function nameOfPath(path) {
+  const text = String(path);
+  const cut = Math.max(text.lastIndexOf('\\'), text.lastIndexOf('/'));
+  return cut >= 0 ? text.slice(cut + 1) : text;
+}
+
+export function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error('读取图片失败'));
+    reader.readAsDataURL(file);
+  });
+}
+
+// 读图片原始尺寸：行高按比例算，光有路径不够。
+export function imageDims(src) {
+  return new Promise(resolve => {
+    const img = new Image();
+    img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight });
+    img.onerror = () => resolve({});
+    img.src = src;
+  });
+}
+
+/** 粘贴 / 拖入的 File → 附件项（图片嵌入资源目录，其他存链接）。 */
+export async function storeImageFile(file) {
+  if (file.type === 'image/svg+xml' || extOfPath(file.name || '') === 'svg') {
+    throw new Error('SVG 不支持嵌入，请先另存为 PNG');
+  }
+  const ext = MIME_IMAGE_EXT[file.type] || extOfPath(file.name || '') || '';
+  if (!IMAGE_EXT_ALLOWED.includes(ext)) {
+    throw new Error(`不支持的图片格式：${file.type || ext || '未知'}`);
+  }
+  const dataUrl = await fileToDataUrl(file);
+  const dims = await imageDims(dataUrl);
+  const path = await invoke('save_sheet_asset', { data: dataUrl, ext });
+  return { path, name: file.name || '粘贴的图片', size: file.size || 0, w: dims.w || 0, h: dims.h || 0 };
+}
+
+/** 磁盘上已有的图片 → 附件项（复制进资源目录，原文件不动）。 */
+export async function imageItemFromPath(path) {
+  const saved = await invoke('save_sheet_asset_from_path', { source: path });
+  const dims = await imageDims(convertSrc(saved.path));
+  return {
+    path: saved.path,
+    name: saved.name || nameOfPath(path),
+    size: saved.size || 0,
+    w: dims.w || 0,
+    h: dims.h || 0,
+  };
+}
+
+/**
+ * 打开系统选择框。图片自动嵌入，其他文件只存链接。
+ * 返回 [] 表示用户取消或环境不支持。
+ */
+export async function pickAttachmentItems() {
+  const dialog = window.__TAURI__?.dialog;
+  if (!dialog?.open) { notify('添加附件需要在应用内使用', 'info'); return []; }
+  let picked;
+  try {
+    picked = await dialog.open({ multiple: true, title: '选择图片或文件（图片嵌入，其他只保存链接）' });
+  } catch (error) {
+    notify(`选择文件失败：${error?.message || error}`, 'danger');
+    return [];
+  }
+  const list = Array.isArray(picked) ? picked : picked ? [picked] : [];
+  const items = [];
+  for (const path of list) {
+    const text = String(path);
+    if (IMAGE_EXTS.includes(extOfPath(text))) {
+      try {
+        items.push(await imageItemFromPath(text));
+      } catch (error) {
+        notify(`图片处理失败：${error?.message || error}`, 'danger');
+      }
+    } else {
+      items.push({ kind: 'file', path: text, name: nameOfPath(text) });
+    }
+  }
+  return items;
+}
+
+/** 从剪贴板/拖拽的 DataTransfer 里取文件与文本。 */
+export function filesFromDataTransfer(data) {
+  if (!data) return { files: [], text: '' };
+  const files = [...(data.files || [])];
+  // 有的剪贴板来源只有 items，没有 files（截图粘贴常见）。
+  if (!files.length && data.items) {
+    for (const item of data.items) {
+      if (item.kind === 'file') {
+        const file = item.getAsFile?.();
+        if (file) files.push(file);
+      }
+    }
+  }
+  return { files, text: data.getData ? data.getData('text/plain') || '' : '' };
+}

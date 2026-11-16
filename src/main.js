@@ -11,9 +11,9 @@ import { initFreeCellModule } from './freecell.js';
 import { initNotesEditor, flushBeforeLeave, refreshNotesCache, getNotesCache, openNote } from './notesEditor.js';
 import { initNotesModule } from './notes.js';
 import { setNotesDataPathProvider } from './notesStore.js';
-import { initSheetPage } from './sheetPage.js';
+import { initSheetPage, openSheetTab, getSheetList, onSheetListChange, openNewSheet, currentSheetId, openCurrentSheetMenu, openSheetMenuFor, refreshSheetList } from './sheetPage.js';
 import { setSheetAdapter } from './sheetStore.js';
-import { setTableAdapter, initTablePage } from './tablePage.js';
+import { setTableAdapter, initTablePage, setTableFilter } from './tablePage.js';
 import { setRecordAdapter } from './recordStore.js';
 import { initCommandPalette } from './commandPalette.js';
 import { flushDrawerBody } from './rowDrawer.js';
@@ -124,6 +124,9 @@ async function initApp() {
     }
   };
 
+  // 记录页视图切换必须先于路由：v4 启动就落到「表格」，
+  // show('nav-table') 依赖 __wrRefreshRecordTable 已经挂好。
+  safeRun('records-view', setupRecordsView);
   safeRun('routing', setupRouting);
   safeRun('legacy-tabs', setupTabs);
   safeRun('todo', initTodoModule);
@@ -133,9 +136,6 @@ async function initApp() {
   safeRun('notes-editor', initNotesEditor);
   safeRun('today-timeline', renderTodayTimeline);
   safeRun('timeline', initTimelineModule);
-  // 记录页视图切换（时间流 / 表格）。表格页数据走自己的 adapter，不依赖 appData，
-  // 但放在 timeline 之后：先把时间流画出来，再决定是否叠加表格。
-  safeRun('records-view', setupRecordsView);
   safeRun('settings', initSettingsModule);
   safeRun('quick-capture', initQuickCapture);
   safeRun('search', initSearchModule);
@@ -238,6 +238,12 @@ function setupDashboardChrome() {
   const input = document.getElementById('quick-capture-input');
   if (!popover || !openBtn) return;
 
+  // v4：捕获浮层从「工作台内部的一块」升级成全局浮层。
+  // 工作台页面已下线，浮层如果还挂在 #subview-dashboard 里，
+  // 父容器 display:none 会把它一起藏掉（Ctrl+Shift+Space 看着像没反应）。
+  // 直接挂到 body 下，位置交给 styles-v4.css 的 .wb-popover。
+  if (popover.parentElement !== document.body) document.body.appendChild(popover);
+
   const dateEl = document.getElementById('wb-date');
   if (dateEl) {
     const now = new Date();
@@ -247,9 +253,13 @@ function setupDashboardChrome() {
 
   const setOpen = open => {
     popover.hidden = !open;
+    // 同时写行内 display：旧层给 .wb-popover 写过 display:block !important，
+    // 只切 hidden 属性在部分主题下会压不掉。
+    popover.style.display = open ? 'block' : 'none';
     openBtn.setAttribute('aria-expanded', String(open));
     if (open) requestAnimationFrame(() => input?.focus());
   };
+  setOpen(false);
 
   openBtn.addEventListener('click', () => setOpen(popover.hidden));
 
@@ -258,9 +268,15 @@ function setupDashboardChrome() {
     window.__wrOpenPalette?.();
   });
 
+  // 唤起它的那次点击与「点空白关闭」是同一个事件链：触发按钮上的 click 会继续冒泡到
+  // document，那时浮层已经打开，于是被判定成「点了外部」立刻关掉 —— 表现为闪一下就没。
+  // 所以把这三个入口的点击排除在关闭判断之外。
+  const OPEN_TRIGGER_SELECTOR = '#rec-add-btn, #capture-open-btn, #cmdk-overlay';
+
   document.addEventListener('click', event => {
     if (popover.hidden) return;
-    if (popover.contains(event.target) || openBtn.contains(event.target)) return;
+    if (event.target.closest?.(OPEN_TRIGGER_SELECTOR)) return;
+    if (popover.contains(event.target)) return;
     setOpen(false);
   });
 
@@ -276,15 +292,9 @@ function setupDashboardChrome() {
     btn.addEventListener('click', () => document.getElementById(btn.dataset.wbGoto)?.click());
   });
 
-  // 捕获浮层是全局唯一录入入口，但它挂在工作台 DOM 里 ——
-  // 从别的页面唤起时先把工作台切出来，否则浮层会跟着父容器一起 display:none。
-  window.__wrOpenCapture = () => {
-    const dashboard = document.getElementById('subview-dashboard');
-    if (dashboard && dashboard.style.display === 'none') {
-      window.__wrRouteTo?.('nav-dashboard');
-    }
-    setOpen(true);
-  };
+  // 捕获浮层是全局唯一录入入口，已挂到 body 下，任何页面都能直接唤起，
+  // 不再需要先切到工作台（工作台视图在 v4 已下线）。
+  window.__wrOpenCapture = () => setOpen(true);
 
   // 记录页的「＋ 记一笔」：录入入口只有这一个，这里只是从另一个页面唤起它。
   document.getElementById('rec-add-btn')?.addEventListener('click', () => {
@@ -503,14 +513,14 @@ function setupRouting() {
   workspaceView.style.display = 'flex';
   document.getElementById('enter-btn')?.addEventListener('click', () => { landingView.style.display = 'none'; workspaceView.style.display = 'flex'; });
 
-  // 路由表：按钮与视图分开查。空当接龙已移出主导航（入口收在设置页），
-  // 它的按钮不存在但视图还在，所以 btn 必须允许为空。
+  // 路由表（v4）：主导航只留 表格 / 白板 / 笔记。
+  //  - 表格 = subview-timeline：基础表 + 用户自建表，用页内的表 tab 条并列切换
+  //  - 今天 / 工作台不再作为页面；「今天」变成表格上的筛选 chip
+  //  - freecell 保留视图，无按钮
   const routes = [
-    { id: 'nav-dashboard', view: 'subview-dashboard' },
+    { id: 'nav-table', view: 'subview-timeline' },
     { id: 'nav-board', view: 'subview-board' },
-    { id: 'nav-timeline', view: 'subview-timeline' },
     { id: 'nav-notes', view: 'subview-notes' },
-    { id: 'nav-table', view: 'subview-table' },
     { id: 'nav-settings', view: 'subview-settings' },
     { id: 'nav-freecell', view: 'subview-freecell' }
   ].map(route => ({
@@ -521,10 +531,9 @@ function setupRouting() {
 
   // 各视图自己的默认 display。写死 display 会压掉样式表里的布局，所以
   // 「用样式表默认值」的视图一律给空字符串。
-  //   dashboard → .wb-v2 是 grid
   //   notes     → #subview-notes 是 flex 两栏壳（9.7 层，不能带 !important）
   //   board     → .bd-view 是 fixed + flex
-  const VIEW_DISPLAY = { 'nav-dashboard': '', 'nav-notes': '', 'nav-board': 'flex' };
+  const VIEW_DISPLAY = { 'nav-notes': '', 'nav-board': 'flex' };
 
   const show = async (id) => {
     const target = routes.find(route => route.id === id);
@@ -544,6 +553,14 @@ function setupRouting() {
       try { await flushBoard(); } catch (error) { logToFile('error', `白板落库失败: ${error?.stack || error}`); }
     }
 
+    // 先无条件收起所有 subview，再显示目标。
+    // 不能只遍历 routes：路由表里只有 6 个可导航的视图，已经下线的
+    // #subview-dashboard 不在表里 —— 不主动收就会一直留在页面上，
+    // 表现为「表格页上面还压着一整块工作台」（boot-probe 实测 dashboard 仍是 grid）。
+    document.querySelectorAll('.subview').forEach(view => {
+      view.style.display = 'none';
+    });
+
     routes.forEach(route => {
       route.view.style.display = 'none';
       route.btn?.classList.remove('active');
@@ -559,15 +576,13 @@ function setupRouting() {
     target.btn?.setAttribute('aria-current', 'page');
     localStorage.setItem('workRecorder:lastSubview', id);
 
-    if (id === 'nav-timeline') renderTimeline();
-    // 最近笔记 = 磁盘真相，从别的页面回到工作台时重扫一次，
-    // 否则「刚在笔记页写的那篇」不会出现在右栏。
-    if (id === 'nav-dashboard') renderRecentNotes();
+    if (id === 'nav-table') {
+      // 表格页自己维护 rows（行内编辑只改它自己的缓存），每次切回都重读一次，
+      // 否则从白板/笔记回来会看到改之前的值。
+      try { await window.__wrRefreshRecordTable?.(); } catch (error) { logToFile('error', `表格刷新失败: ${error?.stack || error}`); }
+    }
     if (id === 'nav-board') {
       try { await initBoardPage(); } catch (error) { logToFile('error', `白板初始化失败: ${error?.stack || error}`); }
-    }
-    if (id === 'nav-table') {
-      try { await initSheetPage(); } catch (error) { logToFile('error', `表格页初始化失败: ${error?.stack || error}`); }
     }
   };
 
@@ -579,64 +594,205 @@ function setupRouting() {
   window.__wrRouteTo = show;
 
   const lastSubview = localStorage.getItem('workRecorder:lastSubview');
-  show(routes.some(route => route.id === lastSubview) ? lastSubview : 'nav-dashboard');
+  show(routes.some(route => route.id === lastSubview) ? lastSubview : 'nav-table');
 }
 
-// 记录页的视图切换：时间流 / 表格（表格即 tablePage.js 渲染的 logs 表）。
-// 用 inline style.display 而不是 hidden 属性或 classList —— 早期层给容器写过
-// display !important，hidden 会被压掉（笔记视图泄漏事故同源的坑）。
-// 选择保存在 localStorage，路由切回来时保持用户上次停的那个视图。
+// 表格页 = 两层：表库（列表）→ 表内。
+//
+// 为什么不再用一排 tab 把所有表摊在顶上：表一多，顶上全是名字，
+// 层级消失，跟"打开文件夹再进文件"的心智对不上。改成先看列表、点进去才是表，
+// 返回键回列表。表内一切照旧（基础表走 tablePage，自建表走 sheetPage）。
+//
+// 基础表是固定项：第一行、没有 ⋯ 菜单、因此删不掉。
 function setupRecordsView() {
-  const panes = {
-    timeline: document.getElementById('timeline-container'),
-    table: document.getElementById('rec-table-pane')
+  const library = document.getElementById('table-library');
+  const detail = document.getElementById('table-detail');
+  const listEl = document.getElementById('lib-list');
+  const listCount = document.getElementById('lib-count');
+  const listEmpty = document.getElementById('lib-empty');
+  const newBtn = document.getElementById('lib-new-sheet');
+  const backBtn = document.getElementById('rec-back-btn');
+  const titleEl = document.getElementById('rec-title');
+  const basePane = document.getElementById('rec-table-pane');
+  const sheetPane = document.getElementById('sheet-pane');
+  const toolsEl = document.getElementById('base-table-tools');
+  const moreBtn = document.getElementById('sheet-more-btn');
+  if (!library || !detail || !listEl) return;
+
+  const icon = id => `<svg class="wr-icon" aria-hidden="true"><use href="#${id}"/></svg>`;
+
+  let sheetList = [];
+  let sheetReady = false;
+  let mode = 'list';      // list | detail
+  let current = 'base';   // base | sheet:<id>
+
+  const renderLibrary = () => {
+    const rows = [`
+      <div class="lib-row is-fixed" role="listitem" data-key="base" tabindex="0">
+        <span class="lib-icon">${icon('ic-table')}</span>
+        <span class="lib-main">
+          <span class="lib-name">基础表<i class="lib-badge">基础</i></span>
+          <span class="lib-meta">全部工作记录 · 固定保留</span>
+        </span>
+        <span class="lib-chevron">${icon('ic-chevron-right')}</span>
+      </div>`];
+
+    sheetList.forEach(item => {
+      rows.push(`
+      <div class="lib-row" role="listitem" tabindex="0" data-key="sheet:${escapeHtml(String(item.id))}">
+        <span class="lib-icon">${icon('ic-table')}</span>
+        <span class="lib-main">
+          <span class="lib-name">${escapeHtml(item.name)}</span>
+          <span class="lib-meta">${item.fieldCount} 字段 · ${item.rowCount} 条记录</span>
+        </span>
+        <button type="button" class="lib-more" data-more="sheet:${escapeHtml(String(item.id))}" aria-label="重命名或删除" title="重命名 / 删除">${icon('ic-dots')}</button>
+        <span class="lib-chevron">${icon('ic-chevron-right')}</span>
+      </div>`);
+    });
+
+    listEl.innerHTML = rows.join('');
+    if (listCount) listCount.textContent = `${sheetList.length + 1} 个表`;
+    if (listEmpty) listEmpty.style.display = sheetList.length ? 'none' : '';
   };
-  const segBtns = Array.from(document.querySelectorAll('[data-rec-view]'));
-  if (!panes.timeline || !panes.table || !segBtns.length) return;
 
-  let currentView = '';
+  const setMode = next => {
+    mode = next;
+    const isList = next === 'list';
+    library.style.display = isList ? '' : 'none';
+    detail.style.display = isList ? 'none' : 'flex';
+  };
 
-  const applyRecordsView = async (view) => {
-    const next = view === 'table' ? 'table' : 'timeline';
-    const firstApply = currentView === '';
-    currentView = next;
+  const openDetail = async key => {
+    const isSheet = String(key).startsWith('sheet:');
+    current = key;
+    const hit = isSheet ? sheetList.find(item => `sheet:${item.id}` === key) : null;
+    if (titleEl) titleEl.textContent = isSheet ? (hit?.name || '表格') : '基础表';
+    // 空字符串 = 回到样式表默认值，不写死 display（早期层有 !important，硬写会被压）
+    basePane.style.display = isSheet ? 'none' : '';
+    sheetPane.style.display = isSheet ? '' : 'none';
+    if (toolsEl) toolsEl.style.display = isSheet ? 'none' : 'flex';
+    if (moreBtn) moreBtn.style.display = isSheet ? 'inline-flex' : 'none';
+    const countBadge = document.getElementById('rec-count');
+    if (countBadge) countBadge.style.display = isSheet ? 'none' : '';
+    setMode('detail');
 
-    panes.timeline.style.display = next === 'timeline' ? '' : 'none';
-    panes.table.style.display = next === 'table' ? '' : 'none';
-    // 筛选只对时间流有意义；表格自带字段面板，不需要这两个下拉。
-    document.querySelectorAll('.rec-filter').forEach(el => {
-      el.style.display = next === 'timeline' ? '' : 'none';
-    });
-    segBtns.forEach(btn => {
-      btn.setAttribute('aria-pressed', String(btn.dataset.recView === next));
-    });
-    localStorage.setItem('workRecorder:recordsView', next);
+    try {
+      if (!isSheet) { await initTablePage(); return; }
+      if (!sheetReady) { await initSheetPage(); sheetReady = true; }
+      await openSheetTab(String(key).slice('sheet:'.length));
+    } catch (error) {
+      logToFile('error', `[records-view] 打开表格失败: ${error?.stack || error}`);
+    }
+  };
 
-    if (next === 'table') {
-      await initTablePage();
+  const backToList = async () => {
+    setMode('list');
+    current = 'base';
+    try { sheetList = await refreshSheetList(); } catch (error) {
+      logToFile('error', `[records-view] 刷新表格列表失败: ${error?.stack || error}`);
+    }
+    renderLibrary();
+  };
+
+  newBtn?.addEventListener('click', () => openNewSheet());
+  backBtn?.addEventListener('click', () => { backToList(); });
+
+  listEl.addEventListener('click', event => {
+    const more = event.target.closest('.lib-more');
+    if (more) {
+      event.stopPropagation();
+      // 列表层没有「正打开的表」，按 id 取菜单目标
+      openSheetMenuFor(String(more.dataset.more || '').replace(/^sheet:/, ''), more);
       return;
     }
-    // 启动时首次落到时间流：initApp 刚 loadData + renderTimeline 过，不必重读。
-    if (firstApply) return;
-    // 从表格切回来必须重新读库：表格里的就地编辑只改了它自己的 rows，
-    // appData 还是旧缓存，直接重绘会显示改之前的值。
-    await loadData();
-    renderTimeline();
-    updateWorkspaceSummary();
-  };
+    const row = event.target.closest('.lib-row');
+    if (row) openDetail(row.dataset.key);
+  });
 
-  segBtns.forEach(btn => {
-    btn.addEventListener('click', () => {
-      applyRecordsView(btn.dataset.recView).catch(error => {
-        logToFile('error', `[records-view] 切换失败: ${error?.stack || error}`);
+  listEl.addEventListener('keydown', event => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    const row = event.target.closest('.lib-row');
+    if (!row || event.target !== row) return;
+    event.preventDefault();
+    openDetail(row.dataset.key);
+  });
+
+  moreBtn?.addEventListener('click', event => {
+    event.stopPropagation();
+    openCurrentSheetMenu(moreBtn);
+  });
+
+  // 表列表变了（新建 / 重命名 / 删除）就重画列表。
+  //
+  // 「自动进表」只给新建用：新建后 currentSheetId 指向一张**上一版列表里没有**的表。
+  // 以前这里只看 currentSheetId 有没有值 —— 于是「打开过某张表 → 返回列表 → 改名 / 删别人」
+  // 都会被拽回那张表里，用户只是想改个名字却被弹进表内。
+  onSheetListChange((list, meta) => {
+    sheetList = Array.isArray(list) ? list : [];
+    if (mode === 'list') renderLibrary();
+
+    const currentId = currentSheetId();
+    // 只有「刚建好」才自动进表：靠 sheetPage 显式给的 meta，而不是猜 currentSheetId
+    // 变化 —— 猜的话，「返回列表后改名 / 删表」也会把人拽进上次看的那张表。
+    if (meta && meta.autoOpen && currentId != null && current !== `sheet:${currentId}`) {
+      openDetail(`sheet:${currentId}`);
+      return;
+    }
+    if (mode === 'detail' && String(current).startsWith('sheet:') &&
+        !sheetList.some(item => `sheet:${item.id}` === current)) {
+      // 正在看的表被删了 → 回列表，别停在一片空白
+      backToList();
+    }
+  });
+
+  // 快速筛选 chips（全部 / 今天 / 待整理）：状态只存在 tablePage 里
+  const chips = Array.from(document.querySelectorAll('[data-rec-filter]'));
+  chips.forEach(chip => {
+    chip.addEventListener('click', () => {
+      chips.forEach(item => {
+        const on = item === chip;
+        item.classList.toggle('is-on', on);
+        item.setAttribute('aria-pressed', String(on));
       });
+      setTableFilter({ mode: chip.dataset.recFilter || 'all' });
     });
   });
 
-  applyRecordsView(localStorage.getItem('workRecorder:recordsView') === 'table' ? 'table' : 'timeline')
-    .catch(error => {
-      logToFile('error', `[records-view] 初始化失败: ${error?.stack || error}`);
-    });
+  const mainFilter = document.getElementById('timeline-main-filter');
+  const subFilter = document.getElementById('timeline-sub-filter');
+  mainFilter?.addEventListener('change', () => {
+    setTableFilter({ tag: mainFilter.value && mainFilter.value !== 'all' ? mainFilter.value : '' });
+  });
+  subFilter?.addEventListener('change', () => {
+    setTableFilter({ subTag: subFilter.value && subFilter.value !== 'all' ? subFilter.value : '' });
+  });
+
+  // 从别的页切回表格页：回到表库并刷新（别处可能新建/删过表）。
+  window.__wrRefreshRecordTable = () => backToList();
+  // 命令面板「新建表格」：先回表格页，再拉起工作表原有的新建弹层
+  window.__wrNewSheet = () => {
+    window.__wrRouteTo?.('nav-table');
+    setTimeout(() => {
+      setMode('list');
+      renderLibrary();
+      openNewSheet();
+    }, 80);
+  };
+
+  const boot = async () => {
+    try {
+      sheetList = await refreshSheetList();
+    } catch (error) {
+      logToFile('error', `[records-view] 读取表格列表失败: ${error?.stack || error}`);
+      sheetList = getSheetList();
+    }
+    renderLibrary();
+    setMode('list');
+  };
+
+  boot().catch(error => {
+    logToFile('error', `[records-view] 初始化失败: ${error?.stack || error}`);
+  });
 }
 
 function setupTabs() {

@@ -1,0 +1,1996 @@
+/* =====================================================================
+   WorkRecorder · 设计层 v4（收敛版）
+   ---------------------------------------------------------------------
+   与 v3 的关系：v3 是「白板风」的整屏皮肤，v4 是叠在它上面的**减法层**。
+   所有规则锁在 body[data-skin="v4"]，删掉这个属性即回到 v1.1.4 的 v3 界面。
+
+   三条硬规则（都是踩过的坑）：
+   1. 每条规则带 body[data-skin="v4"] 前缀。旧层有 id 级选择器（1,1,0），
+      单靠类名压不住；同权重时靠「后加载」取胜，所以本文件必须最后引入。
+   2. 绝不写 `display: !important`。路由用行内 style.display 切页，
+      一条 display !important 会把 hidden 的行内样式压掉（笔记泄漏事故）。
+      需要隐藏的静态元素，用行内 style 或 visibility。
+   3. 分隔线用「文字色调透明度」，不用 --color-border：浅色主题的 border
+      本身就是浅灰，再乘百分比会归零。
+   ===================================================================== */
+
+/* =====================================================================
+   1. 令牌：把界面收成「一个底 + 一档文字 + 四个状态色」
+   ---------------------------------------------------------------------
+   全部从主题的 --color-text / --bg-body 推导，不写死深色值，
+   5 套主题（dark / light / sakura / lavender / aurora）都能继续用。
+   ===================================================================== */
+
+body[data-skin="v4"] {
+  --v4-bg: var(--bg-body);
+  --v4-side: color-mix(in srgb, var(--color-text) 2.6%, var(--bg-body));
+  --v4-surface: color-mix(in srgb, var(--color-text) 4.5%, var(--bg-body));
+  --v4-surface-2: color-mix(in srgb, var(--color-text) 7.5%, var(--bg-body));
+  --v4-surface-3: color-mix(in srgb, var(--color-text) 11%, var(--bg-body));
+  --v4-line: color-mix(in srgb, var(--color-text) 8%, transparent);
+  --v4-line-2: color-mix(in srgb, var(--color-text) 15%, transparent);
+  --v4-text: var(--color-text);
+  --v4-text-2: color-mix(in srgb, var(--color-text) 66%, transparent);
+  --v4-text-3: color-mix(in srgb, var(--color-text) 44%, transparent);
+  /* 主按钮：深色主题是纸白底墨黑字，浅色主题反过来 */
+  --v4-solid: var(--color-text);
+  --v4-solid-ink: var(--bg-body);
+  --v4-todo: #d9a45b;
+  --v4-doing: #6e9bf5;
+  --v4-done: #61b78e;
+  --v4-note: #a78bfa;
+  --v4-sans: "Noto Sans SC", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --v4-serif: "Noto Serif SC", "Source Han Serif SC", "Songti SC", serif;
+
+  font-family: var(--v4-sans) !important;
+  font-size: 14px !important;
+  line-height: 1.5 !important;
+  color: var(--v4-text) !important;
+  background: var(--v4-bg) !important;
+}
+
+/* 主题自带的背景图/纹理全部收掉：v4 的质感靠留白和底色差，不靠花纹 */
+body[data-skin="v4"],
+body[data-skin="v4"]::before,
+body[data-skin="v4"]::after {
+  background-image: none !important;
+}
+
+/* =====================================================================
+   2. 骨架：侧栏 228 / 主区无网格
+   ===================================================================== */
+
+body[data-skin="v4"] #workspace-view {
+  grid-template-columns: 228px minmax(0, 1fr) !important;
+  background: var(--v4-bg) !important;
+}
+
+/* 侧栏宽度：v3 已把它写成 flex 容器里的 flex 项（`flex: 0 0 208px`），
+   此时 grid-template-columns 是空转的，flex-basis / width / max-width 三处
+   必须同时改，只改 width 一格都动不了（实测仍是 208）。 */
+body[data-skin="v4"] #workspace-view .sidebar {
+  flex: 0 0 228px !important;
+  width: 228px !important;
+  max-width: 228px !important;
+  padding: 20px 12px 14px !important;
+  background: var(--v4-side) !important;
+  background-image: none !important;
+  border-right: 1px solid var(--v4-line) !important;
+  box-shadow: none !important;
+}
+
+body[data-skin="v4"] #workspace-view .main-content {
+  padding: 0 !important;
+  background: var(--v4-bg) !important;
+  background-image: none !important;
+  border: 0 !important;
+  min-height: 0 !important;
+}
+
+/* 顶部窗口条：压到 28px，只留一条边 */
+body[data-skin="v4"] .custom-titlebar {
+  height: 28px !important;
+  min-height: 28px !important;
+  background: transparent !important;
+  border-bottom: 1px solid var(--v4-line) !important;
+}
+body[data-skin="v4"] .titlebar-left span {
+  color: var(--v4-text-3) !important;
+  font-size: 11px !important;
+  letter-spacing: .02em !important;
+}
+body[data-skin="v4"] .titlebar-btn { color: var(--v4-text-3) !important; }
+body[data-skin="v4"] .titlebar-btn:hover { background: var(--v4-surface-2) !important; color: var(--v4-text) !important; }
+
+/* =====================================================================
+   3. 侧栏
+   ===================================================================== */
+
+body[data-skin="v4"] .sidebar-brand {
+  padding: 0 8px 0 6px !important;
+  margin: 0 0 26px !important;
+  gap: 9px !important;
+}
+body[data-skin="v4"] .sidebar-brand-mark {
+  width: 24px !important;
+  height: 24px !important;
+  border-radius: 7px !important;
+  background: var(--v4-solid) !important;
+  color: var(--v4-solid-ink) !important;
+  font-size: 12.5px !important;
+  font-weight: 700 !important;
+  box-shadow: none !important;
+  border: 0 !important;
+}
+body[data-skin="v4"] .sidebar-brand h2 {
+  font-family: var(--v4-sans) !important;
+  font-size: 13px !important;
+  font-weight: 500 !important;
+  letter-spacing: .01em !important;
+  color: var(--v4-text) !important;
+}
+body[data-skin="v4"] .sidebar-brand p { display: none !important; }
+
+body[data-skin="v4"] .sidebar .nav-menu { gap: 2px !important; }
+body[data-skin="v4"] .sidebar .nav-item {
+  height: 34px !important;
+  min-height: 34px !important;
+  padding: 0 10px !important;
+  border-radius: 8px !important;
+  font-size: 13.5px !important;
+  font-weight: 500 !important;
+  color: var(--v4-text-2) !important;
+  background: transparent !important;
+  border: 0 !important;
+  gap: 10px !important;
+}
+body[data-skin="v4"] .sidebar .nav-item:hover {
+  background: var(--v4-surface) !important;
+  color: var(--v4-text) !important;
+}
+body[data-skin="v4"] .sidebar .nav-item.active {
+  background: var(--v4-surface-2) !important;
+  color: var(--v4-text) !important;
+  box-shadow: none !important;
+}
+body[data-skin="v4"] .sidebar .nav-item.active::after,
+body[data-skin="v4"] .sidebar .nav-item.active::before { display: none !important; }
+body[data-skin="v4"] .nav-item-icon svg {
+  width: 16px !important;
+  height: 16px !important;
+  opacity: .9 !important;
+}
+body[data-skin="v4"] .sidebar-foot { gap: 2px !important; }
+body[data-skin="v4"] .sidebar-cmdk {
+  height: 34px !important;
+  padding: 0 10px !important;
+  border-radius: 8px !important;
+  background: transparent !important;
+  border: 0 !important;
+  color: var(--v4-text-2) !important;
+  font-size: 13.5px !important;
+}
+body[data-skin="v4"] .sidebar-cmdk:hover { background: var(--v4-surface) !important; color: var(--v4-text) !important; }
+body[data-skin="v4"] .sidebar-cmdk-kbd {
+  background: var(--v4-surface-2) !important;
+  color: var(--v4-text-3) !important;
+  border: 0 !important;
+  border-radius: 5px !important;
+  font-size: 10.5px !important;
+  padding: 1px 5px !important;
+}
+
+/* =====================================================================
+   4. 表格页（记录表）
+   ===================================================================== */
+
+body[data-skin="v4"] #subview-timeline {
+  padding: 0 !important;
+  background: transparent !important;
+}
+
+body[data-skin="v4"] .rec-head {
+  height: 66px !important;
+  min-height: 66px !important;
+  padding: 0 28px !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 10px !important;
+  border: 0 !important;
+  background: transparent !important;
+}
+body[data-skin="v4"] .rec-head-left {
+  display: flex !important;
+  align-items: center !important;
+  gap: 16px !important;
+  min-width: 0 !important;
+}
+body[data-skin="v4"] .rec-head h1 {
+  font-family: var(--v4-serif) !important;
+  font-size: 23px !important;
+  font-weight: 600 !important;
+  line-height: 1 !important;
+  letter-spacing: .015em !important;
+  color: var(--v4-text) !important;
+  margin: 0 !important;
+}
+body[data-skin="v4"] .rec-head-count { display: none !important; }
+body[data-skin="v4"] .rec-head-right { gap: 6px !important; }
+
+body[data-skin="v4"] .v4-chips {
+  display: flex !important;
+  align-items: center !important;
+  gap: 4px !important;
+}
+body[data-skin="v4"] .v4-chip {
+  height: 27px !important;
+  padding: 0 11px !important;
+  border-radius: 7px !important;
+  font-family: var(--v4-sans) !important;
+  font-size: 13px !important;
+  font-weight: 450 !important;
+  color: var(--v4-text-2) !important;
+  background: transparent !important;
+  border: 0 !important;
+  transition: background .14s ease, color .14s ease !important;
+}
+body[data-skin="v4"] .v4-chip:hover { color: var(--v4-text) !important; }
+body[data-skin="v4"] .v4-chip.is-on {
+  background: var(--v4-surface-2) !important;
+  color: var(--v4-text) !important;
+  font-weight: 500 !important;
+}
+
+/* 项目 / 子项目：从「下拉框」改成安静的文字按钮 */
+body[data-skin="v4"] .rec-filter { position: relative !important; }
+body[data-skin="v4"] .rec-filter select {
+  height: 30px !important;
+  /* 没有 min-width 时，空选项的 select 只剩我们自己画的那个箭头，
+     表头上会出现两个无字的下箭头（看着像坏掉的按钮）。 */
+  min-width: 76px !important;
+  padding: 0 26px 0 10px !important;
+  border: 0 !important;
+  border-radius: 7px !important;
+  background: transparent !important;
+  color: var(--v4-text-2) !important;
+  font-family: var(--v4-sans) !important;
+  font-size: 12.5px !important;
+  appearance: none !important;
+  cursor: pointer !important;
+}
+body[data-skin="v4"] .rec-filter select:hover { background: var(--v4-surface) !important; color: var(--v4-text) !important; }
+body[data-skin="v4"] .rec-filter::after {
+  content: "";
+  position: absolute;
+  right: 9px;
+  top: 50%;
+  width: 5px;
+  height: 5px;
+  margin-top: -4px;
+  border-right: 1.4px solid var(--v4-text-3);
+  border-bottom: 1.4px solid var(--v4-text-3);
+  transform: rotate(45deg);
+  pointer-events: none;
+}
+
+body[data-skin="v4"] #rec-add-btn {
+  height: 31px !important;
+  padding: 0 13px !important;
+  border: 0 !important;
+  border-radius: 8px !important;
+  background: var(--v4-solid) !important;
+  color: var(--v4-solid-ink) !important;
+  font-family: var(--v4-sans) !important;
+  font-size: 13px !important;
+  font-weight: 600 !important;
+  box-shadow: none !important;
+}
+body[data-skin="v4"] #rec-add-btn:hover { filter: brightness(.94) !important; }
+
+body[data-skin="v4"] .rec-table-pane {
+  padding: 6px 16px 40px !important;
+  background: transparent !important;
+}
+body[data-skin="v4"] .rec-table-bar {
+  height: 32px !important;
+  display: flex !important;
+  justify-content: flex-end !important;
+  align-items: center !important;
+  padding: 0 12px !important;
+}
+body[data-skin="v4"] #table-fields-btn {
+  height: 26px !important;
+  padding: 0 8px !important;
+  border: 0 !important;
+  border-radius: 6px !important;
+  background: transparent !important;
+  color: var(--v4-text-3) !important;
+  font-size: 12.5px !important;
+}
+body[data-skin="v4"] #table-fields-btn:hover { background: var(--v4-surface-2) !important; color: var(--v4-text) !important; }
+
+/* ---- 表格本体：去掉外框，只留横向发丝线 ---- */
+body[data-skin="v4"] .wr-table-shell {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  overflow: visible !important;
+}
+body[data-skin="v4"] .wr-table-scroll {
+  max-height: calc(100vh - 210px) !important;
+  overflow: auto !important;
+}
+body[data-skin="v4"] .wr-table {
+  min-width: 940px !important;
+  border-collapse: separate !important;
+  border-spacing: 0 !important;
+}
+body[data-skin="v4"] .wr-table thead th {
+  background: transparent !important;
+  border-bottom: 1px solid var(--v4-line) !important;
+  border-top: 0 !important;
+}
+body[data-skin="v4"] .wr-th-btn {
+  height: 34px !important;
+  padding: 0 12px !important;
+  gap: 6px !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  letter-spacing: .02em !important;
+  color: var(--v4-text-3) !important;
+  background: transparent !important;
+}
+body[data-skin="v4"] .wr-th-btn:hover { color: var(--v4-text) !important; background: transparent !important; }
+/* 列头的字段类型图标（A / ⊙ / ✳ / ⟳）在这里是纯装饰：它们和标签同亮度，
+   十来个小符号把一行表头切碎，却没人靠它认列。字段类型要点开列头菜单才看得到，
+   那才是它该出现的地方。这是叶子 SVG，不参与任何行内显隐切换，压掉是安全的。 */
+body[data-skin="v4"] .wr-th-btn .ft-type-icon { display: none !important; }
+body[data-skin="v4"] .wr-th-add-btn { font-size: 13px !important; color: var(--v4-text-3) !important; }
+
+body[data-skin="v4"] .wr-table-td {
+  padding: 0 !important;
+  border-bottom: 1px solid var(--v4-line) !important;
+  background: transparent !important;
+}
+body[data-skin="v4"] .wr-table-row:hover .wr-table-td { background: var(--v4-surface) !important; }
+body[data-skin="v4"] .wr-table-row:hover .wr-table-td:first-child { border-radius: 8px 0 0 8px !important; }
+body[data-skin="v4"] .wr-table-row:hover .wr-table-td:last-child { border-radius: 0 8px 8px 0 !important; }
+
+body[data-skin="v4"] .wr-cell {
+  min-height: 46px !important;
+  padding: 0 12px !important;
+  display: flex !important;
+  align-items: center !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  font-size: 13.5px !important;
+  color: var(--v4-text) !important;
+  background: transparent !important;
+}
+body[data-skin="v4"] .wr-cell:hover { background: var(--v4-surface-2) !important; border: 0 !important; }
+body[data-skin="v4"] .wr-cell.ft-cell-editing { background: var(--v4-surface-2) !important; }
+
+body[data-skin="v4"] .ft-text {
+  font-size: 13.5px !important;
+  color: var(--v4-text) !important;
+  font-weight: 450 !important;
+}
+body[data-skin="v4"] .ft-cell-empty { color: var(--v4-text-3) !important; font-size: 12.5px !important; }
+
+/* 状态：圆点 + 文字，不再是彩色药丸 */
+body[data-skin="v4"] .ft-status {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 7px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  color: var(--v4-text-2) !important;
+  font-size: 13px !important;
+  font-weight: 400 !important;
+}
+body[data-skin="v4"] .ft-status-dot {
+  width: 6px !important;
+  height: 6px !important;
+  border-radius: 99px !important;
+  background: var(--pill, var(--v4-text-3)) !important;
+  box-shadow: none !important;
+}
+
+/* 标签：从药丸改成一行安静的文字 */
+body[data-skin="v4"] .ft-pill-group { display: inline-flex !important; gap: 6px !important; flex-wrap: nowrap !important; }
+body[data-skin="v4"] .ft-pill {
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  color: var(--v4-text-3) !important;
+  font-size: 12.5px !important;
+  font-weight: 400 !important;
+}
+body[data-skin="v4"] .ft-pill::before { display: none !important; }
+
+body[data-skin="v4"] .ft-date {
+  color: var(--v4-text-3) !important;
+  font-size: 12.5px !important;
+  font-variant-numeric: tabular-nums !important;
+}
+
+body[data-skin="v4"] .wr-table-empty { padding: 58px 16px !important; color: var(--v4-text-3) !important; font-size: 13px !important; }
+
+body[data-skin="v4"] .wr-table-footer {
+  border-top: 0 !important;
+  padding: 0 !important;
+}
+body[data-skin="v4"] .wr-table-addrow {
+  height: 44px !important;
+  padding: 0 12px !important;
+  text-align: left !important;
+  color: var(--v4-text-3) !important;
+  font-size: 13px !important;
+  background: transparent !important;
+  border-top: 1px solid transparent !important;
+}
+body[data-skin="v4"] .wr-table-addrow:hover { color: var(--v4-text) !important; border-top-color: var(--v4-line) !important; }
+
+/* 字段面板 / 下拉：与主界面同材质。
+   .wr-colmenu 只是定位壳（flex 容器），真正画底的是里面两块 main/types ——
+   以前把底、描边、阴影都写在壳上，等于没画：壳透明，列菜单一直是旧的 #1e293b，
+   比浮层新材质亮一大档。这里把材质下沉到两块面板，壳退回纯定位。 */
+body[data-skin="v4"] .wr-colmenu-main,
+body[data-skin="v4"] .wr-colmenu-types,
+body[data-skin="v4"] .ft-dropdown {
+  background: var(--v4-surface) !important;
+  border: 1px solid var(--v4-line-2) !important;
+  border-radius: 12px !important;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, .45) !important;
+}
+body[data-skin="v4"] .wr-colmenu {
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  border-radius: 0 !important;
+}
+
+/* =====================================================================
+   5. 下线时间流：容器与分段控件必须强制隐藏
+   ---------------------------------------------------------------------
+   这两个元素不是路由容器，只由 setupRecordsView 用行内 display 切换。
+   行内 display:none 会被旧层的 display:flex !important 压掉，
+   所以这里必须 !important —— 这是本层唯一允许写 display 的地方。
+   ===================================================================== */
+
+body[data-skin="v4"] #timeline-container { display: none !important; }
+body[data-skin="v4"] .rec-seg { display: none !important; }
+
+/* 主题底：v3 把底色画在 body::before 上，v4 保持同一策略 */
+body[data-skin="v4"]::before {
+  background-color: var(--v4-bg) !important;
+  background-image: none !important;
+  opacity: 1 !important;
+}
+
+/* =====================================================================
+   6. 表头控件（提高权重，压掉 #subview-timeline.records-v2 的 id 级规则）
+   ===================================================================== */
+
+body[data-skin="v4"] #subview-timeline.records-v2 .rec-filter select {
+  /* 空选项时也要留住宽度，否则表头上只剩两颗无字的下箭头 */
+  min-width: 76px !important;
+  height: 30px !important;
+  padding: 0 24px 0 10px !important;
+  border: 0 !important;
+  border-radius: 7px !important;
+  background: transparent !important;
+  color: var(--v4-text-2) !important;
+  font-family: var(--v4-sans) !important;
+  font-size: 12.5px !important;
+  appearance: none !important;
+  cursor: pointer !important;
+}
+body[data-skin="v4"] #subview-timeline.records-v2 .rec-filter select:hover {
+  background: var(--v4-surface) !important;
+  color: var(--v4-text) !important;
+}
+
+body[data-skin="v4"] #subview-timeline.records-v2 #rec-add-btn {
+  height: 31px !important;
+  min-height: 0 !important;
+  padding: 0 13px !important;
+  border: 0 !important;
+  border-radius: 8px !important;
+  background: var(--v4-solid) !important;
+  color: var(--v4-solid-ink) !important;
+  font-family: var(--v4-sans) !important;
+  font-size: 13px !important;
+  font-weight: 600 !important;
+  line-height: 1 !important;
+  box-shadow: none !important;
+}
+
+body[data-skin="v4"] .rec-head-right #table-fields-btn {
+  height: 30px !important;
+  padding: 0 10px !important;
+  border: 0 !important;
+  border-radius: 7px !important;
+  background: transparent !important;
+  color: var(--v4-text-3) !important;
+  font-family: var(--v4-sans) !important;
+  font-size: 12.5px !important;
+  font-weight: 400 !important;
+  box-shadow: none !important;
+}
+body[data-skin="v4"] .rec-head-right #table-fields-btn:hover {
+  background: var(--v4-surface) !important;
+  color: var(--v4-text) !important;
+}
+
+body[data-skin="v4"] .rec-table-pane { padding-top: 0 !important; }
+
+/* =====================================================================
+   7. 白板：点阵画布 + 中性便签 + 色轨
+   ---------------------------------------------------------------------
+   便签的背景色由 board.js 以内联 --bd-note-bg 给出（浅色 pastel）。
+   v4 不再整块涂色：底色收到中性面，颜色只留 3px 左轨 ——
+   6 种糖果色铺满画布是「廉价感」的主要来源。
+   ===================================================================== */
+
+body[data-skin="v4"] .bd-view {
+  left: 228px !important;
+  top: 28px !important;
+  background: var(--v4-bg) !important;
+}
+
+body[data-skin="v4"] .bd-bar {
+  flex: 0 0 66px !important;
+  height: 66px !important;
+  padding: 0 24px 0 28px !important;
+  gap: 12px !important;
+  border-bottom: 0 !important;
+  background: var(--v4-bg) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+body[data-skin="v4"] .bd-title {
+  font-family: var(--v4-serif) !important;
+  font-size: 23px !important;
+  font-weight: 600 !important;
+  letter-spacing: .015em !important;
+  color: var(--v4-text) !important;
+}
+body[data-skin="v4"] .bd-save {
+  margin-left: 2px !important;
+  color: var(--v4-text-3) !important;
+  font-size: 12px !important;
+  gap: 6px !important;
+}
+body[data-skin="v4"] .bd-save i { width: 5px !important; height: 5px !important; box-shadow: none !important; }
+
+body[data-skin="v4"] .bd-tools {
+  gap: 2px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  margin-left: 6px !important;
+}
+body[data-skin="v4"] .bd-tool {
+  width: 30px !important;
+  height: 30px !important;
+  border-radius: 7px !important;
+  color: var(--v4-text-2) !important;
+  background: transparent !important;
+}
+body[data-skin="v4"] .bd-tool svg { width: 16px !important; height: 16px !important; }
+body[data-skin="v4"] .bd-tool:hover { background: var(--v4-surface-2) !important; color: var(--v4-text) !important; }
+body[data-skin="v4"] .bd-tool.active {
+  background: var(--v4-surface-2) !important;
+  color: var(--v4-text) !important;
+  box-shadow: none !important;
+}
+
+body[data-skin="v4"] .bd-zoom {
+  height: 30px !important;
+  border: 1px solid var(--v4-line) !important;
+  border-radius: 8px !important;
+  background: transparent !important;
+  overflow: hidden !important;
+}
+body[data-skin="v4"] .bd-zoom button { width: 26px !important; height: 30px !important; color: var(--v4-text-2) !important; }
+body[data-skin="v4"] .bd-zoom button:hover { background: var(--v4-surface-2) !important; color: var(--v4-text) !important; }
+body[data-skin="v4"] .bd-zoom-label {
+  min-width: 38px !important;
+  font-size: 12px !important;
+  color: var(--v4-text-2) !important;
+  font-variant-numeric: tabular-nums !important;
+}
+body[data-skin="v4"] #bd-fit-btn {
+  width: 30px !important;
+  height: 30px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 7px !important;
+  background: transparent !important;
+  color: var(--v4-text-2) !important;
+}
+body[data-skin="v4"] #bd-fit-btn:hover { background: var(--v4-surface-2) !important; color: var(--v4-text) !important; }
+body[data-skin="v4"] #bd-new-btn {
+  height: 31px !important;
+  padding: 0 13px !important;
+  border: 0 !important;
+  border-radius: 8px !important;
+  background: var(--v4-solid) !important;
+  color: var(--v4-solid-ink) !important;
+  font-family: var(--v4-sans) !important;
+  font-size: 13px !important;
+  font-weight: 600 !important;
+  box-shadow: none !important;
+}
+
+/* 画布铺满：v3 给 .bd-stage 写的是 flex:1，前提是 .bd-view 为 flex 列 ——
+   实测它是 display:block（被更高权重的规则定死），flex 失效后 stage 高度算成 0，
+   便签全被 overflow:hidden 裁掉，画布一片空白。
+   这里不改 display（.bd-view 就是路由目标，写 display 会压掉行内 none），
+   改成绝对定位铺满，与父级是否 flex 无关。 */
+body[data-skin="v4"] .bd-stage {
+  position: absolute !important;
+  left: 0 !important;
+  right: 0 !important;
+  top: 66px !important;
+  bottom: 0 !important;
+  height: auto !important;
+  background-color: var(--v4-bg) !important;
+}
+body[data-skin="v4"] .bd-grid-major { display: none !important; }
+body[data-skin="v4"] .bd-grid-minor {
+  background-image: radial-gradient(circle at 1px 1px,
+      color-mix(in srgb, var(--color-text) 9%, transparent) 1px, transparent 0) !important;
+  background-size: 24px 24px !important;
+}
+body[data-skin="v4"] .bd-hint { display: none !important; }
+body[data-skin="v4"] .bd-empty-title {
+  font-family: var(--v4-serif) !important;
+  font-size: 19px !important;
+  font-weight: 600 !important;
+  color: var(--v4-text-2) !important;
+}
+body[data-skin="v4"] .bd-empty-hint { font-size: 13px !important; color: var(--v4-text-3) !important; }
+
+body[data-skin="v4"] .bd-note {
+  padding: 14px 16px 16px !important;
+  border: 1px solid var(--v4-line) !important;
+  border-left: 3px solid var(--bd-note-bg, #d9a45b) !important;
+  border-radius: 12px !important;
+  background: var(--v4-surface) !important;
+  background-image: none !important;
+  color: var(--v4-text) !important;
+  font-size: 13.5px !important;
+  line-height: 1.62 !important;
+  box-shadow: 0 12px 28px -18px rgba(0, 0, 0, .55) !important;
+}
+body[data-skin="v4"] .bd-note:hover { box-shadow: 0 16px 34px -18px rgba(0, 0, 0, .62) !important; }
+body[data-skin="v4"] .bd-note.selected,
+body[data-skin="v4"] .bd-note.dragging,
+body[data-skin="v4"] .bd-note.editing {
+  box-shadow: 0 0 0 1.5px var(--color-primary), 0 16px 34px -18px rgba(0, 0, 0, .6) !important;
+}
+body[data-skin="v4"] .bd-note-head {
+  margin-bottom: 7px !important;
+  color: var(--v4-text-3) !important;
+  font-size: 11.5px !important;
+  letter-spacing: .01em !important;
+}
+body[data-skin="v4"] .bd-note-dot { width: 5px !important; height: 5px !important; }
+body[data-skin="v4"] .bd-note-body { color: var(--v4-text) !important; }
+body[data-skin="v4"] .bd-note-body:empty::before { color: var(--v4-text-3) !important; }
+body[data-skin="v4"] .bd-note-foot { display: none !important; }
+body[data-skin="v4"] .bd-edge-line { stroke: color-mix(in srgb, var(--color-text) 18%, transparent) !important; stroke-width: 1.4 !important; }
+body[data-skin="v4"] .bd-edge-arrow { fill: color-mix(in srgb, var(--color-text) 22%, transparent) !important; }
+
+/* =====================================================================
+   8. 笔记：296 列表 + 760 版心，去掉字数与页脚杂项
+   ===================================================================== */
+
+body[data-skin="v4"] .notes-workbench {
+  grid-template-columns: 296px minmax(0, 1fr) !important;
+  /* 不撑满时两块面板只有内容那么高（实测 300 / 732），
+     列表与正文之间的竖分隔线会画一半就断在半空。 */
+  height: 100% !important;
+  min-height: 0 !important;
+  background: transparent !important;
+}
+body[data-skin="v4"] .notes-list-pane {
+  border-right: 1px solid var(--v4-line) !important;
+  padding: 0 !important;
+}
+body[data-skin="v4"] .nt-list-head {
+  height: 66px !important;
+  min-height: 66px !important;
+  padding: 0 16px 0 24px !important;
+  border-bottom: 0 !important;
+  gap: 8px !important;
+}
+body[data-skin="v4"] .nt-list-title {
+  font-family: var(--v4-serif) !important;
+  font-size: 21px !important;
+  font-weight: 600 !important;
+  letter-spacing: .015em !important;
+  color: var(--v4-text) !important;
+}
+body[data-skin="v4"] .notes-list-meta { display: none !important; }
+body[data-skin="v4"] #note-search-toggle,
+body[data-skin="v4"] #note-open-folder-btn { display: none !important; }
+body[data-skin="v4"] .nt-new-btn {
+  width: 28px !important;
+  height: 28px !important;
+  border-radius: 7px !important;
+  color: var(--v4-text-2) !important;
+}
+body[data-skin="v4"] .nt-new-btn:hover { background: var(--v4-surface-2) !important; color: var(--v4-text) !important; }
+
+body[data-skin="v4"] .nt-search-row { padding: 0 16px 10px !important; }
+body[data-skin="v4"] .nt-search-input {
+  height: 32px !important;
+  border: 1px solid transparent !important;
+  border-radius: 8px !important;
+  background: var(--v4-surface) !important;
+  color: var(--v4-text) !important;
+  font-size: 12.5px !important;
+  padding: 0 10px !important;
+}
+
+body[data-skin="v4"] .notes-list-scroll { padding: 2px 8px 20px !important; }
+body[data-skin="v4"] .notes-list-item {
+  padding: 11px 12px !important;
+  border-radius: 9px !important;
+  margin-bottom: 1px !important;
+}
+body[data-skin="v4"] .notes-list-item:hover { background: var(--v4-surface) !important; }
+body[data-skin="v4"] .notes-list-item.active { background: var(--v4-surface-2) !important; }
+body[data-skin="v4"] .notes-list-item-title {
+  font-size: 13.5px !important;
+  font-weight: 500 !important;
+  color: var(--v4-text) !important;
+}
+body[data-skin="v4"] .notes-list-item-meta {
+  font-size: 12.5px !important;
+  color: var(--v4-text-3) !important;
+  opacity: 1 !important;
+  margin-top: 3px !important;
+}
+
+body[data-skin="v4"] .note-editor-pane { padding: 0 !important; }
+body[data-skin="v4"] .nt-doc-head {
+  height: 66px !important;
+  /* 与 .note-split 的 40px 缩进对齐：标题比正文左 20px 时，
+     整块正文看起来是「歪」的，而且越长的文档越明显。 */
+  padding: 0 40px !important;
+  border-bottom: 0 !important;
+  margin: 0 !important;
+}
+body[data-skin="v4"] .nt-title-input {
+  font-family: var(--v4-serif) !important;
+  font-size: 30px !important;
+  font-weight: 600 !important;
+  letter-spacing: .01em !important;
+  color: var(--v4-text) !important;
+  height: auto !important;
+  padding: 0 !important;
+}
+body[data-skin="v4"] .nt-doc-head-right { gap: 4px !important; }
+body[data-skin="v4"] .nt-seg {
+  border: 0 !important;
+  background: transparent !important;
+  padding: 0 !important;
+  gap: 2px !important;
+}
+body[data-skin="v4"] .nt-seg-btn {
+  height: 26px !important;
+  padding: 0 8px !important;
+  border-radius: 6px !important;
+  font-size: 12px !important;
+  color: var(--v4-text-3) !important;
+  background: transparent !important;
+}
+body[data-skin="v4"] .nt-seg-btn[aria-pressed="true"] { background: var(--v4-surface-2) !important; color: var(--v4-text) !important; }
+body[data-skin="v4"] .note-editor-status { font-size: 11.5px !important; color: var(--v4-text-3) !important; }
+
+body[data-skin="v4"] .nt-sub-row { padding: 0 40px 8px !important; }
+body[data-skin="v4"] .note-split { padding: 0 40px !important; }
+body[data-skin="v4"] .note-split-half { max-width: 760px !important; }
+body[data-skin="v4"] .note-source-input {
+  font-family: var(--v4-sans) !important;
+  font-size: 15.5px !important;
+  line-height: 1.9 !important;
+  color: var(--v4-text) !important;
+  padding: 8px 0 60px !important;
+}
+body[data-skin="v4"] .note-preview { font-size: 15.5px !important; line-height: 1.9 !important; }
+body[data-skin="v4"] .nt-doc-foot { display: none !important; }
+body[data-skin="v4"] .nt-empty-hint { display: none !important; }
+body[data-skin="v4"] .note-editor-empty { color: var(--v4-text-3) !important; }
+
+/* =====================================================================
+   9. 全局浮层：捕获 / 命令面板
+
+   捕获浮层在 v4 里从「工作台内部的一块」搬到了 <body> 下（工作台视图已下线），
+   所以 `#subview-dashboard.wb-v2 .wb-popover` 那一整套定位与外观**全部失效**。
+   这里不是微调，而是重新给它完整定位 —— 否则它会退回文档流成为页面底部的一个
+   普通 div，表现为「点了 ＋ 新建 看着没反应」。
+   ===================================================================== */
+
+body[data-skin="v4"] .wb-popover {
+  position: fixed !important;
+  z-index: 9200 !important;
+  top: 50% !important;
+  left: 50% !important;
+  transform: translate(-50%, -50%) !important;
+  width: min(620px, calc(100vw - 72px)) !important;
+  max-height: calc(100vh - 96px) !important;
+  overflow: auto !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 1px solid var(--v4-line-2) !important;
+  border-radius: 14px !important;
+  background: var(--v4-surface) !important;
+  /* 用 100vmax 的扩散阴影当遮罩：不额外造 DOM、不参与点击命中判断，
+     点空白关闭仍然走 setupDashboardChrome 里的 document click。 */
+  box-shadow:
+    0 0 0 100vmax rgba(0, 0, 0, 0.46),
+    0 28px 80px -24px rgba(0, 0, 0, 0.55) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+body[data-skin="v4"] .wb-popover[hidden] { display: none !important; }
+
+/* 卡片里再套一张卡片没有意义：浮层本身就是那块面 */
+body[data-skin="v4"] .wb-popover .composer-card {
+  margin: 0 !important;
+  padding: 18px 20px 12px !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* 旧层给 .quick-capture 写死了 background:#fff、给 footer 写了浅灰底（浅色主题时代的遗留）。
+   深色主题下这里会变成一块白卡 + 白字，实测整块面板不可读。 */
+body[data-skin="v4"] .wb-popover .quick-capture {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+  overflow: visible !important;
+}
+body[data-skin="v4"] .wb-popover .quick-capture-footer {
+  background: transparent !important;
+  background-image: none !important;
+}
+
+/* 「快速记录」是自我说明 —— 输入框的 placeholder 已经把这件事说完了。
+   草稿状态保留（它是有信息量的：正在保存 / 已存草稿）。 */
+body[data-skin="v4"] .wb-popover .composer-eyebrow {
+  padding: 0 !important;
+  margin: 0 0 4px !important;
+  min-height: 0 !important;
+  justify-content: flex-end !important;
+  border: 0 !important;
+}
+body[data-skin="v4"] .wb-popover .composer-eyebrow-label { display: none !important; }
+body[data-skin="v4"] .wb-popover .quick-capture-draft-status {
+  font-size: 11.5px !important;
+  color: var(--v4-text-3) !important;
+}
+
+body[data-skin="v4"] .wb-popover .quick-capture-input {
+  width: 100% !important;
+  /* 默认像一条输入框而不是一块文本框：写两句就自然长高（textarea 自带 auto-grow，
+     上限 42vh）。92px 的初版让浮层看着像个大表单。 */
+  min-height: 72px !important;
+  max-height: 42vh !important;
+  padding: 2px 0 10px !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  font-family: var(--v4-sans) !important;
+  font-size: 16px !important;
+  line-height: 1.8 !important;
+  color: var(--v4-text) !important;
+  resize: none !important;
+}
+body[data-skin="v4"] .wb-popover .quick-capture-input::placeholder { color: var(--v4-text-3) !important; }
+
+body[data-skin="v4"] .wb-popover .quick-capture-footer {
+  display: flex !important;
+  align-items: center !important;
+  gap: 2px !important;
+  flex-wrap: wrap !important;
+  margin: 0 !important;
+  padding: 10px 0 0 !important;
+  border-top: 1px solid var(--v4-line) !important;
+}
+/* 快捷键提示是「小字解释」的典型：会的人不看，不会的人也不看。
+   真要找，悬停 ＋ 新建 的 title 里写着。 */
+body[data-skin="v4"] .wb-popover .quick-capture-hint { display: none !important; }
+body[data-skin="v4"] .wb-popover .quick-capture-toast {
+  margin-right: auto !important;
+  font-size: 12px !important;
+  color: var(--v4-text-3) !important;
+}
+
+/* 三个「转成…」是次要出口：安静的文字按钮，不抢保存键的位置 */
+body[data-skin="v4"] .wb-popover .quick-todo-btn,
+body[data-skin="v4"] .wb-popover .quick-note-direct-btn,
+body[data-skin="v4"] .wb-popover .quick-log-direct-btn {
+  height: 30px !important;
+  padding: 0 10px !important;
+  border: 0 !important;
+  border-radius: 8px !important;
+  background: transparent !important;
+  color: var(--v4-text-3) !important;
+  font-size: 12.5px !important;
+  font-weight: 500 !important;
+  box-shadow: none !important;
+}
+body[data-skin="v4"] .wb-popover .quick-todo-btn:hover,
+body[data-skin="v4"] .wb-popover .quick-note-direct-btn:hover,
+body[data-skin="v4"] .wb-popover .quick-log-direct-btn:hover {
+  background: var(--v4-surface-2) !important;
+  color: var(--v4-text) !important;
+}
+
+body[data-skin="v4"] .wb-popover .quick-save-btn {
+  height: 30px !important;
+  padding: 0 16px !important;
+  border: 0 !important;
+  border-radius: 8px !important;
+  background: var(--v4-solid) !important;
+  color: var(--v4-solid-ink) !important;
+  font-size: 12.5px !important;
+  font-weight: 600 !important;
+  box-shadow: none !important;
+}
+body[data-skin="v4"] .wb-popover .quick-save-btn:hover { opacity: .88 !important; }
+body[data-skin="v4"] .wb-popover .quick-save-btn:disabled { opacity: .4 !important; }
+
+/* ---------------------------------------------------------------------
+   命令面板：全应用唯一搜索入口，也是「工作表 / 设置」的第二层入口
+   --------------------------------------------------------------------- */
+
+body[data-skin="v4"] .cmdk-overlay {
+  padding: 12vh 16px 16px !important;
+  background: rgba(0, 0, 0, 0.5) !important;
+  backdrop-filter: blur(4px) !important;
+  -webkit-backdrop-filter: blur(4px) !important;
+}
+body[data-skin="v4"] .cmdk {
+  width: min(640px, 100%) !important;
+  border: 1px solid var(--v4-line-2) !important;
+  border-radius: 14px !important;
+  background: var(--v4-surface) !important;
+  box-shadow: 0 30px 90px -26px rgba(0, 0, 0, 0.62) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+body[data-skin="v4"] .cmdk-bar {
+  padding: 0 14px !important;
+  border-bottom: 1px solid var(--v4-line) !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+}
+body[data-skin="v4"] .cmdk-input {
+  font-size: 14.5px !important;
+  color: var(--v4-text) !important;
+}
+body[data-skin="v4"] .cmdk-input::placeholder { color: var(--v4-text-3) !important; }
+/* Esc 提示不写成按钮形状：它不是可点的主要动作，写成键帽就够 */
+body[data-skin="v4"] .cmdk-close {
+  height: 22px !important;
+  padding: 0 7px !important;
+  border: 1px solid var(--v4-line) !important;
+  border-radius: 5px !important;
+  background: transparent !important;
+  color: var(--v4-text-3) !important;
+  font-family: var(--v4-sans) !important;
+  font-size: 10.5px !important;
+  line-height: 1 !important;
+  cursor: pointer !important;
+}
+body[data-skin="v4"] .cmdk-close:hover { color: var(--v4-text) !important; border-color: var(--v4-line-2) !important; }
+body[data-skin="v4"] .cmdk-list { padding: 6px !important; }
+body[data-skin="v4"] .cmdk-group {
+  padding: 8px 8px 4px !important;
+  font-size: 10.5px !important;
+  font-weight: 600 !important;
+  letter-spacing: .08em !important;
+  color: var(--v4-text-3) !important;
+}
+body[data-skin="v4"] .cmdk-item {
+  padding: 8px 10px !important;
+  border-radius: 7px !important;
+  background: transparent !important;
+  color: var(--v4-text) !important;
+}
+/* 旧层给 button 留了底色，实测未选中的条目也被拉亮，选中项反而看不出区别。
+   显式压成透明，只让 is-active 一档有底色。 */
+body[data-skin="v4"] .cmdk-item:not(.is-active) { background: transparent !important; }
+body[data-skin="v4"] .cmdk-item strong {
+  font-size: 13.5px !important;
+  font-weight: 500 !important;
+  color: var(--v4-text) !important;
+}
+body[data-skin="v4"] .cmdk-item small { font-size: 12px !important; color: var(--v4-text-3) !important; }
+body[data-skin="v4"] .cmdk-item em { font-size: 11.5px !important; color: var(--v4-text-3) !important; }
+body[data-skin="v4"] .cmdk-item.is-active { background: var(--v4-surface-3) !important; }
+body[data-skin="v4"] .cmdk-foot { padding: 6px 12px 8px !important; border-top: 1px solid var(--v4-line) !important; }
+/* ↑↓ / Enter 提示同上：删掉，留条数 */
+body[data-skin="v4"] .cmdk-foot .cmdk-hint { display: none !important; }
+body[data-skin="v4"] .cmdk-meta { font-size: 11.5px !important; color: var(--v4-text-3) !important; }
+body[data-skin="v4"] .cmdk-empty {
+  padding: 34px 12px !important;
+  text-align: center !important;
+  font-size: 13px !important;
+  color: var(--v4-text-3) !important;
+}
+
+/* =====================================================================
+   10. 空态：一个图标 + 一句话，不要再叠解释
+
+   旧层所有空态共用一个 26px 的 mask 图标 + 15px/600 的粗体文案，
+   在 210px 宽的笔记列表里显得很吵。v4 把它压轻：图标小一半、文案回到正文字重。
+   ===================================================================== */
+
+body[data-skin="v4"] .notes-list-scroll:empty::before,
+body[data-skin="v4"] #subview-settings .settings-tag-library:empty::before {
+  width: 20px !important;
+  height: 20px !important;
+  margin-bottom: 2px !important;
+  background: var(--v4-text-3) !important;
+  opacity: .55 !important;
+}
+body[data-skin="v4"] .notes-list-scroll:empty::after,
+body[data-skin="v4"] #subview-settings .settings-tag-library:empty::after {
+  font-size: 12.5px !important;
+  font-weight: 400 !important;
+  line-height: 1.7 !important;
+  color: var(--v4-text-3) !important;
+}
+body[data-skin="v4"] .notes-list-scroll:empty {
+  min-height: 150px !important;
+  padding: 22px 16px !important;
+  gap: 0 !important;
+}
+
+/* 右侧编辑区的「新建笔记」：左侧列表头已有 ＋，同一件事不需要第二颗按钮。
+   空着的画布比一颗悬在中间的按钮安静。 */
+body[data-skin="v4"] #note-empty-new-btn { display: none !important; }
+
+/* =====================================================================
+   11. 设置：从「卡片墙」变成一张清单
+
+   旧版每张卡片都带图标 + 标题 + 一句解释 + 卡片投影，四张卡片叠下来
+   是四个说明框，真正要改的开关反而看不见。v4 只留「组名 + 一行一条」。
+
+   「空当接龙」三条偏好直接收掉：文案自己写着「与游戏页面的『选项』菜单
+   保持同步」—— 同一组开关在两处出现，设置页这一份就是重复。
+   ===================================================================== */
+
+body[data-skin="v4"] #subview-settings .settings-page-head {
+  height: 66px !important;
+  min-height: 66px !important;
+  padding: 0 28px !important;
+  margin: 0 !important;
+  border-bottom: 0 !important;
+  align-items: center !important;
+}
+body[data-skin="v4"] #subview-settings .settings-page-head .subview-kicker { display: none !important; }
+body[data-skin="v4"] #subview-settings .settings-page-head h1 {
+  font-family: var(--v4-serif) !important;
+  font-size: 23px !important;
+  font-weight: 600 !important;
+  letter-spacing: .015em !important;
+  color: var(--v4-text) !important;
+  margin: 0 !important;
+}
+body[data-skin="v4"] #subview-settings .settings-page-head p { display: none !important; }
+
+body[data-skin="v4"] #subview-settings .settings-layout {
+  display: grid !important;
+  grid-template-columns: minmax(0, 720px) !important;
+  gap: 0 !important;
+  padding: 4px 28px 48px !important;
+  align-content: start !important;
+}
+
+/* 卡片退成「分组」：没有边框、没有底色、没有投影，只靠一条上边线分段 */
+body[data-skin="v4"] #subview-settings .settings-card {
+  border: 0 !important;
+  border-top: 1px solid var(--v4-line) !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  overflow: visible !important;
+}
+body[data-skin="v4"] #subview-settings .settings-layout > .settings-card:first-child { border-top: 0 !important; }
+
+body[data-skin="v4"] #subview-settings .settings-card-head {
+  min-height: 0 !important;
+  padding: 22px 0 8px !important;
+  border: 0 !important;
+  gap: 0 !important;
+}
+body[data-skin="v4"] #subview-settings .settings-card-icon { display: none !important; }
+body[data-skin="v4"] #subview-settings .settings-card-head h2 {
+  font-size: 11.5px !important;
+  font-weight: 600 !important;
+  letter-spacing: .09em !important;
+  color: var(--v4-text-3) !important;
+}
+/* 说明文字不写；但「关于」那张里的版本号是信息，不是解释，留着 */
+body[data-skin="v4"] #subview-settings .settings-card:not([aria-labelledby="settings-about-title"]) .settings-card-head p { display: none !important; }
+body[data-skin="v4"] #subview-settings .settings-card[aria-labelledby="settings-about-title"] .settings-card-head p {
+  margin: 2px 0 0 !important;
+  font-size: 12px !important;
+  color: var(--v4-text-3) !important;
+}
+
+body[data-skin="v4"] #subview-settings .settings-list { display: block !important; border: 0 !important; background: transparent !important; }
+body[data-skin="v4"] #subview-settings .settings-row {
+  min-height: 46px !important;
+  padding: 10px 0 !important;
+  margin: 0 !important;
+  border: 0 !important;
+  border-bottom: 1px solid var(--v4-line) !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  gap: 16px !important;
+}
+body[data-skin="v4"] #subview-settings .settings-list > .settings-row:last-child { border-bottom: 0 !important; }
+body[data-skin="v4"] #subview-settings .settings-row-copy { gap: 0 !important; }
+body[data-skin="v4"] #subview-settings .settings-row-copy strong {
+  font-size: 13.5px !important;
+  font-weight: 450 !important;
+  color: var(--v4-text) !important;
+  line-height: 1.5 !important;
+}
+/* 每条下面那句解释是「小字」的主要来源：设置项的名字已经说清了它是什么 */
+body[data-skin="v4"] #subview-settings .settings-row-copy span { display: none !important; }
+
+body[data-skin="v4"] #subview-settings .settings-row-control { gap: 6px !important; }
+body[data-skin="v4"] #subview-settings .settings-value-pill {
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  color: var(--v4-text-2) !important;
+  font-size: 12.5px !important;
+}
+body[data-skin="v4"] #subview-settings .settings-row-danger .settings-row-control span { color: var(--v4-text-2) !important; font-size: 12.5px !important; }
+
+/* 开关：跟主按钮同一套「纸白 / 墨黑」，不用主题蓝 —— 一页里有蓝有灰有橙是杂乱的来源 */
+body[data-skin="v4"] #subview-settings .settings-switch {
+  width: 40px !important;
+  height: 22px !important;
+  flex: 0 0 40px !important;
+  border: 0 !important;
+  background: var(--v4-surface-3) !important;
+}
+body[data-skin="v4"] #subview-settings .settings-switch::after {
+  top: 3px !important;
+  left: 3px !important;
+  width: 16px !important;
+  height: 16px !important;
+  background: var(--v4-text-3) !important;
+  box-shadow: none !important;
+}
+body[data-skin="v4"] #subview-settings .settings-switch:checked { background: var(--v4-solid) !important; }
+body[data-skin="v4"] #subview-settings .settings-switch:checked::after {
+  transform: translateX(18px) !important;
+  background: var(--v4-solid-ink) !important;
+}
+
+/* 游戏偏好：同组开关在游戏「选项」里已有一份，这里不再重复 */
+body[data-skin="v4"] #subview-settings .settings-card[aria-labelledby="settings-freecell-title"] .settings-toggle-row { display: none !important; }
+
+body[data-skin="v4"] #subview-settings .settings-data-panel {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) auto !important;
+  gap: 14px !important;
+  margin: 0 !important;
+  padding: 10px 0 4px !important;
+  border: 0 !important;
+  background: transparent !important;
+}
+body[data-skin="v4"] #subview-settings .settings-data-panel code {
+  padding: 9px 11px !important;
+  border: 1px solid var(--v4-line) !important;
+  border-radius: 8px !important;
+  background: var(--v4-surface) !important;
+  color: var(--v4-text-2) !important;
+  font-size: 11.5px !important;
+}
+body[data-skin="v4"] #subview-settings .settings-data-actions { gap: 6px !important; }
+
+/* ---------------------------------------------------------------------
+   12. 主区内的一切按钮：两档就够 —— 实心（一个动作）与安静（其余）
+
+   旧层的 primary-btn 是主题蓝胶囊、icon-btn 是带边框的方按钮，
+   一页设置里同时出现蓝、灰、橙三种按钮，是「杂乱」最直接的来源。
+   作用域限定在 .subview，浮层与弹层各自有独立样式，不受影响。
+   --------------------------------------------------------------------- */
+
+body[data-skin="v4"] .subview .primary-btn {
+  height: 30px !important;
+  min-height: 0 !important;
+  padding: 0 14px !important;
+  border: 0 !important;
+  border-radius: 8px !important;
+  background: var(--v4-solid) !important;
+  color: var(--v4-solid-ink) !important;
+  font-family: var(--v4-sans) !important;
+  font-size: 12.5px !important;
+  font-weight: 600 !important;
+  box-shadow: none !important;
+}
+body[data-skin="v4"] .subview .primary-btn:hover { opacity: .88 !important; }
+
+body[data-skin="v4"] .subview .icon-btn,
+body[data-skin="v4"] .subview .ghost-btn {
+  height: 30px !important;
+  min-height: 0 !important;
+  padding: 0 10px !important;
+  border: 0 !important;
+  border-radius: 8px !important;
+  background: transparent !important;
+  color: var(--v4-text-2) !important;
+  font-family: var(--v4-sans) !important;
+  font-size: 12.5px !important;
+  font-weight: 500 !important;
+  box-shadow: none !important;
+}
+body[data-skin="v4"] .subview .icon-btn:hover,
+body[data-skin="v4"] .subview .ghost-btn:hover {
+  background: var(--v4-surface-2) !important;
+  color: var(--v4-text) !important;
+}
+body[data-skin="v4"] .subview .icon-btn svg { width: 14px !important; height: 14px !important; }
+
+/* 标签库：搜索框 + 一行新建，不要外面再套一个带边框的盒子 */
+/* 这一句是 v4 里唯一主动写 display 的地方，理由写清楚：
+   v3 把 `#subview-settings .settings-card-head` 锁成 display:block（1,1,0 权重），
+   于是标题与右侧控件（搜索框 / 检查更新）只能上下堆，justify-content 全空转。
+   这个节点是卡片内部的排版行，不是路由目标，也没有任何行内 display 切换，
+   写成 flex 不会重演「路由行内 none 被压掉」那次事故。 */
+body[data-skin="v4"] #subview-settings .settings-card-head-actions,
+body[data-skin="v4"] #subview-settings .settings-card[aria-labelledby="settings-about-title"] .settings-card-head {
+  display: flex !important;
+  justify-content: space-between !important;
+  flex-wrap: nowrap !important;
+  align-items: center !important;
+}
+/* 不加这条时右侧控件会被挤到下一行：标题容器吃了 flex:1 撑满整行 */
+body[data-skin="v4"] #subview-settings .settings-card-title-wrap {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  align-items: center !important;
+}
+body[data-skin="v4"] #subview-settings .settings-card-head-actions { gap: 12px !important; }
+body[data-skin="v4"] #subview-settings .settings-search-input,
+body[data-skin="v4"] #subview-settings .settings-tag-create .hero-input,
+body[data-skin="v4"] #subview-settings .settings-number-input {
+  height: 30px !important;
+  min-height: 0 !important;
+  padding: 0 10px !important;
+  border: 1px solid var(--v4-line) !important;
+  border-radius: 8px !important;
+  background: var(--v4-surface) !important;
+  color: var(--v4-text) !important;
+  font-size: 12.5px !important;
+  box-shadow: none !important;
+}
+body[data-skin="v4"] #subview-settings .settings-tag-create {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  margin: 0 !important;
+  padding: 12px 0 4px !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+body[data-skin="v4"] #subview-settings .settings-tag-create label {
+  font-size: 12px !important;
+  font-weight: 400 !important;
+  color: var(--v4-text-3) !important;
+  white-space: nowrap !important;
+}
+body[data-skin="v4"] #subview-settings .settings-tag-create .hero-input { width: 200px !important; }
+
+/* 标签库的「活跃 / 非活跃」两组：底色与字号是 settings.js 写在行内 style 上的
+   （绿 5% / 白 2%、16px 加粗、emoji 前缀），只有 !important 能压过行内样式。
+   一行组标题 + 一条发丝线，跟这一页其它分组保持同一种语言。 */
+body[data-skin="v4"] #subview-settings .settings-tag-library .glass-accordion {
+  border: 0 !important;
+  border-radius: 0 !important;
+  border-bottom: 1px solid var(--v4-line) !important;
+  background: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+}
+body[data-skin="v4"] #subview-settings .settings-tag-library .log-summary {
+  background: transparent !important;
+  padding: 12px 0 !important;
+  border-radius: 0 !important;
+}
+body[data-skin="v4"] #subview-settings .settings-tag-library .log-text {
+  font-size: 12.5px !important;
+  font-weight: 600 !important;
+  color: var(--v4-text-2) !important;
+}
+body[data-skin="v4"] #subview-settings .settings-tag-library .expanded-content {
+  padding: 0 0 12px !important;
+  background: transparent !important;
+  background-image: none !important;
+}
+body[data-skin="v4"] #subview-settings .settings-tag-library p {
+  margin: 0 !important;
+  font-size: 12.5px !important;
+  color: var(--v4-text-3) !important;
+}
+
+/* =====================================================================
+   13. 表格页：一张基础表 + 若干自建表，用 tab 条并列
+
+   基础表（tablePage.js）与自建表（sheetPage.js）是两套渲染器，
+   但对外必须是同一件事：同一条页面头、同一条 tab 条、同一块内容区。
+   .sh-* 那套样式已经很完整，v4 只压它的页头（表名已在 tab 上）与内边距。
+   ===================================================================== */
+
+body[data-skin="v4"] .rec-tabs-bar {
+  display: flex !important;
+  align-items: center !important;
+  gap: 14px !important;
+  height: 44px !important;
+  min-height: 44px !important;
+  padding: 0 16px 0 20px !important;
+  border-bottom: 1px solid var(--v4-line) !important;
+  background: transparent !important;
+}
+
+body[data-skin="v4"] .rec-tabs {
+  display: flex !important;
+  align-items: stretch !important;
+  gap: 2px !important;
+  min-width: 0 !important;
+  height: 100% !important;
+  overflow-x: auto !important;
+  scrollbar-width: none !important;
+}
+body[data-skin="v4"] .rec-tabs::-webkit-scrollbar { display: none !important; }
+
+body[data-skin="v4"] .rec-tab {
+  height: 100% !important;
+  max-width: 200px !important;
+  padding: 0 12px !important;
+  border: 0 !important;
+  border-bottom: 2px solid transparent !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  color: var(--v4-text-3) !important;
+  font-family: var(--v4-sans) !important;
+  font-size: 13px !important;
+  font-weight: 500 !important;
+  line-height: 42px !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  cursor: pointer !important;
+  transition: color .12s ease, border-color .12s ease !important;
+}
+body[data-skin="v4"] .rec-tab:hover { color: var(--v4-text) !important; }
+body[data-skin="v4"] .rec-tab.is-on {
+  color: var(--v4-text) !important;
+  border-bottom-color: var(--v4-text) !important;
+}
+
+body[data-skin="v4"] .rec-tab-add {
+  flex: 0 0 24px !important;
+  width: 24px !important;
+  height: 24px !important;
+  margin: auto 0 auto 4px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 6px !important;
+  background: transparent !important;
+  color: var(--v4-text-3) !important;
+  font-size: 14px !important;
+  line-height: 1 !important;
+  cursor: pointer !important;
+}
+body[data-skin="v4"] .rec-tab-add:hover { background: var(--v4-surface-2) !important; color: var(--v4-text) !important; }
+
+body[data-skin="v4"] .rec-tabs-tools {
+  margin-left: auto !important;
+  align-items: center !important;
+  gap: 6px !important;
+  min-width: 0 !important;
+}
+/* 自建表的「⋯」：默认隐藏（inline none），只有自建表 tab 激活时才由 JS 放出来。
+   宽度与 .rec-tab-add 同规格，保证 tab 条右端高度不跳。 */
+body[data-skin="v4"] .rec-tab-more {
+  flex: 0 0 26px !important;
+  width: 26px !important;
+  height: 26px !important;
+  margin: auto 0 auto auto !important;
+  padding: 0 !important;
+  align-items: center !important;
+  justify-content: center !important;
+  border: 0 !important;
+  border-radius: 6px !important;
+  background: transparent !important;
+  color: var(--v4-text-3) !important;
+  cursor: pointer !important;
+}
+body[data-skin="v4"] .rec-tab-more:hover { background: var(--v4-surface-2) !important; color: var(--v4-text) !important; }
+body[data-skin="v4"] .rec-tab-more .wr-icon { width: 15px !important; height: 15px !important; }
+body[data-skin="v4"] .rec-tabs-sep {
+  width: 1px !important;
+  height: 14px !important;
+  margin: 0 4px !important;
+  background: var(--v4-line-2) !important;
+}
+
+/* 自建表内容区：高度按窗口算，让 sheetPage 自己的表头吸顶与内部滚动照常工作。
+   138 = 标题栏 28 + 页面头 66 + tab 条 44 */
+body[data-skin="v4"] .sheet-pane {
+  height: calc(100vh - 138px) !important;
+  min-height: 420px !important;
+  overflow: hidden !important;
+}
+body[data-skin="v4"] .sheet-pane .sheet-app { height: 100% !important; min-height: 0 !important; }
+
+/* 表名、面包屑、状态行都已经有归属（tab 条 / 底部状态栏），这里只留工具栏和表格 */
+body[data-skin="v4"] .sheet-pane .sh-page {
+  padding: 8px 16px 0 !important;
+  gap: 10px !important;
+  height: 100% !important;
+  min-height: 0 !important;
+}
+body[data-skin="v4"] .sheet-pane .sh-crumbs { display: none !important; }
+body[data-skin="v4"] .sheet-pane .sh-sheet-head { display: none !important; }
+
+/* 工具栏与表格页同一套密度：按钮 30px、文字 12.5、间距收紧 */
+body[data-skin="v4"] .sheet-pane .sh-toolbar {
+  padding: 0 !important;
+  gap: 6px !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+body[data-skin="v4"] .sheet-pane .sh-tool,
+body[data-skin="v4"] .sheet-pane .sh-view {
+  height: 30px !important;
+  min-height: 0 !important;
+  padding: 0 10px !important;
+  border: 0 !important;
+  border-radius: 8px !important;
+  background: transparent !important;
+  color: var(--v4-text-2) !important;
+  font-family: var(--v4-sans) !important;
+  font-size: 12.5px !important;
+  font-weight: 500 !important;
+  box-shadow: none !important;
+}
+body[data-skin="v4"] .sheet-pane .sh-tool:hover,
+body[data-skin="v4"] .sheet-pane .sh-view:hover { background: var(--v4-surface-2) !important; color: var(--v4-text) !important; }
+body[data-skin="v4"] .sheet-pane .sh-view.is-active,
+body[data-skin="v4"] .sheet-pane .sh-tool.is-on {
+  background: var(--v4-surface-2) !important;
+  color: var(--v4-text) !important;
+}
+body[data-skin="v4"] .sheet-pane .sh-tool svg { width: 14px !important; height: 14px !important; }
+body[data-skin="v4"] .sheet-pane .sh-views { gap: 2px !important; border: 0 !important; background: transparent !important; padding: 0 !important; }
+body[data-skin="v4"] .sheet-pane .sh-tool-sep { display: none !important; }
+
+body[data-skin="v4"] .sheet-pane .sh-search {
+  height: 30px !important;
+  min-height: 0 !important;
+  border: 1px solid var(--v4-line) !important;
+  border-radius: 8px !important;
+  background: var(--v4-surface) !important;
+}
+body[data-skin="v4"] .sheet-pane .sh-search input {
+  height: 28px !important;
+  font-size: 12.5px !important;
+  color: var(--v4-text) !important;
+}
+body[data-skin="v4"] .sheet-pane .sh-search input::placeholder { color: var(--v4-text-3) !important; }
+
+body[data-skin="v4"] .sheet-pane .sh-btn.is-primary {
+  height: 30px !important;
+  min-height: 0 !important;
+  padding: 0 14px !important;
+  border: 0 !important;
+  border-radius: 8px !important;
+  background: var(--v4-solid) !important;
+  color: var(--v4-solid-ink) !important;
+  font-family: var(--v4-sans) !important;
+  font-size: 12.5px !important;
+  font-weight: 600 !important;
+  box-shadow: none !important;
+}
+
+/* 表体：行高与基础表对齐（46），单元格字色用 v4 的两档灰 */
+body[data-skin="v4"] .sheet-pane .sh-table-wrap {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  min-height: 0 !important;
+}
+body[data-skin="v4"] .sheet-pane .sh-table { background: transparent !important; }
+body[data-skin="v4"] .sheet-pane .sh-td,
+body[data-skin="v4"] .sheet-pane .sh-cell,
+body[data-skin="v4"] .sheet-pane .sh-rownum { height: 46px !important; }
+body[data-skin="v4"] .sheet-pane .sh-table thead th {
+  height: 38px !important;
+  border-bottom: 1px solid var(--v4-line) !important;
+  background: transparent !important;
+  color: var(--v4-text-3) !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+}
+body[data-skin="v4"] .sheet-pane .sh-status {
+  height: 34px !important;
+  padding: 0 !important;
+  border-top: 1px solid var(--v4-line) !important;
+  background: transparent !important;
+  color: var(--v4-text-3) !important;
+  font-size: 11.5px !important;
+}
+
+/* =====================================================================
+   14. 基础表的附件面板（.wr-attpanel）
+   ---------------------------------------------------------------------
+   单元格右上角点开：投放区 + 已加附件列表 + 添加/完成。
+   基础表原本这一格是「附件功能正在开发」的占位，能力由 attachmentOps
+   提供（与自建表同一套落盘白名单），这里只负责外观。
+   ===================================================================== */
+body[data-skin="v4"] .wr-attpanel {
+  position: fixed !important;
+  z-index: 2400 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 8px !important;
+  width: 300px !important;
+  padding: 10px !important;
+  border: 1px solid var(--v4-line-2) !important;
+  border-radius: 12px !important;
+  background: var(--v4-surface) !important;
+  box-shadow: 0 18px 44px -20px rgba(0, 0, 0, .55) !important;
+}
+body[data-skin="v4"] .wr-att-zone {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 7px !important;
+  height: 62px !important;
+  border: 1px dashed var(--v4-line-2) !important;
+  border-radius: 9px !important;
+  color: var(--v4-text-3) !important;
+  font-size: 12px !important;
+  text-align: center !important;
+  transition: border-color .12s ease, color .12s ease !important;
+}
+body[data-skin="v4"] .wr-att-zone.is-over {
+  border-color: var(--v4-text-2) !important;
+  color: var(--v4-text) !important;
+}
+body[data-skin="v4"] .wr-att-zone .wr-icon { width: 15px !important; height: 15px !important; }
+body[data-skin="v4"] .wr-att-list {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  gap: 6px !important;
+  max-height: 220px !important;
+  overflow-y: auto !important;
+}
+body[data-skin="v4"] .wr-att-item {
+  position: relative !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 84px !important;
+  height: 62px !important;
+  overflow: hidden !important;
+  border-radius: 8px !important;
+  background: var(--v4-surface-2) !important;
+}
+body[data-skin="v4"] .wr-att-item img {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: cover !important;
+  display: block !important;
+}
+body[data-skin="v4"] .wr-att-item.is-file { padding: 6px !important; }
+body[data-skin="v4"] .wr-att-file {
+  display: -webkit-box !important;
+  -webkit-line-clamp: 3 !important;
+  -webkit-box-orient: vertical !important;
+  overflow: hidden !important;
+  color: var(--v4-text-2) !important;
+  font-size: 11px !important;
+  line-height: 1.35 !important;
+  word-break: break-all !important;
+  text-align: center !important;
+}
+body[data-skin="v4"] .wr-att-del {
+  position: absolute !important;
+  top: 3px !important;
+  right: 3px !important;
+  width: 18px !important;
+  height: 18px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 50% !important;
+  background: rgba(0, 0, 0, .55) !important;
+  color: #fff !important;
+  font-size: 12px !important;
+  line-height: 1 !important;
+  cursor: pointer !important;
+  opacity: 0 !important;
+  transition: opacity .12s ease !important;
+}
+body[data-skin="v4"] .wr-att-item:hover .wr-att-del { opacity: 1 !important; }
+body[data-skin="v4"] .wr-att-empty {
+  width: 100% !important;
+  padding: 10px 0 !important;
+  color: var(--v4-text-3) !important;
+  font-size: 12px !important;
+  text-align: center !important;
+}
+body[data-skin="v4"] .wr-att-foot {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+}
+body[data-skin="v4"] .wr-att-gap { flex: 1 1 auto !important; }
+body[data-skin="v4"] .wr-att-pick,
+body[data-skin="v4"] .wr-att-done {
+  height: 28px !important;
+  padding: 0 10px !important;
+  border: 1px solid var(--v4-line-2) !important;
+  border-radius: 7px !important;
+  background: transparent !important;
+  color: var(--v4-text-2) !important;
+  font-family: var(--v4-sans) !important;
+  font-size: 12px !important;
+  cursor: pointer !important;
+}
+body[data-skin="v4"] .wr-att-pick { border-style: dashed !important; }
+body[data-skin="v4"] .wr-att-pick:hover,
+body[data-skin="v4"] .wr-att-done:hover { color: var(--v4-text) !important; border-color: var(--v4-text-3) !important; }
+
+/* =====================================================================
+   15. 表库 / 白板库：两层结构（列表 → 里面）
+   ---------------------------------------------------------------------
+   以前所有表用一排 tab 摊在顶上，表一多层级就没了。现在第一层是列表
+   （像打开文件夹），点一行才进表内，左上角退回。
+   注意：`#table-detail` / `#board-canvas` 的 display 由 JS 行内控制，
+   这里**绝不写 display !important** —— 会把行内 none 压掉，两个页面同时显。
+   ===================================================================== */
+body[data-skin="v4"] .lib-page {
+  box-sizing: border-box !important;
+  max-width: 1120px !important;
+  padding: 30px 34px 40px !important;
+}
+/* 白板是 fixed 整屏层（没有 main-content 帮它滚），列表要自己滚 */
+body[data-skin="v4"] .bd-view .lib-page {
+  height: 100% !important;
+  max-width: none !important;
+  padding: 30px 28px 40px !important;
+  overflow-y: auto !important;
+}
+
+body[data-skin="v4"] .lib-head {
+  display: flex !important;
+  align-items: center !important;
+  gap: 12px !important;
+  margin: 0 0 20px !important;
+}
+body[data-skin="v4"] .lib-title {
+  margin: 0 !important;
+  font-family: var(--v4-serif) !important;
+  font-size: 25px !important;
+  font-weight: 600 !important;
+  line-height: 1 !important;
+  letter-spacing: .015em !important;
+  color: var(--v4-text) !important;
+}
+body[data-skin="v4"] .lib-count {
+  color: var(--v4-text-3) !important;
+  font-size: 12px !important;
+}
+body[data-skin="v4"] .lib-head-actions {
+  margin-left: auto !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+}
+
+body[data-skin="v4"] .lib-list {
+  border: 1px solid var(--v4-line) !important;
+  border-radius: 14px !important;
+  background: var(--v4-surface) !important;
+  overflow: hidden !important;
+}
+body[data-skin="v4"] .lib-row {
+  display: flex !important;
+  align-items: center !important;
+  gap: 12px !important;
+  min-height: 58px !important;
+  padding: 9px 16px !important;
+  border-bottom: 1px solid var(--v4-line) !important;
+  cursor: pointer !important;
+  transition: background .12s ease !important;
+}
+body[data-skin="v4"] .lib-row:last-child { border-bottom: 0 !important; }
+body[data-skin="v4"] .lib-row:hover { background: var(--v4-surface-2) !important; }
+body[data-skin="v4"] .lib-row:focus-visible { outline: 2px solid var(--v4-line-2) !important; outline-offset: -3px !important; }
+
+body[data-skin="v4"] .lib-icon {
+  flex: 0 0 32px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 32px !important;
+  height: 32px !important;
+  border-radius: 9px !important;
+  background: var(--v4-surface-2) !important;
+  color: var(--v4-text-2) !important;
+}
+body[data-skin="v4"] .lib-icon .wr-icon { width: 17px !important; height: 17px !important; }
+
+body[data-skin="v4"] .lib-main {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 3px !important;
+}
+body[data-skin="v4"] .lib-name {
+  display: flex !important;
+  align-items: center !important;
+  gap: 7px !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+  white-space: nowrap !important;
+  text-overflow: ellipsis !important;
+  color: var(--v4-text) !important;
+  font-size: 13.5px !important;
+  font-weight: 500 !important;
+}
+body[data-skin="v4"] .lib-badge {
+  flex: 0 0 auto !important;
+  padding: 1px 6px !important;
+  border: 1px solid var(--v4-line-2) !important;
+  border-radius: 5px !important;
+  color: var(--v4-text-3) !important;
+  font-size: 10.5px !important;
+  font-style: normal !important;
+  font-weight: 500 !important;
+  line-height: 1.6 !important;
+}
+body[data-skin="v4"] .lib-meta {
+  color: var(--v4-text-3) !important;
+  font-size: 12px !important;
+  line-height: 1.4 !important;
+}
+
+body[data-skin="v4"] .lib-chevron {
+  flex: 0 0 auto !important;
+  display: inline-flex !important;
+  color: var(--v4-text-3) !important;
+  opacity: 0 !important;
+  transition: opacity .12s ease !important;
+}
+body[data-skin="v4"] .lib-chevron .wr-icon { width: 15px !important; height: 15px !important; }
+body[data-skin="v4"] .lib-row:hover .lib-chevron { opacity: .85 !important; }
+
+body[data-skin="v4"] .lib-more {
+  flex: 0 0 26px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 26px !important;
+  height: 26px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 6px !important;
+  background: transparent !important;
+  color: var(--v4-text-3) !important;
+  cursor: pointer !important;
+  opacity: 0 !important;
+  transition: opacity .12s ease, background .12s ease !important;
+}
+body[data-skin="v4"] .lib-more .wr-icon { width: 15px !important; height: 15px !important; }
+body[data-skin="v4"] .lib-row:hover .lib-more { opacity: 1 !important; }
+body[data-skin="v4"] .lib-more:hover { background: var(--v4-surface-3) !important; color: var(--v4-text) !important; }
+
+body[data-skin="v4"] .lib-empty {
+  margin: 14px 2px 0 !important;
+  color: var(--v4-text-3) !important;
+  font-size: 12.5px !important;
+  line-height: 1.6 !important;
+}
+
+body[data-skin="v4"] .lib-menu {
+  position: fixed !important;
+  z-index: 2600 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 2px !important;
+  min-width: 148px !important;
+  padding: 5px !important;
+  border: 1px solid var(--v4-line-2) !important;
+  border-radius: 10px !important;
+  background: var(--v4-surface) !important;
+  box-shadow: 0 18px 40px -20px rgba(0, 0, 0, .55) !important;
+}
+body[data-skin="v4"] .lib-menu button {
+  padding: 7px 10px !important;
+  border: 0 !important;
+  border-radius: 7px !important;
+  background: transparent !important;
+  color: var(--v4-text-2) !important;
+  font-family: var(--v4-sans) !important;
+  font-size: 12.5px !important;
+  text-align: left !important;
+  cursor: pointer !important;
+}
+body[data-skin="v4"] .lib-menu button:hover { background: var(--v4-surface-2) !important; color: var(--v4-text) !important; }
+body[data-skin="v4"] .lib-menu button.is-danger { color: #e5484d !important; }
+
+/* ---- 表内：一行「‹ 表名 …工具」 ---- */
+body[data-skin="v4"] .rec-detail {
+  flex-direction: column !important;
+  height: calc(100vh - 28px) !important;
+  min-height: 0 !important;
+  box-sizing: border-box !important;
+}
+body[data-skin="v4"] .rec-detail-head {
+  flex: 0 0 52px !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 10px !important;
+  height: 52px !important;
+  padding: 0 34px !important;
+  border-bottom: 1px solid var(--v4-line) !important;
+}
+body[data-skin="v4"] .rec-title {
+  margin: 0 !important;
+  color: var(--v4-text) !important;
+  font-family: var(--v4-sans) !important;
+  font-size: 14px !important;
+  font-weight: 600 !important;
+  line-height: 1 !important;
+  white-space: nowrap !important;
+}
+body[data-skin="v4"] .rec-back {
+  flex: 0 0 28px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 28px !important;
+  height: 28px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 7px !important;
+  background: transparent !important;
+  color: var(--v4-text-2) !important;
+  cursor: pointer !important;
+}
+body[data-skin="v4"] .rec-back:hover { background: var(--v4-surface-2) !important; color: var(--v4-text) !important; }
+body[data-skin="v4"] .rec-back .wr-icon {
+  width: 16px !important;
+  height: 16px !important;
+  transform: rotate(180deg) !important;
+}
+/* ⚠️ 这里绝不能写 display —— #base-table-tools 的显隐由 JS 行内控制
+   （切到自建表要整块藏起来）。写 display:flex !important 会把它顶回来，
+   表现是「在自建表里还挂着基础表的筛选器」。 */
+body[data-skin="v4"] .rec-detail-tools {
+  margin-left: auto !important;
+  align-items: center !important;
+  gap: 8px !important;
+  min-width: 0 !important;
+}
+
+/* 表内两块 pane 吃掉剩余高度，滚动各自负责 */
+body[data-skin="v4"] .rec-detail .rec-table-pane {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  overflow-y: auto !important;
+  padding: 6px 34px 28px !important;
+}
+body[data-skin="v4"] .rec-detail .sheet-pane {
+  flex: 1 1 auto !important;
+  height: auto !important;
+  min-height: 0 !important;
+}
+
+/* ---- 白板画布铺满（bar 66 + stage 铺底） ---- */
+body[data-skin="v4"] .bd-canvas {
+  position: absolute !important;
+  inset: 0 !important;
+  flex-direction: column !important;
+}
+
+/* =====================================================================
+   16. 普通表格浮层（.sh-pop）：材质与 .lib-menu 对齐
+   ---------------------------------------------------------------------
+   浮层原来用旧的 --bg-elevated(#1e293b) 做底，比页面亮一大档，
+   和右侧白板列表菜单（--v4-surface + 细描边）不是一套东西。
+   这里只改材质，不动任何布局：底、描边、阴影、圆角；
+   菜单项去掉 v3 全局 button 那层 6% 白底，改成「hover 才亮」。
+   ===================================================================== */
+body[data-skin="v4"] .sh-pop {
+  background: var(--v4-surface) !important;
+  border: 1px solid var(--v4-line-2) !important;
+  border-radius: 12px !important;
+  box-shadow: 0 28px 56px -26px rgba(0, 0, 0, .72) !important;
+}
+
+body[data-skin="v4"] .sh-pop .sh-menu-item {
+  height: 30px !important;
+  border-radius: 8px !important;
+  background: transparent !important;
+  color: var(--v4-text-2) !important;
+  font-size: 12.5px !important;
+}
+body[data-skin="v4"] .sh-pop .sh-menu-item:hover {
+  background: color-mix(in srgb, var(--color-text) 7%, transparent) !important;
+  color: var(--v4-text) !important;
+}
+body[data-skin="v4"] .sh-pop .sh-menu-item.is-danger { color: #e5484d !important; }
+body[data-skin="v4"] .sh-pop .sh-menu-item.is-danger:hover {
+  background: color-mix(in srgb, #e5484d 14%, transparent) !important;
+  color: #e5484d !important;
+}
+body[data-skin="v4"] .sh-pop .sh-menu-item .wr-icon { opacity: .62 !important; }
+
+body[data-skin="v4"] .sh-pop .sh-colmenu-sep,
+body[data-skin="v4"] .sh-pop .sh-menu-sep {
+  height: 1px !important;
+  margin: 6px 2px !important;
+  background: var(--v4-line-2) !important;
+}
+
+/* 同一个病根：v3 有一条 `body[data-ui="v3"] button { background: 6% 文字色 }`，
+   权重 (0,2,1) 高于各弹层里「单类名 + !important」的 transparent，
+   于是浮层里每个按钮都自带一块底色 —— 列菜单/下拉看着像一排小卡片。
+   这里用同权重、后加载压回透明，只保留 hover 反馈。 */
+body[data-skin="v4"] .wr-colmenu-item,
+body[data-skin="v4"] .ft-option {
+  background: transparent !important;
+  color: var(--v4-text-2) !important;
+  border-radius: 8px !important;
+}
+body[data-skin="v4"] .wr-colmenu-item:hover,
+body[data-skin="v4"] .ft-option:hover {
+  background: color-mix(in srgb, var(--color-text) 7%, transparent) !important;
+  color: var(--v4-text) !important;
+}
+body[data-skin="v4"] .ft-option.is-active { color: var(--v4-text) !important; }
+body[data-skin="v4"] .wr-colmenu-item.is-danger { color: #e5484d !important; }
+body[data-skin="v4"] .wr-colmenu-item.is-danger:hover {
+  background: color-mix(in srgb, #e5484d 14%, transparent) !important;
+  color: #e5484d !important;
+}

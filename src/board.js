@@ -48,6 +48,13 @@ const MIN_H = 96;
 const Z_MIN = 0.3;
 const Z_MAX = 2.4;
 
+// 多白板：白板是「看法」，所以不做新表 —— 名字列表放 settings 的 JSON 里，
+// 便签归属写在各自的 custom._bd.board。这样加一块白板 = 改一个 KV，
+// 不动 record 表、不迁移历史数据。
+// 默认白板不可删：它是所有「没有归属」便签的兜底，删了就没地方落。
+const BOARDS_KEY = 'boards';
+const DEFAULT_BOARD = { id: 'default', name: '默认白板', created_at: '' };
+
 // 自动布局（没有 _bd 的记录）。列数乘间距必须大于 DEFAULT_W，否则便签会叠。
 const AUTO_ORIGIN = 44;
 const AUTO_COLS = 4;
@@ -72,7 +79,7 @@ function db() {
 const state = {
   /** @type {Array<{id:number,title:string,status:string,kind:string,tag:string,
    *                c:number,x:number,y:number,w:number,h:number,
-   *                hasPos:boolean,links:number[],custom:object}>} */
+   *                hasPos:boolean,links:number[],board:string,custom:object}>} */
   notes: [],
   edges: [],
   sel: new Set(),
@@ -81,6 +88,12 @@ const state = {
   view: { x: 0, y: 0, z: 1 },
   ready: false,
   loading: false,
+  /** 白板列表：[{id,name,created_at}]，id='default' 恒在 */
+  boards: [DEFAULT_BOARD],
+  /** 当前打开的白板 */
+  boardId: 'default',
+  /** 每块白板的便签数（列表页展示用） */
+  boardCounts: new Map(),
   /** @type {Map<number, {x:number,y:number,w:number,h:number,c:number}>} */
   dirty: new Map(),
 };
@@ -122,6 +135,8 @@ function readLayout(custom) {
     w: Number.isFinite(Number(raw.w)) ? Math.max(MIN_W, Number(raw.w)) : DEFAULT_W,
     h: Number.isFinite(Number(raw.h)) ? Math.max(MIN_H, Number(raw.h)) : DEFAULT_H,
     c: clamp(Math.trunc(Number(raw.c) || 0), 0, NOTE_COLORS.length - 1),
+    // 归属哪块白板；空 = 默认白板（历史便签全都没有这个键）
+    board: typeof raw.board === 'string' && raw.board ? raw.board : 'default',
   };
 }
 
@@ -155,6 +170,7 @@ async function fetchNotes() {
         updated_at DESC, id DESC
       LIMIT 400`
   );
+  const known = new Set(state.boards.map(board => board.id));
   return (rows || []).map(row => {
     const custom = safeParse(row.custom, {});
     const layout = readLayout(custom);
@@ -171,9 +187,11 @@ async function fetchNotes() {
       h: layout ? layout.h : DEFAULT_H,
       hasPos: Boolean(layout),
       links: readLinks(custom),
+      // 指向已删白板的便签回到默认白板：不批量改库，读的时候兜住就行。
+      board: layout && known.has(layout.board) ? layout.board : 'default',
       custom,
     };
-  });
+  }).filter(note => note.board === state.boardId);
 }
 
 /**
@@ -197,6 +215,291 @@ function applyAutoLayout(notes) {
     note.y = startY + Math.floor(slot / AUTO_COLS) * AUTO_STEP_Y;
     slot += 1;
   });
+}
+
+/* ───────────── 多白板：列表与增删改 ───────────── */
+
+async function loadBoards() {
+  let list = null;
+  try {
+    const rows = await db().dbQuery(`SELECT value FROM settings WHERE key = '${BOARDS_KEY}'`);
+    const raw = rows?.[0]?.value;
+    if (raw) list = JSON.parse(raw);
+  } catch (error) {
+    // 读不到就当只有默认白板：不能让"列不出来"变成"白板没了"
+    list = null;
+  }
+  const next = Array.isArray(list) ? list.filter(item => item && item.id && item.name) : [];
+  if (!next.some(item => item.id === 'default')) next.unshift({ ...DEFAULT_BOARD });
+  state.boards = next;
+  if (!state.boards.some(item => item.id === state.boardId)) state.boardId = 'default';
+}
+
+async function saveBoards() {
+  await db().dbExecute(
+    `INSERT OR REPLACE INTO settings (key, value) VALUES ('${BOARDS_KEY}', ?)`,
+    [JSON.stringify(state.boards)]
+  );
+}
+
+/** 每块白板有几张便签。列表页要显示，且数量少（≤400 条）一次读完就够。 */
+async function loadBoardCounts() {
+  const counts = new Map();
+  try {
+    const rows = await db().dbQuery(
+      `SELECT id, custom FROM record WHERE sheet_id IS NULL AND kind IN ('log', 'todo') LIMIT 400`
+    );
+    const known = new Set(state.boards.map(board => board.id));
+    (rows || []).forEach(row => {
+      const layout = readLayout(safeParse(row.custom, {}));
+      const id = layout && known.has(layout.board) ? layout.board : 'default';
+      counts.set(id, (counts.get(id) || 0) + 1);
+    });
+  } catch (error) {
+    logToFile('error', `[board] 统计便签数失败: ${error?.stack || error}`);
+  }
+  state.boardCounts = counts;
+}
+
+function boardById(id) {
+  return state.boards.find(board => board.id === id) || null;
+}
+
+function renderLibrary() {
+  const listEl = document.getElementById('bd-lib-list');
+  if (!listEl) return;
+  listEl.innerHTML = state.boards.map(board => {
+    const count = state.boardCounts.get(board.id) || 0;
+    const isDefault = board.id === 'default';
+    return `
+      <div class="lib-row" role="listitem" tabindex="0" data-board="${escapeHtml(board.id)}">
+        <span class="lib-icon">${boardIcon()}</span>
+        <span class="lib-main">
+          <span class="lib-name">${escapeHtml(board.name)}${isDefault ? '<i class="lib-badge">默认</i>' : ''}</span>
+          <span class="lib-meta">${count ? `${count} 张便签` : '还没有便签'}</span>
+        </span>
+        ${isDefault ? '' : `<button type="button" class="lib-more" data-more="${escapeHtml(board.id)}" aria-label="重命名或删除" title="重命名 / 删除">${dotsIcon()}</button>`}
+        <span class="lib-chevron">${chevronIcon()}</span>
+      </div>`;
+  }).join('');
+  const countEl = document.getElementById('bd-lib-count');
+  if (countEl) countEl.textContent = `${state.boards.length} 块白板`;
+  const emptyEl = document.getElementById('bd-lib-empty');
+  if (emptyEl) emptyEl.style.display = state.boards.length > 1 ? 'none' : '';
+}
+
+function boardIcon() {
+  return '<svg class="wr-icon" aria-hidden="true"><use href="#ic-board"/></svg>';
+}
+function dotsIcon() {
+  return '<svg class="wr-icon" aria-hidden="true"><use href="#ic-dots"/></svg>';
+}
+function chevronIcon() {
+  return '<svg class="wr-icon" aria-hidden="true"><use href="#ic-chevron-right"/></svg>';
+}
+
+/** 只用于「命名 / 重命名」的轻量弹层。返回 '' 表示取消。 */
+function promptBoardName(title, initial) {
+  return new Promise(resolve => {
+    if (!window.showModal) { resolve(String(initial || '').trim()); return; }
+    let settled = false;
+    window.showModal(
+      title,
+      `<div class="sh-modal">
+         <label class="sh-label">白板名称</label>
+         <input type="text" class="sh-input" data-name value="${escapeHtml(initial || '')}" />
+       </div>`,
+      body => {
+        const input = body.querySelector('[data-name]');
+        input?.focus();
+        input?.select();
+      },
+      body => {
+        const value = String(body.querySelector('[data-name]')?.value || '').trim();
+        if (!value) return false;
+        settled = true;
+        resolve(value);
+        return true;
+      },
+      { btnText: '确定', onCancel: () => { if (!settled) resolve(''); } }
+    );
+  });
+}
+
+async function createBoard() {
+  const name = await promptBoardName('新建白板', `白板 ${state.boards.length + 1}`);
+  if (!name) return;
+  const id = `b_${Date.now().toString(36)}`;
+  state.boards.push({ id, name, created_at: '' });
+  try {
+    await saveBoards();
+  } catch (error) {
+    logToFile('error', `[board] 保存白板列表失败: ${error?.stack || error}`);
+  }
+  await openBoard(id);
+}
+
+async function renameBoard(board) {
+  if (!board) return;
+  const name = await promptBoardName('重命名白板', board.name);
+  if (!name || name === board.name) return;
+  board.name = name;
+  try {
+    await saveBoards();
+  } catch (error) {
+    logToFile('error', `[board] 保存白板列表失败: ${error?.stack || error}`);
+    return;
+  }
+  await loadBoardCounts();
+  renderLibrary();
+  if (state.boardId === board.id) {
+    const nameEl = document.getElementById('bd-board-name');
+    if (nameEl) nameEl.textContent = name;
+  }
+}
+
+async function deleteBoard(board) {
+  if (!board || board.id === 'default') return;
+  const count = state.boardCounts.get(board.id) || 0;
+  const body = count
+    ? `<p style="margin:0;">删除「${escapeHtml(board.name)}」？它的 ${count} 张便签会回到「默认白板」，记录本身不会删。</p>`
+    : `<p style="margin:0;">删除「${escapeHtml(board.name)}」？这块白板还是空的。</p>`;
+  window.showModal?.('删除白板', body, null, async () => {
+    state.boards = state.boards.filter(item => item.id !== board.id);
+    try {
+      await saveBoards();
+    } catch (error) {
+      logToFile('error', `[board] 保存白板列表失败: ${error?.stack || error}`);
+      return false;
+    }
+    await enterLibrary();
+    return true;
+  }, { danger: true, btnText: '删除' });
+}
+
+// 列表行的 ⋯ 菜单：只有「重命名 / 删除」两项，写一个 30 行的浮层比引通用菜单省事
+let libMenuEl = null;
+
+function closeLibMenu() {
+  libMenuEl?.remove();
+  libMenuEl = null;
+}
+
+function openLibMenu(anchor, board) {
+  if (!board) return;
+  closeLibMenu();
+  const el = document.createElement('div');
+  el.className = 'lib-menu';
+  el.innerHTML = `
+    <button type="button" data-act="rename">重命名</button>
+    <button type="button" data-act="delete" class="is-danger">删除白板</button>`;
+  document.body.appendChild(el);
+  const rect = anchor.getBoundingClientRect();
+  el.style.left = `${Math.max(8, Math.min(rect.right - 148, window.innerWidth - 156))}px`;
+  el.style.top = `${rect.bottom + 6}px`;
+  el.addEventListener('click', event => {
+    const act = event.target.closest('[data-act]')?.dataset.act;
+    if (!act) return;
+    closeLibMenu();
+    if (act === 'rename') void renameBoard(board);
+    if (act === 'delete') void deleteBoard(board);
+  });
+  const onOutside = event => {
+    if (el.contains(event.target) || anchor.contains(event.target)) return;
+    closeLibMenu();
+    document.removeEventListener('mousedown', onOutside, true);
+  };
+  setTimeout(() => document.addEventListener('mousedown', onOutside, true), 0);
+  libMenuEl = el;
+}
+
+let libBound = false;
+
+function bindLibraryOnce() {
+  if (libBound) return;
+  libBound = true;
+
+  document.getElementById('bd-lib-new')?.addEventListener('click', () => { void createBoard(); });
+  document.getElementById('bd-back-btn')?.addEventListener('click', () => { void leaveCanvas(); });
+
+  const listEl = document.getElementById('bd-lib-list');
+  listEl?.addEventListener('click', event => {
+    const more = event.target.closest('.lib-more');
+    if (more) {
+      event.stopPropagation();
+      openLibMenu(more, boardById(more.dataset.more));
+      return;
+    }
+    const row = event.target.closest('.lib-row');
+    if (row) void openBoard(row.dataset.board);
+  });
+  listEl?.addEventListener('keydown', event => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    const row = event.target.closest('.lib-row');
+    if (!row || event.target !== row) return;
+    event.preventDefault();
+    void openBoard(row.dataset.board);
+  });
+}
+
+function setCanvasVisible(visible) {
+  const lib = document.getElementById('board-library');
+  const canvas = document.getElementById('board-canvas');
+  if (lib) lib.style.display = visible ? 'none' : '';
+  if (canvas) canvas.style.display = visible ? 'flex' : 'none';
+}
+
+async function enterLibrary() {
+  await loadBoards();
+  await loadBoardCounts();
+  renderLibrary();
+  setCanvasVisible(false);
+  bindLibraryOnce();
+}
+
+async function leaveCanvas() {
+  await flushBoard();
+  await enterLibrary();
+}
+
+/** 打开某块白板（从列表点进来）。 */
+export async function openBoard(id) {
+  if (!mountDom()) return;
+  if (!state.boards.length) await loadBoards();
+  const board = boardById(id) || state.boards[0];
+  if (!board) return;
+  state.boardId = board.id;
+  setCanvasVisible(true);
+  viewUserTouched = false;
+  const nameEl = document.getElementById('bd-board-name');
+  if (nameEl) nameEl.textContent = board.name;
+  await loadNotes();
+  bindAll();
+  firstFitDone = false;
+  requestAnimationFrame(() => { if (!viewUserTouched) fitViewIfFirstPaint(true); });
+}
+
+/** 拉当前白板的便签并重画。 */
+async function loadNotes() {
+  state.loading = true;
+  updateEmptyState();
+  try {
+    const notes = await fetchNotes();
+    applyAutoLayout(notes);
+    state.notes = notes;
+    state.sel.clear();
+    state.ready = true;
+    colorCursor = notes.length % NOTE_COLORS.length;
+    renderNotes();
+    rebuildEdges();
+    renderEdges();
+    applyView();
+  } catch (error) {
+    logToFile('error', `[board] 装载失败: ${error?.stack || error}`);
+  } finally {
+    state.loading = false;
+    updateEmptyState();
+  }
 }
 
 /* ───────────── 渲染 ───────────── */
@@ -304,7 +607,13 @@ function toScreen(x, y) {
   return { x: x * state.view.z + state.view.x, y: y * state.view.z + state.view.y };
 }
 
+// 用户是否亲手改过视图（缩放/平移）。
+// openBoard 里的「首次适配」是排到下一帧执行的，用户抢先动手后它会把视图拽回去，
+// 表现为点百分比复位 100% 又被拉成 110%（fitView 的上限就是 1.1）。这里作个开关。
+let viewUserTouched = false;
+
 function zoomAt(sx, sy, factor) {
+  viewUserTouched = true;
   const z0 = state.view.z;
   const z1 = clamp(z0 * factor, Z_MIN, Z_MAX);
   if (Math.abs(z1 - z0) < 1e-6) return;
@@ -499,6 +808,8 @@ async function flushDirty() {
       w: Math.round(pos.w),
       h: Math.round(pos.h),
       c: Math.round(pos.c),
+      // 归属跟着便签自己走；没有就落到当前白板（新贴的便签属于正在看的这块）
+      board: note.board || state.boardId,
       ...(note.links.length ? { links: note.links } : {}),
     };
     try {
@@ -821,6 +1132,7 @@ function startPan(e) {
   const start = { x: e.clientX, y: e.clientY, vx: state.view.x, vy: state.view.y };
   dom.stage.style.cursor = 'grabbing';
   beginDrag(e, ev => {
+    viewUserTouched = true;
     state.view.x = start.vx + (ev.clientX - start.x);
     state.view.y = start.vy + (ev.clientY - start.y);
     applyView();
@@ -859,6 +1171,8 @@ async function createNoteAt(worldPos, opts = {}) {
     h: DEFAULT_H,
     hasPos: true,
     links: [],
+    // 新便签属于「正在看的这块白板」，落库时由 flushDirty 写进 custom._bd.board
+    board: state.boardId,
     custom: {},
   };
   state.notes.unshift(note);
@@ -1122,8 +1436,11 @@ function bindBar() {
 
 function bindKeys() {
   document.addEventListener('keydown', e => {
-    // 只在本视图可见时接管
+    // 只在「画布可见」时接管：路由停在白板但正看列表页时，
+    // Delete / N / H 不应该作用到看不见的便签上。
     if (!dom?.view || dom.view.style.display === 'none') return;
+    const canvasEl = document.getElementById('board-canvas');
+    if (canvasEl && canvasEl.style.display === 'none') return;
     const target = e.target;
     const typing = target && (target.isContentEditable ||
       target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT');
@@ -1177,42 +1494,27 @@ function bindKeys() {
  * 首次进入时装载；之后每次进入只做一次轻量刷新（别人可能改过标题）。
  * @param {{force?: boolean}} [opts]
  */
-export async function initBoardPage(opts = {}) {
+export async function initBoardPage() {
   if (!mountDom()) {
     logToFile('error', '[board] 找不到 #bd-stage，白板未挂载');
     return;
   }
-  if (state.loading) return;
-  if (state.ready && !opts.force) {
-    fitViewIfFirstPaint();
-    return;
-  }
+  // 进白板页先看列表：白板多了之后，直接落到某一块画布上等于替用户做决定。
+  await enterLibrary();
+}
 
-  state.loading = true;
-  updateEmptyState();
-  try {
-    const notes = await fetchNotes();
-    applyAutoLayout(notes);
-    state.notes = notes;
-    state.ready = true;
-    colorCursor = notes.length % NOTE_COLORS.length;
-    renderNotes();
-    rebuildEdges();
-    renderEdges();
-    bindStage();
-    bindBar();
-    bindMenu();
-    bindKeys();
-    setTool('select');
-    requestAnimationFrame(() => {
-      fitViewIfFirstPaint(true);
-    });
-  } catch (error) {
-    logToFile('error', `[board] 装载失败: ${error?.stack || error}`);
-  } finally {
-    state.loading = false;
-    updateEmptyState();
-  }
+// 图表/键盘监听只该绑一次：每换一块白板重绑会把监听器叠起来，
+// 表现为「点一次便签触发两次编辑」这类幽灵 bug。
+let boardBound = false;
+
+function bindAll() {
+  if (boardBound) return;
+  boardBound = true;
+  bindStage();
+  bindBar();
+  bindMenu();
+  bindKeys();
+  setTool('select');
 }
 
 let firstFitDone = false;

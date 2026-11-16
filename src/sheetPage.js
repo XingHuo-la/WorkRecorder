@@ -6,6 +6,7 @@
 
 import { escapeHtml } from './htmlUtils.js';
 import { renderCell, openCellEditor, renderFieldIcon, FIELD_TYPE_LABELS } from './fieldTypes.js';
+import { pickAttachmentItems, storeImageFile, setAttachmentNotifier } from './attachmentOps.js';
 import { buildColgroup, buildHead, buildRow, tableWidth, autoFitWidth, fieldWidth, visibleOf, cellFormat, fieldFormat, isHexColor } from './sheetTable.js';
 import { openDatePicker } from './datePicker.js';
 import {
@@ -523,9 +524,78 @@ async function refreshSheets() {
     toast(`读取表格列表失败：${error?.message || error}`, 'danger');
   }
   try { state.fieldIndex = await listAllFields(); } catch (error) { state.fieldIndex = new Map(); }
+  notifySheetList();
 }
 
-async function openSheet(sheetId) {
+// 表格列表变化（新建 / 重命名 / 删除 / 首次加载）时通知宿主重画表 tab 条。
+// 宿主是 main.js 的 setupRecordsView —— 它不认识 sheet 内部状态，只认这份摘要。
+let sheetListListener = null;
+
+function notifySheetList(meta) {
+  if (!sheetListListener) return;
+  try {
+    sheetListListener(getSheetList(), meta || null);
+  } catch (error) {
+    console.warn('表格列表回调失败', error);
+  }
+}
+
+export function onSheetListChange(listener) {
+  sheetListListener = typeof listener === 'function' ? listener : null;
+}
+
+export function getSheetList() {
+  return (state.sheets || []).map(item => ({
+    id: item.id,
+    name: item.name,
+    fieldCount: Number(item.field_count) || 0,
+    rowCount: Number(item.row_count) || 0,
+  }));
+}
+
+export function currentSheetId() {
+  return state.sheet ? state.sheet.id : null;
+}
+
+/**
+ * 只把表列表拉一遍并返回摘要，不打开任何表。
+ * 表格页的「表库」列表用它刷新字段数/记录数 —— 宿主不认识 sheet 内部状态，
+ * 只认这份 {id,name,fieldCount,rowCount} 摘要。
+ */
+export async function refreshSheetList() {
+  if (!isSheetStoreReady()) return [];
+  await refreshSheets();
+  return getSheetList();
+}
+
+/**
+ * 从外部切到某张自建表。
+ * 宿主只需要「切过去」这一个动作，库视图（renderLibrary）在并列 tab 下没有位置，
+ * 所以这里不做 state.view === 'library' 的判断 —— 直接进表。
+ */
+export async function openSheetTab(sheetId) {
+  if (!isSheetStoreReady()) return;
+  if (!host) host = document.getElementById('sheet-app');
+  if (!host) return;
+  if (!state.sheets.length) await refreshSheets();
+  await openSheet(sheetId);
+}
+
+// 「＋ 新建表」：复用原有的新建弹层（含模板 / 归属任务），
+// 创建成功后 openNewSheetModal 内部会 refreshSheets + openSheet，
+// tab 条通过 onSheetListChange 自动多出一项。
+export function openNewSheet() {
+  openNewSheetModal();
+}
+
+// 表格动作菜单（重命名 / 改所属任务 / 删除）的对外入口。
+// 工作表原本把菜单挂在面包屑行的「⋯」上，tab 方案收掉面包屑后，
+// 由 #sheet-more-btn 传自己的 rect 进来当锚点 —— 菜单定位逻辑不动。
+export function openCurrentSheetMenu(anchorEl) {
+  openSheetMenu(anchorEl);
+}
+
+async function openSheet(sheetId, options = {}) {
   const sheet = state.sheets.find(item => String(item.id) === String(sheetId));
   if (!sheet) return;
   state.sheet = sheet;
@@ -537,6 +607,9 @@ async function openSheet(sheetId) {
   state.view = 'sheet';
   // 换了一张表：必须回到顶部，不能沿用上一张表的滚动位置
   renderSheet({ resetScroll: true });
+  // 通知宿主：meta.autoOpen 只在「刚建好一张表」时为真 ——
+  // 宿主据此把界面带进表内；普通刷新（改名/删除/开关表）不该动用户的当前位置。
+  notifySheetList({ autoOpen: !!options.autoOpen });
 }
 
 function backToLibrary() {
@@ -643,113 +716,9 @@ function startCellEdit(field, row, cellEl) {
 }
 
 // ---- 图片单元格：粘贴 / 选择 / 删除 ----
-async function fileToDataUrl(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || ''));
-    reader.onerror = () => reject(new Error('读取图片失败'));
-    reader.readAsDataURL(file);
-  });
-}
-
-// 读图片原始尺寸：行高自适应时要按比例算，光有文件路径不够
-function imageSize(dataUrl) {
-  return new Promise(resolve => {
-    const img = new Image();
-    img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight });
-    img.onerror = () => resolve({});
-    img.src = dataUrl;
-  });
-}
-
-// MIME → 落盘扩展名。必须白名单：以前是 `file.type.split('/')[1]`，
-// image/svg+xml 会变成 "svg+xml"、HEIC 会变成 "heic"，后端统一兜底存成 .png，
-// 结果文件内容是 SVG/HEIC、扩展名是 png —— 缩略图必然裂。
-const MIME_IMAGE_EXT = {
-  'image/png': 'png',
-  'image/jpeg': 'jpg',
-  'image/webp': 'webp',
-  'image/gif': 'gif',
-  'image/bmp': 'bmp',
-};
-const IMAGE_EXT_ALLOWED = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'];
-
-async function storeImageFile(file) {
-  if (file.type === 'image/svg+xml' || extOfPath(file.name || '') === 'svg') {
-    throw new Error('SVG 不支持嵌入，请先另存为 PNG');
-  }
-  const ext = MIME_IMAGE_EXT[file.type] || extOfPath(file.name || '') || '';
-  if (!IMAGE_EXT_ALLOWED.includes(ext)) {
-    throw new Error(`不支持的图片格式：${file.type || ext || '未知'}`);
-  }
-  const dataUrl = await fileToDataUrl(file);
-  const dims = await imageSize(dataUrl);
-  const path = await invoke('save_sheet_asset', { data: dataUrl, ext });
-  return { path, name: file.name || '粘贴的图片', size: file.size || 0, w: dims.w || 0, h: dims.h || 0 };
-}
-
-// ---- 自动识别：图片按路径复制进资源目录，其他文件只记链接 ----
-const IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'];
-
-function extOfPath(path) {
-  const match = String(path).toLowerCase().match(/\.([a-z0-9]+)$/);
-  return match ? match[1] : '';
-}
-
-function nameOfPath(path) {
-  const text = String(path);
-  const cut = Math.max(text.lastIndexOf('\\'), text.lastIndexOf('/'));
-  return cut >= 0 ? text.slice(cut + 1) : text;
-}
-
-function imageDimsFromSrc(src) {
-  return new Promise(resolve => {
-    const img = new Image();
-    img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight });
-    img.onerror = () => resolve({});
-    img.src = src;
-  });
-}
-
-async function imageItemFromPath(path) {
-  const saved = await invoke('save_sheet_asset_from_path', { source: path });
-  const dims = await imageDimsFromSrc(convertSrc(saved.path));
-  return {
-    path: saved.path,
-    name: saved.name || nameOfPath(path),
-    size: saved.size || 0,
-    w: dims.w || 0,
-    h: dims.h || 0,
-  };
-}
-
-// 打开系统选择框：图片自动嵌入，其他文件自动存链接。返回 nil 表示用户取消。
-async function pickAttachmentItems() {
-  const dialog = window.__TAURI__?.dialog;
-  if (!dialog?.open) { toast('添加附件需要在应用内使用', 'info'); return []; }
-  let picked;
-  try {
-    picked = await dialog.open({ multiple: true, title: '选择图片或文件（图片嵌入，其他只保存链接）' });
-  } catch (error) {
-    toast(`选择文件失败：${error?.message || error}`, 'danger');
-    return [];
-  }
-  const list = Array.isArray(picked) ? picked : picked ? [picked] : [];
-  const items = [];
-  for (const path of list) {
-    const text = String(path);
-    if (IMAGE_EXTS.includes(extOfPath(text))) {
-      try {
-        items.push(await imageItemFromPath(text));
-      } catch (error) {
-        toast(`图片处理失败：${error?.message || error}`, 'danger');
-      }
-    } else {
-      items.push({ kind: 'file', path: text, name: nameOfPath(text) });
-    }
-  }
-  return items;
-}
+// 落盘白名单 / 图片尺寸 / 系统选择框都搬到了 attachmentOps.js ——
+// 基础表（tablePage）要插同一批图片，两处各写一份白名单必然漂移。
+// 这里只留 ui 层：面板、拖拽、单元格刷新。
 
 // 单元格级追加：有内容的附件格右下角「＋」走这里；空格的双击也走这里
 async function appendAttachments(field, row, cellEl, { replace = false } = {}) {
@@ -1623,7 +1592,7 @@ function openNewSheetModal(preset = null) {
     try {
       const sheetId = await createSheet({ name, taskId, templateKey: template });
       await refreshSheets();
-      await openSheet(sheetId);
+      await openSheet(sheetId, { autoOpen: true });
       toast('表格已创建');
       return true;
     } catch (error) {
@@ -1633,12 +1602,12 @@ function openNewSheetModal(preset = null) {
   }, { btnText: '创建表格' });
 }
 
-function renameSheet() {
-  if (!state.sheet) return;
+function renameSheet(target = state.sheet) {
+  if (!target) return;
   window.showModal?.('重命名表格', `
     <div class="sh-modal">
       <label class="sh-label">表格名称</label>
-      <input type="text" class="sh-input" data-name value="${escapeHtml(state.sheet.name)}" />
+      <input type="text" class="sh-input" data-name value="${escapeHtml(target.name)}" />
     </div>`, modalBody => {
     const input = modalBody.querySelector('[data-name]');
     input?.focus();
@@ -1647,21 +1616,26 @@ function renameSheet() {
     const name = modalBody.querySelector('[data-name]')?.value.trim();
     if (!name) return false;
     try {
-      await updateSheet(state.sheet.id, { name });
+      await updateSheet(target.id, { name });
     } catch (error) {
       toast(`重命名失败：${error?.message || error}`, 'danger');
       return false;
     }
-    state.sheet.name = name;
+    target.name = name;
     await refreshSheets();
-    renderSheet();
+    // 只有「正开着的表」需要重画表内；从列表改名时列表会跟着 refreshSheets 自己更新
+    if (state.sheet && String(state.sheet.id) === String(target.id)) renderSheet();
     toast('已重命名');
     return true;
   }, { btnText: '保存' });
 }
 
-function openSheetMenu(anchorEl) {
-  if (!state.sheet) return;
+// 表格动作菜单（重命名 / 改所属任务 / 删除）。
+// target 默认是「正打开的表」，但表格页改成「表库 → 表内」两层之后，
+// 列表行上的 ⋯ 也要能用 —— 那时 state.sheet 是 null，必须由调用方传进来。
+function openSheetMenu(anchorEl, target = null) {
+  const sheet = target || state.sheet;
+  if (!sheet) return;
   const el = openPopoverSimple(anchorEl, `
     <button type="button" class="sh-menu-item" data-sheet-act="rename">
       <svg class="wr-icon" aria-hidden="true"><use href="#ic-pencil"/></svg>重命名表格
@@ -1678,38 +1652,50 @@ function openSheetMenu(anchorEl) {
     const action = event.target.closest('[data-sheet-act]')?.dataset.sheetAct;
     if (!action) return;
     closeAllPanels();
-    if (action === 'rename') renameSheet();
+    if (action === 'rename') renameSheet(sheet);
     if (action === 'task') {
-      const taskOptions = ['<option value="">不归属任务</option>', ...state.tasks.map(task => `<option value="${escapeHtml(task.id)}" ${String(task.id) === String(state.sheet.task_id) ? 'selected' : ''}>${escapeHtml(task.label)}${task.done ? '（已完成）' : ''}</option>`)].join('');
+      const taskOptions = ['<option value="">不归属任务</option>', ...state.tasks.map(task => `<option value="${escapeHtml(task.id)}" ${String(task.id) === String(sheet.task_id) ? 'selected' : ''}>${escapeHtml(task.label)}${task.done ? '（已完成）' : ''}</option>`)].join('');
       window.showModal?.('改所属任务', `<div class="sh-modal"><label class="sh-label">所属任务</label><select class="sh-select" data-task>${taskOptions}</select></div>`, null, async modalBody => {
         const value = modalBody.querySelector('[data-task]')?.value || null;
         try {
-          await updateSheet(state.sheet.id, { task_id: value == null ? null : Number(value) });
+          await updateSheet(sheet.id, { task_id: value == null ? null : Number(value) });
         } catch (error) {
           toast(`更新归属失败：${error?.message || error}`, 'danger');
           return false;
         }
-        state.sheet.task_id = value;
+        sheet.task_id = value;
         await refreshSheets();
-        renderSheet();
+        if (state.sheet && String(state.sheet.id) === String(sheet.id)) renderSheet();
         toast('已更新归属');
         return true;
       }, { btnText: '保存' });
     }
     if (action === 'delete') {
-      window.showModal?.('删除表格', `<p style="margin:0;">删除「${escapeHtml(state.sheet.name)}」以及它的 ${state.rows.length} 条记录？此操作无法撤销。</p>`, null, async () => {
+      // 行数优先用列表摘要里的 row_count：从表库删表时这张表没被打开过，state.rows 是空的
+      const total = state.sheet && String(state.sheet.id) === String(sheet.id)
+        ? state.rows.length
+        : Number(sheet.row_count) || 0;
+      window.showModal?.('删除表格', `<p style="margin:0;">删除「${escapeHtml(sheet.name)}」${total ? `以及它的 ${total} 条记录` : ''}？此操作无法撤销。</p>`, null, async () => {
+        const wasOpen = state.sheet && String(state.sheet.id) === String(sheet.id);
         try {
-          await deleteSheet(state.sheet.id);
+          await deleteSheet(sheet.id);
         } catch (error) {
           toast(`删除失败：${error?.message || error}`, 'danger');
           return false;
         }
-        backToLibrary();
+        if (wasOpen) backToLibrary();
+        else await refreshSheets();
         toast('表格已删除');
         return true;
       }, { danger: true, btnText: '删除' });
     }
   });
+}
+
+// 表库里按 id 打开菜单：宿主只拿得到列表摘要，不持有 sheet 对象。
+export function openSheetMenuFor(sheetId, anchorEl) {
+  const sheet = state.sheets.find(item => String(item.id) === String(sheetId));
+  if (sheet) openSheetMenu(anchorEl, sheet);
 }
 
 // ==========================================
@@ -2549,6 +2535,8 @@ export async function initSheetPage() {
   host = document.getElementById('sheet-app');
   if (!host) return;
   if (!isSheetStoreReady()) return;
+  // 附件的落盘/选择在 attachmentOps 里，失败提示要走本页的 toast。
+  setAttachmentNotifier(toast);
 
   if (!host.dataset.shBound) {
     host.dataset.shBound = '1';
