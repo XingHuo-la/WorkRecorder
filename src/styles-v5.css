@@ -156,3 +156,80 @@ body[data-skin="v4"] .rec-detail-tools .rec-filter select {
   max-width: 132px !important;
   text-overflow: ellipsis !important;
 }
+
+/* =====================================================================
+   第 3 节 · 就地编辑态 = Excel 的「单元格本身变成输入框」
+   ---------------------------------------------------------------------
+   原来两个表各错一半：
+   · 基础表：styles.css 的 .ft-cell-editing 给的是 0 0 0 3px var(--ui-ring)
+     外发光 + --bg-input 底色 → 看着像格子里浮着一个淡蓝色小框；
+   · 自建表：box-shadow:none + 6% 主色淡底 → 一编辑整格泛蓝。
+   两者都不是 Excel：Excel 进编辑时**没有新框**，是原来的格子把边框换成
+   2px 主题色，字体字号位置一动不动，光标就在原文字的位置。
+
+   实现要点（顺序不能变）：
+   ① .ft-inline-input 自带 4px 6px 内边距，而 .wr-cell 又有 12px —— 直接铺满
+      会让文字往右跳 6px、往下跳 4px。用负 margin 吃掉单元格内边距、再用
+      同等 padding 补回来，文字落点与静态态**逐像素重合**。
+   ② 负 margin 会把 width:100% 撑出去 24px，所以必须 width:auto + flex:1。
+   ===================================================================== */
+
+body[data-skin="v4"] .wr-cell.ft-cell-editing {
+  /* 不换颜色语义，只比行底亮一档，让「正在改的那一格」从行里浮出来 */
+  background: var(--v4-surface-2) !important;
+  box-shadow: inset 0 0 0 2px var(--color-primary) !important;
+  border-radius: 0 !important;
+}
+
+body[data-skin="v4"] .wr-cell .ft-inline-input {
+  flex: 1 1 auto !important;
+  align-self: stretch !important;
+  width: auto !important;
+  min-width: 0 !important;
+  margin: 0 -12px !important;   /* 吃掉 .wr-cell 的左右 12px */
+  padding: 0 12px !important;   /* 再补回同样的 12px → 文字不跳 */
+  height: auto !important;
+  min-height: 46px !important;  /* 与 .wr-cell min-height 对齐 */
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  outline: none !important;
+  color: var(--v4-text) !important;
+  font-size: 13.5px !important;
+  font-family: inherit !important;
+  line-height: normal !important;
+  caret-color: var(--color-primary) !important;
+}
+
+/* 自建表：.sh-cell 是 padding:0 12px，输入框只吃「内容盒」——
+   不补负 margin 的话描边会内缩 12px，看着又变成「格子里浮着一个小框」（已实测）。
+   同样用「吃掉内边距 + 补回同等 padding」保证文字落点不动。 */
+body[data-skin="v4"] .sh-cell.ft-cell-editing {
+  background: var(--v4-surface-2) !important;
+  box-shadow: inset 0 0 0 2px var(--color-primary) !important;
+  border-radius: 0 !important;
+}
+
+body[data-skin="v4"] .sh-cell .ft-inline-input {
+  flex: 1 1 auto !important;
+  align-self: stretch !important;
+  width: auto !important;
+  min-width: 0 !important;
+  margin: 0 -12px !important;
+  padding: 0 12px !important;
+  color: var(--v4-text) !important;
+  font-size: 13.5px !important;
+  font-family: inherit !important;
+  caret-color: var(--color-primary) !important;
+}
+
+/* 换行的列：.sh-cell.is-wrap 的内边距是 9px 12px、且垂直方向顶对齐，
+   负 margin / padding 必须按这一组数来，否则文字会上下跳 9px。 */
+body[data-skin="v4"] .sh-cell.is-wrap .ft-inline-input,
+body[data-skin="v4"] .sh-cell.is-wrap .ft-inline-input.is-multiline {
+  margin: -9px -12px !important;
+  padding: 9px 12px !important;
+  width: auto !important;
+  align-self: stretch !important;
+}
