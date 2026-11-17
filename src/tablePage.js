@@ -9,6 +9,8 @@
 
 import { escapeHtml } from './htmlUtils.js';
 import { pickAttachmentItems, storeImageFile, filesFromDataTransfer, setAttachmentNotifier, convertSrc } from './attachmentOps.js';
+import { createGrid, serializeTSV, parseTSV } from './gridCore.js';
+import { undoStack } from './undoCore.js';
 import {
   FIELD_TYPE_ORDER,
   FIELD_TYPE_LABELS,
@@ -39,6 +41,11 @@ let inited = false;
 let fields = [];         // field_def 行（entity='log'，按 sort 排序）
 let rows = [];           // logs 行
 let optionCache = { tags: [], sub_tags: [] };
+/* 当前渲染出来的行/列。gridCore 的坐标（r/c）指的是这两个数组的下标，
+   不是 rows/fields —— filterRows 之后顺序会变，用原数组下标点错行。 */
+let renderedRows = [];
+let renderedFields = [];
+let grid = null;         // gridCore 控制器
 /* 成功写库的次数。刷新是「先查再渲染」，若查询在途时有写入落地，
    这份快照就比库旧 —— 直接渲染会把用户刚改的值刷回去（实测缺陷）。
    refresh 拿它做版本校验，读到旧版本就重读一次。 */
@@ -271,11 +278,13 @@ function buildHeadHtml(visibleFields) {
   </th></tr>`;
 }
 
-function buildRowHtml(row, visibleFields) {
-  const cells = visibleFields.map(field => {
+function buildRowHtml(row, visibleFields, rowIndex = 0) {
+  const cells = visibleFields.map((field, colIndex) => {
     const value = readFieldValue(field, row);
+    // data-rowindex / data-col 是 gridCore 的坐标来源，必须与「当前渲染顺序」一致。
+    // data-id / data-key 用于写库与重新定位，两者并存不是冗余。
     return `<td class="wr-table-td wr-table-td-${escapeHtml(field.key.replace('.', '-'))}">
-      <div class="wr-cell" data-key="${escapeHtml(field.key)}" data-id="${escapeHtml(row.id)}">${renderCell(field, value, cellCtxFor(field, row))}</div>
+      <div class="wr-cell" tabindex="-1" data-key="${escapeHtml(field.key)}" data-id="${escapeHtml(row.id)}" data-rowindex="${rowIndex}" data-col="${colIndex}">${renderCell(field, value, cellCtxFor(field, row))}</div>
     </td>`;
   }).join('');
   return `<tr class="wr-table-row" data-id="${escapeHtml(row.id)}">${cells}<td class="wr-table-td wr-table-td-add"></td></tr>`;
@@ -299,6 +308,9 @@ export function renderTable(rootEl, data = {}) {
   const useRows = filterRows(rows);
 
   const visibleFields = useFields.filter(field => Number(field.visible) !== 0);
+  // 渲染快照：gridCore 的坐标全部基于这两个数组
+  renderedRows = useRows;
+  renderedFields = visibleFields;
   // 列宽用百分比（基准权重见 DEFAULT_WIDTHS）：
   // table-layout:fixed 下 px 列宽之和是表格的硬下限，会导致容器窄时无法压缩列；
   // 百分比则随表格宽度（100% 或 min-width:900px）等比缩放。
@@ -309,7 +321,7 @@ export function renderTable(rootEl, data = {}) {
   ].join('');
 
   const tbody = useRows.length
-    ? useRows.map(row => buildRowHtml(row, visibleFields)).join('')
+    ? useRows.map((row, index) => buildRowHtml(row, visibleFields, index)).join('')
     : buildEmptyHtml(visibleFields.length + 1);
 
   rootEl.innerHTML = `
@@ -365,6 +377,281 @@ function render() {
   if (!root) return;
   closeTransientEditors();
   renderTable(root, { fields, rows, optionCache });
+  paintGridSelection();
+}
+
+// ==========================================
+// 网格交互：选中 / 键盘 / 剪贴板 / 撤销
+// ==========================================
+//
+// 分工：编辑器（fieldTypes.js）自己管 Enter 提交、Esc 放弃；本层只负责
+// 「提交完往哪走」以及选中、导航、复制粘贴。两边都拦 Enter 会打架，
+// 所以这里只在 capture 阶段记账（pendingMove），不 preventDefault。
+
+let pendingMove = null;
+
+function tableRoot() {
+  return document.getElementById('table-view-root');
+}
+
+function cellElOf(r, c) {
+  const root = tableRoot();
+  if (!root) return null;
+  return root.querySelector(`.wr-cell[data-rowindex="${r}"][data-col="${c}"]`);
+}
+
+function cellAt(r, c) {
+  const row = renderedRows[r];
+  const field = renderedFields[c];
+  if (!row || !field) return null;
+  return { row, field };
+}
+
+function isEditingCell() {
+  return Boolean(tableRoot()?.querySelector('.ft-inline-input, .ft-cell-editing'));
+}
+
+function paintGridSelection() {
+  const root = tableRoot();
+  if (!root || !grid) return;
+  root.querySelectorAll('.wr-cell.is-sel, .wr-cell.is-active')
+    .forEach(el => el.classList.remove('is-sel', 'is-active'));
+
+  const active = grid.sel.active();
+  if (!active) return;
+
+  root.querySelectorAll('.wr-cell[data-rowindex]').forEach(el => {
+    const r = Number(el.dataset.rowindex);
+    const c = Number(el.dataset.col);
+    if (Number.isNaN(r) || Number.isNaN(c)) return;
+    if (grid.sel.contains(r, c)) el.classList.add('is-sel');
+  });
+  cellElOf(active.r, active.c)?.classList.add('is-active');
+}
+
+function startEditAt(r, c, opts = {}) {
+  const target = cellAt(r, c);
+  const el = cellElOf(r, c);
+  if (!target || !el) return;
+  const { field, row } = target;
+
+  openCellEditor(el, field, readFieldValue(field, row), {
+    getOptions: source => sortedOptionsFor(source, row),
+    ensureOption: (f, label) => ensureOption(f, label, row),
+    commit: next => commitCellValue(field, row, el, next),
+    toast: showTableToast,
+    placeholder: field.key === 'text' ? '未命名' : undefined,
+    onAttachmentEdit: () => openAttachPanel(el, field, row),
+  });
+
+  // 直接敲字：编辑器已经建好输入框并全选原值，这里用首字符替换
+  if (opts.char) {
+    const input = el.querySelector('.ft-inline-input');
+    if (input) {
+      input.value = opts.char;
+      if (typeof input.setSelectionRange === 'function') {
+        input.setSelectionRange(opts.char.length, opts.char.length);
+      }
+    }
+  }
+}
+
+async function clearCells(cells) {
+  const picked = [];
+  for (const { r, c } of cells) {
+    const target = cellAt(r, c);
+    if (!target) continue;
+    const before = readFieldValue(target.field, target.row);
+    const isEmptyValue = before === '' || before === null || before === undefined
+      || (Array.isArray(before) && before.length === 0);
+    if (isEmptyValue) continue;
+    picked.push({ ...target, before });
+  }
+  if (!picked.length) return;
+
+  for (const item of picked) {
+    await writeFieldValue(item.field, item.row, '');
+    repaintRowCell(item.row, item.field);
+  }
+  writeTick += 1;
+
+  undoStack.push({
+    label: `清空 ${picked.length} 格`,
+    undo: async () => {
+      for (const item of picked) await writeFieldValue(item.field, item.row, item.before);
+      writeTick += 1;
+      picked.forEach(item => repaintRowCell(item.row, item.field));
+    },
+    redo: async () => {
+      for (const item of picked) await writeFieldValue(item.field, item.row, '');
+      writeTick += 1;
+      picked.forEach(item => repaintRowCell(item.row, item.field));
+    },
+  });
+
+  showTableToast(`已清空 ${picked.length} 格`, 'info');
+}
+
+function copyMatrix(matrix, { cut = false } = {}) {
+  if (!matrix.length) return;
+  const text = serializeTSV(matrix);
+  navigator.clipboard?.writeText(text).catch(() => {});
+  const cols = matrix[0]?.length || 0;
+  showTableToast(cut ? `已剪切 ${matrix.length} × ${cols}` : `已复制 ${matrix.length} × ${cols}`, 'info');
+  if (cut) {
+    const cells = grid?.sel.cells() || [];
+    clearCells(cells);
+  }
+}
+
+/** 从 (r, c) 开始把二维数组铺进表格。类型不匹配的列（附件）跳过，不硬塞。 */
+async function pasteMatrix(r, c, matrix) {
+  if (!matrix.length) return;
+  const changes = [];
+
+  for (let i = 0; i < matrix.length; i += 1) {
+    const line = matrix[i];
+    for (let j = 0; j < line.length; j += 1) {
+      const target = cellAt(r + i, c + j);
+      if (!target) continue;
+      if (target.field.type === 'attachment') continue;
+      const before = readFieldValue(target.field, target.row);
+      const next = line[j];
+      if (String(before ?? '') === String(next ?? '')) continue;
+      changes.push({ ...target, before, next });
+    }
+  }
+
+  if (!changes.length) {
+    showTableToast('粘贴内容与现有值相同，未做改动', 'info');
+    return;
+  }
+
+  for (const item of changes) {
+    await writeFieldValue(item.field, item.row, item.next);
+    repaintRowCell(item.row, item.field);
+  }
+  writeTick += 1;
+
+  undoStack.push({
+    label: `粘贴 ${changes.length} 格`,
+    undo: async () => {
+      for (const item of changes) await writeFieldValue(item.field, item.row, item.before);
+      writeTick += 1;
+      changes.forEach(item => repaintRowCell(item.row, item.field));
+    },
+    redo: async () => {
+      for (const item of changes) await writeFieldValue(item.field, item.row, item.next);
+      writeTick += 1;
+      changes.forEach(item => repaintRowCell(item.row, item.field));
+    },
+  });
+
+  showTableToast(`已粘贴 ${changes.length} 格`, 'success');
+}
+
+function selectAllCells() {
+  if (!renderedRows.length || !renderedFields.length || !grid) return;
+  grid.select(0, 0);
+  grid.sel.extendTo(renderedRows.length - 1, renderedFields.length - 1);
+  paintGridSelection();
+}
+
+function ensureGrid() {
+  if (grid) return grid;
+  grid = createGrid({
+    rowCount: () => renderedRows.length,
+    colCount: () => renderedFields.length,
+    isEditing: isEditingCell,
+    pageSize: () => 12,
+    isEmpty: (r, c) => {
+      const target = cellAt(r, c);
+      if (!target) return true;
+      const value = readFieldValue(target.field, target.row);
+      if (Array.isArray(value)) return value.length === 0;
+      return value === '' || value === null || value === undefined;
+    },
+    focus: (r, c) => {
+      const el = cellElOf(r, c);
+      if (!el) return;
+      el.focus({ preventScroll: true });
+      el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    },
+    onSelection: paintGridSelection,
+    onEditStart: (r, c, opts) => startEditAt(r, c, opts),
+    onClear: cells => clearCells(cells),
+    onCopy: (matrix, opts) => copyMatrix(matrix, opts),
+    onSelectAll: selectAllCells,
+    onUndo: () => undoStack.undo(),
+    onRedo: () => undoStack.redo(),
+    // 新建记录是异步的，行还没出来就移动会落空 —— 先不接管「末行 Tab 补一行」
+    appendRow: () => false,
+  });
+  return grid;
+}
+
+function onRootKeydown(event) {
+  if (!grid) return;
+  // 全局 Ctrl+Z 在 document 捕获阶段就处理掉了（并 preventDefault）。
+  // 这里不再拦一次，否则一次按键会连撤两步。
+  if (event.defaultPrevented) return;
+
+  // 编辑态：编辑器自己管 Enter / Esc，这里只补 Tab（文本编辑器没绑 Tab）
+  if (isEditingCell()) {
+    if (event.key === 'Tab') {
+      event.preventDefault();
+      pendingMove = { dr: 0, dc: event.shiftKey ? -1 : 1, wrap: true };
+      tableRoot()?.querySelector('.ft-inline-input')?.blur();
+      return;
+    }
+    if (event.key === 'Enter') {
+      // 只记账，提交仍由编辑器触发
+      pendingMove = { dr: event.shiftKey ? -1 : 1, dc: 0, wrap: false };
+      return;
+    }
+    return;
+  }
+
+  if (!event.target.closest?.('.wr-cell')) return;
+  if (ensureGrid().handleKeydown(event)) event.preventDefault();
+}
+
+function onRootPaste(event) {
+  if (isEditingCell()) return;
+  const active = grid?.sel.active();
+  if (!active) return;
+  const text = event.clipboardData?.getData('text/plain') || '';
+  if (!text.trim()) return;
+  event.preventDefault();
+  pasteMatrix(active.r, active.c, parseTSV(text));
+}
+
+function onRootDblClick(event) {
+  if (event.target.closest('.ft-inline-input, .ft-dropdown')) return;
+  const cell = event.target.closest('.wr-cell');
+  if (!cell) return;
+  const r = Number(cell.dataset.rowindex);
+  const c = Number(cell.dataset.col);
+  if (Number.isNaN(r) || Number.isNaN(c)) return;
+  event.preventDefault();
+  startEditAt(r, c, {});
+}
+
+function registerCellUndo(field, row, before, after) {
+  if (JSON.stringify(before ?? '') === JSON.stringify(after ?? '')) return;
+  undoStack.push({
+    label: `编辑「${field.label || field.key}」`,
+    undo: async () => {
+      await writeFieldValue(field, row, before);
+      writeTick += 1;
+      repaintRowCell(row, field);
+    },
+    redo: async () => {
+      await writeFieldValue(field, row, after);
+      writeTick += 1;
+      repaintRowCell(row, field);
+    },
+  });
 }
 
 // ==========================================
@@ -387,13 +674,22 @@ function repaintRowCell(row, field) {
 
 async function commitCellValue(field, row, cellEl, newValue) {
   if (!adapter) return;
+  const before = readFieldValue(field, row);
+  const move = pendingMove;
+  pendingMove = null;
+
   try {
     await writeFieldValue(field, row, newValue);
     writeTick += 1;
     rerenderCell(cellEl, field, row);
     if (!cellEl.isConnected) repaintRowCell(row, field);
+    registerCellUndo(field, row, before, newValue);
   } catch (error) {
     showTableToast(`保存失败：${error?.message || error}`, 'danger');
+  } finally {
+    // Excel 手感：Enter 提交后下移、Tab 提交后右移。移动必须在提交完成之后，
+    // 否则落点按旧行数算，最后一行提交完会移到不存在的位置。
+    if (move) grid?.move(move.dr, move.dc, move.wrap);
   }
 }
 
@@ -437,23 +733,16 @@ async function ensureOption(field, label, row) {
   return { value: label2, label: label2 };
 }
 
+// 直接进编辑（新建记录后自动聚焦标题列就是走这里）。
+// 不再自己拼一套 actions：坐标交给 gridCore 选中，编辑交给 startEditAt，
+// 否则会出现「两处传的 commit/ensureOption 不一样」这种只有线上才会发作的漂移。
 function handleCellClick(cellEl) {
   if (!adapter) return;
-  const key = cellEl.dataset.key;
-  const rowId = cellEl.dataset.id;
-  const field = fields.find(item => item.key === key);
-  const row = rows.find(item => String(item.id) === String(rowId));
-  if (!field || !row) return;
-  const value = readFieldValue(field, row);
-
-  openCellEditor(cellEl, field, value, {
-    getOptions: source => sortedOptionsFor(source, row),
-    ensureOption: (f, label) => ensureOption(f, label, row),
-    commit: next => commitCellValue(field, row, cellEl, next),
-    toast: showTableToast,
-    placeholder: field.key === 'text' ? '未命名' : undefined,
-    onAttachmentEdit: () => openAttachPanel(cellEl, field, row),
-  });
+  const r = Number(cellEl.dataset.rowindex);
+  const c = Number(cellEl.dataset.col);
+  if (Number.isNaN(r) || Number.isNaN(c)) return;
+  ensureGrid().select(r, c);
+  startEditAt(r, c, {});
 }
 
 // ==========================================
@@ -897,13 +1186,35 @@ function onRootClick(event) {
   if (addRowBtn) { createRecord(); return; }
 
   const cell = event.target.closest('.wr-cell');
-  if (cell) { handleCellClick(cell); return; }
+  if (cell) {
+    // 点在编辑器里不改变选中，否则点输入框会把选区挪走、提交落点算错
+    if (event.target.closest('.ft-inline-input, .ft-dropdown')) return;
+
+    const r = Number(cell.dataset.rowindex);
+    const c = Number(cell.dataset.col);
+    if (Number.isNaN(r) || Number.isNaN(c)) return;
+
+    const extend = event.shiftKey;
+    const additive = event.ctrlKey || event.metaKey;
+    const prev = grid?.sel.active();
+    const wasActive = Boolean(prev) && prev.r === r && prev.c === c;
+
+    ensureGrid().select(r, c, { extend, additive });
+
+    // 第二次点同一格进编辑：比要求精确双击宽容，也保留了原来「点一下就能改」的手感
+    if (wasActive && !extend && !additive && !isEditingCell()) startEditAt(r, c, {});
+    return;
+  }
 }
 
 export function bindTableEvents(rootEl) {
   if (!rootEl || rootEl.dataset.wrTableBound === '1') return;
   rootEl.dataset.wrTableBound = '1';
   rootEl.addEventListener('click', onRootClick);
+  rootEl.addEventListener('dblclick', onRootDblClick);
+  rootEl.addEventListener('keydown', onRootKeydown);
+  rootEl.addEventListener('paste', onRootPaste);
+  ensureGrid();
 }
 
 function bindToolbar() {

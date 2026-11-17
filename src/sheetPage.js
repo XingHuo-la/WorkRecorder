@@ -5,6 +5,8 @@
 // 所有 DOM 由本模块生成，index.html 只留一个空壳，避免和旧样式打架。
 
 import { escapeHtml } from './htmlUtils.js';
+import { serializeTSV, parseTSV } from './gridCore.js';
+import { undoStack } from './undoCore.js';
 import { renderCell, openCellEditor, renderFieldIcon, FIELD_TYPE_LABELS } from './fieldTypes.js';
 import { pickAttachmentItems, storeImageFile, setAttachmentNotifier } from './attachmentOps.js';
 import { buildColgroup, buildHead, buildRow, tableWidth, autoFitWidth, fieldWidth, visibleOf, cellFormat, fieldFormat, isHexColor } from './sheetTable.js';
@@ -647,6 +649,11 @@ function writeRow(row) {
 
 async function commitCell(field, row, cellEl, value) {
   const previous = row.values[field.key];
+  // 编辑器常常「打开又原样提交」，不判等会让撤销栈里塞满空步骤
+  if (sameCellValue(previous, value)) {
+    focusIfIdle(cellEl);
+    return;
+  }
   row.values[field.key] = value;
   if (cellEl) cellEl.innerHTML = renderCell(field, value, cellCtx(field));
   markSaving();
@@ -654,6 +661,11 @@ async function commitCell(field, row, cellEl, value) {
     await writeRow(row);
     await touchSheet(state.sheet.id);
     markSaved();
+    registerCellUndo(
+      [{ row, field, before: previous, after: value }],
+      `${field.label || '单元格'} 改值`,
+      state.sheet?.id
+    );
     // 标题类字段改动后，详情抽屉的标题也要跟着变 —— 简单起见重建抽屉不划算，
     // 这里只在表格上体现；重开抽屉即最新。
   } catch (error) {
@@ -673,6 +685,71 @@ function focusIfIdle(cellEl) {
   const active = document.activeElement;
   if (active && active !== document.body) return;
   cellEl.focus?.({ preventScroll: true });
+}
+
+/* ───────────── 单元格改动的撤销 ───────────── */
+
+function isEmptyCellValue(value) {
+  return value === undefined || value === null || value === ''
+    || (Array.isArray(value) && value.length === 0);
+}
+
+function sameCellValue(a, b) {
+  if (isEmptyCellValue(a) && isEmptyCellValue(b)) return true;
+  if (Array.isArray(a) || Array.isArray(b)) return JSON.stringify(a) === JSON.stringify(b);
+  return String(a) === String(b);
+}
+
+/**
+ * 批量写单元格并重画受影响的格子。
+ * 不整表重排：renderSheet 会把滚动位置和选区一起丢掉，撤销一下就不知道自己在哪了。
+ */
+async function applyCellBatch(items, sheetId) {
+  if (!items.length) return;
+  const map = new Map();
+  for (const item of items) {
+    item.row.values[item.field.key] = item.value;
+    map.set(`${item.row.id}:${item.field.key}`, item);
+  }
+  // 行可能被筛选掉、或还落在未渲染的分块里 —— 那就只改内存，
+  // 下次 loadRows / 滚动补块自然是最新的。
+  if (!sheetId || String(state.sheet?.id) === String(sheetId)) {
+    host?.querySelectorAll('.sh-cell[data-row][data-key]').forEach(el => {
+      const hit = map.get(`${el.dataset.row}:${el.dataset.key}`);
+      if (hit) el.innerHTML = renderCell(hit.field, hit.value, cellCtx(hit.field));
+    });
+  }
+  markSaving();
+  const written = new Set();
+  try {
+    for (const item of items) {
+      if (written.has(item.row)) continue;
+      written.add(item.row);
+      await writeRow(item.row);
+    }
+    if (sheetId) await touchSheet(sheetId);
+    markSaved();
+  } catch (error) {
+    markSaved();
+    toast(`撤销失败：${error?.message || error}`, 'danger');
+  }
+}
+
+/**
+ * 单元格改动登记到全局撤销栈。
+ * changes = [{ row, field, before, after }]
+ * 一次批量操作（粘贴一块 / 清空选区 / Ctrl+X）合成一步 —— 和 Excel 一致：
+ * Ctrl+Z 撤掉的是「刚才那次粘贴」，不是粘贴里的某一格。
+ */
+function registerCellUndo(changes, label, sheetId) {
+  const list = changes.filter(item => !sameCellValue(item.before, item.after));
+  if (!list.length) return;
+  const target = sheetId ?? state.sheet?.id;
+  undoStack.push({
+    label,
+    undo: () => applyCellBatch(list.map(item => ({ row: item.row, field: item.field, value: item.before })), target),
+    redo: () => applyCellBatch(list.map(item => ({ row: item.row, field: item.field, value: item.after })), target),
+  });
 }
 
 function startCellEdit(field, row, cellEl) {
@@ -1038,6 +1115,27 @@ function copySelectionToClipboard() {
   clipboard.value = null;
   clipboard.values = null;
   clipboard.rowLabel = `${items.length} 格`;
+
+  // 同时写一份 TSV 到系统剪贴板：粘到 Excel / WPS 时才不会挤成一格。
+  // 内部剪贴板继续保留（它能搬图片和类型化值），两条路互不干扰。
+  try {
+    const maxR = Math.max(...coords.map(pair => pair[0]));
+    const maxC = Math.max(...coords.map(pair => pair[1]));
+    const lines = [];
+    for (let r = minR; r <= maxR; r += 1) {
+      const line = [];
+      for (let c = minC; c <= maxC; c += 1) {
+        const row = rows[r];
+        const field = cols[c];
+        line.push(row && field ? displayValue(field, row.values[field.key]) : '');
+      }
+      lines.push(line);
+    }
+    navigator.clipboard?.writeText(serializeTSV(lines)).catch(() => {});
+  } catch (error) {
+    // 写不进系统剪贴板不影响内部复制，静默即可
+  }
+
   toast(`已复制 ${items.length} 格，选中目标单元格后 Ctrl+V 粘贴`);
   return true;
 }
@@ -1348,6 +1446,84 @@ async function pasteFromClipboard(field, row, cellEl) {
     toast('无法读取剪贴板，请选中单元格后按 Ctrl+V', 'info');
     return false;
   }
+}
+
+/** Excel 粘进来的都是纯文本，按字段类型收一下，别把 "1,234" 直接塞进数字列 */
+function coercePasteValue(field, raw) {
+  const text = String(raw ?? '').replace(/\r/g, '').trim();
+  switch (field.type) {
+    case 'multi_select':
+      return text ? text.split(/[,，、;；]/).map(part => part.trim()).filter(Boolean) : [];
+    case 'checkbox':
+      return /^(1|true|是|✓|y|yes)$/i.test(text);
+    case 'number': {
+      if (!text) return '';
+      const num = Number(text.replace(/,/g, ''));
+      return Number.isFinite(num) ? num : null; // null = 这一格跳过
+    }
+    case 'attachment':
+      return null; // 文本粘不进附件列
+    default:
+      return text;
+  }
+}
+
+/**
+ * 从 Excel / WPS 粘一块进来。
+ * 内部复制走的是类型化对象（能搬图片），这里只处理纯文本 TSV —— 两条路径并存，
+ * 因为「内部复制」和「跨应用粘贴」的能力本来就不同，硬合成一条会丢图片。
+ */
+async function pasteTSVAt(cellEl, text) {
+  const matrix = parseTSV(text);
+  if (!matrix.length) return false;
+
+  const anchorR = Number(cellEl.dataset.rowindex);
+  const anchorC = Number(cellEl.dataset.col);
+  if (Number.isNaN(anchorR) || Number.isNaN(anchorC)) return false;
+
+  const rows = rowsInView();
+  const cols = visibleOf(state.fields);
+  const touched = new Map();
+  const changes = [];
+  let filled = 0;
+  let skipped = 0;
+
+  for (let i = 0; i < matrix.length; i += 1) {
+    for (let j = 0; j < matrix[i].length; j += 1) {
+      const row = rows[anchorR + i];
+      const field = cols[anchorC + j];
+      if (!row || !field) { skipped += 1; continue; }
+      const value = coercePasteValue(field, matrix[i][j]);
+      if (value === null) { skipped += 1; continue; }
+      const before = row.values[field.key];
+      row.values[field.key] = value;
+      changes.push({ row, field, before, after: value });
+      const target = host.querySelector(`.sh-cell[data-rowindex="${anchorR + i}"][data-col="${anchorC + j}"]`);
+      if (target) target.innerHTML = renderCell(field, value, cellCtx(field));
+      touched.set(String(row.id), row);
+      filled += 1;
+    }
+  }
+
+  if (!filled) { toast('没有可粘贴的内容', 'info'); return false; }
+
+  const sheetId = state.sheet?.id;
+  markSaving();
+  try {
+    for (const row of touched.values()) await writeRow(row);
+    await touchSheet(state.sheet.id);
+    markSaved();
+    registerCellUndo(changes, `粘贴 ${filled} 格`, sheetId);
+  } catch (error) {
+    markSaved();
+    toast(`粘贴失败：${error?.message || error}`, 'danger');
+    await reloadRows();
+    renderSheet();
+    return false;
+  }
+
+  toast(skipped ? `已粘贴 ${filled} 格，跳过 ${skipped} 格` : `已粘贴 ${filled} 格`);
+  return true;
 }
 
 async function insertRows(row, count, side) {
@@ -1951,6 +2127,7 @@ async function bulkWriteCells(mode, rawValue) {
 
   // 直接遍历选区集合（支持 Ctrl 加选的离散格），按行聚合后每行只存一次
   const touchedRows = new Map(); // rowId → { row, touched }
+  const changes = [];            // [{ row, field, before, after }]，供撤销栈用
   let touchedCells = 0;
   sel.cells.forEach(key => {
     const [r, c] = key.split(':').map(Number);
@@ -1962,7 +2139,9 @@ async function bulkWriteCells(mode, rawValue) {
     const current = row.values[field.key];
     if (mode === 'clear') {
       if (current !== '' && current !== undefined && current !== null) {
-        row.values[field.key] = field.type === 'checkbox' ? false : field.type === 'attachment' ? [] : '';
+        const blank = field.type === 'checkbox' ? false : field.type === 'attachment' ? [] : '';
+        row.values[field.key] = blank;
+        changes.push({ row, field, before: current, after: blank });
         entry.touched = true;
         touchedCells += 1;
       }
@@ -1970,7 +2149,12 @@ async function bulkWriteCells(mode, rawValue) {
     }
     if (field.type !== 'text' && field.type !== 'number') return;
     const next = String(rawValue ?? '');
-    if (current !== next) { row.values[field.key] = next; entry.touched = true; touchedCells += 1; }
+    if (current !== next) {
+      row.values[field.key] = next;
+      changes.push({ row, field, before: current, after: next });
+      entry.touched = true;
+      touchedCells += 1;
+    }
   });
   if (![...touchedRows.values()].some(entry => entry.touched)) {
     // 非文本列会被跳过：全都填不进去时给个明确提示，别静默无反应
@@ -1979,6 +2163,7 @@ async function bulkWriteCells(mode, rawValue) {
   }
 
   const count = touchedCells;
+  const sheetId = state.sheet?.id;
   markSaving();
   try {
     for (const { row, touched } of touchedRows.values()) {
@@ -1986,6 +2171,11 @@ async function bulkWriteCells(mode, rawValue) {
     }
     await touchSheet(state.sheet.id);
     markSaved();
+    registerCellUndo(
+      changes,
+      mode === 'clear' ? `清空 ${count} 格` : `填入 ${count} 格`,
+      sheetId
+    );
     toast(mode === 'clear' ? `已清空 ${count} 格` : `已批量填入 ${count} 格`);
     clearSelection();
     renderSheet();
@@ -2517,13 +2707,68 @@ function onHostKeydown(event) {
     commitCell(field, row, cell, field.type === 'checkbox' ? false : '');
     return;
   }
-  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+  // 方向键：四向移动（原来只有 ↑↓，左右缺失是「不习惯」的主要来源）。
+  // 坐标从 data-rowindex / data-col 取，和 selectCell 同一套。
+  const ARROW_STEPS = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] };
+  if (ARROW_STEPS[event.key]) {
     event.preventDefault();
-    const cells = [...host.querySelectorAll(`.sh-cell[data-key="${CSS.escape(field.key)}"]`)];
-    const index = cells.indexOf(cell);
-    const next = cells[index + (event.key === 'ArrowDown' ? 1 : -1)];
-    next?.focus();
-    next?.scrollIntoView({ block: 'nearest' });
+    const rowIndex = Number(cell.dataset.rowindex);
+    const colIndex = Number(cell.dataset.col);
+    if (Number.isNaN(rowIndex) || Number.isNaN(colIndex)) return;
+
+    const [dr, dc] = ARROW_STEPS[event.key];
+    // Ctrl+方向：跳到空白区边界（Excel 语义）；这里简化为跳到首/末，够用且不会跳错
+    if (event.ctrlKey || event.metaKey) {
+      const rowsAll = rowsInView();
+      const colsAll = visibleOf(state.fields);
+      const nr = dr ? (dr > 0 ? rowsAll.length - 1 : 0) : rowIndex;
+      const nc = dc ? (dc > 0 ? colsAll.length - 1 : 0) : colIndex;
+      const jumpCell = host.querySelector(`.sh-cell[data-rowindex="${nr}"][data-col="${nc}"]`);
+      if (jumpCell) {
+        selectCell(jumpCell, { range: event.shiftKey });
+        jumpCell.focus?.({ preventScroll: true });
+        jumpCell.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      }
+      return;
+    }
+
+    const nextR = rowIndex + dr;
+    const nextC = colIndex + dc;
+    const nextCell = host.querySelector(`.sh-cell[data-rowindex="${nextR}"][data-col="${nextC}"]`);
+    if (!nextCell) return;
+    selectCell(nextCell, { range: event.shiftKey });
+    nextCell.focus?.({ preventScroll: true });
+    nextCell.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    return;
+  }
+
+  // Tab / Home / End：Excel 的三件套。
+  if (event.key === 'Tab' || event.key === 'Home' || event.key === 'End') {
+    event.preventDefault();
+    const rowIndex = Number(cell.dataset.rowindex);
+    const colIndex = Number(cell.dataset.col);
+    const rowsAll = rowsInView();
+    const colsAll = visibleOf(state.fields);
+    let nr = rowIndex;
+    let nc = colIndex;
+
+    if (event.key === 'Tab') {
+      nc = colIndex + (event.shiftKey ? -1 : 1);
+      if (nc >= colsAll.length) { nc = 0; nr = rowIndex + 1; }
+      if (nc < 0) { nc = colsAll.length - 1; nr = rowIndex - 1; }
+    } else if (event.key === 'Home') {
+      nc = 0;
+    } else {
+      nc = colsAll.length - 1;
+    }
+
+    const target = host.querySelector(`.sh-cell[data-rowindex="${nr}"][data-col="${nc}"]`);
+    if (target) {
+      selectCell(target);
+      target.focus?.({ preventScroll: true });
+      target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }
+    return;
   }
 }
 
@@ -2573,13 +2818,24 @@ export async function initSheetPage() {
       if (state.view !== 'sheet' || !host) return;
       if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return;
       const key = String(event.key).toLowerCase();
-      if (key !== 'c' && key !== 'v') return;
+      if (key !== 'c' && key !== 'v' && key !== 'x') return;
       const typing = document.activeElement?.closest?.('input, textarea, [contenteditable="true"]');
       if (typing || document.querySelector('.ft-cell-editing')) return;
 
       if (key === 'c') {
         if (String(window.getSelection() || '')) return; // 有文本选区 → 交给原生复制
         if (copySelectionToClipboard()) event.preventDefault();
+        return;
+      }
+
+      // Ctrl+X：先复制再清空。只在单元格选区上生效 —— 整行剪切要连带删行，
+      // 那是行菜单的语义，不该被一个快捷键顺手做掉。
+      if (key === 'x') {
+        if (String(window.getSelection() || '')) return;
+        if (sel.mode === 'cells' && sel.cells.size >= 1 && copySelectionToClipboard()) {
+          event.preventDefault();
+          bulkWriteCells('clear');
+        }
         return;
       }
 
@@ -2615,6 +2871,11 @@ export async function initSheetPage() {
       const { files, text } = filesFromDataTransfer(event.clipboardData);
       if (!files.length && !text) return;
       event.preventDefault();
+      // 从 Excel / WPS 复制过来的是 TSV：带 tab 或换行就按二维块铺，不再当单格长文本
+      if (!files.length && /\t|\n/.test(text)) {
+        pasteTSVAt(cell, text);
+        return;
+      }
       applyPastedContent(field, row, cell, { files, text });
     }, true);
 

@@ -13,7 +13,8 @@
 //   setBoardAdapter({ dbQuery, dbExecute })，main.js 传严格版。
 //   写操作一律走 recordStore.patchRecord —— 可空列 / custom 序列化都在那层兜住了。
 
-import { patchRecord, createRecord, deleteRecord } from './recordStore.js';
+import { patchRecord, createRecord, deleteRecord, restoreRecord } from './recordStore.js';
+import { undoStack } from './undoCore.js';
 import { openRowDrawer } from './rowDrawer.js';
 import { escapeHtml } from './htmlUtils.js';
 import { logToFile } from './logger.js';
@@ -798,9 +799,14 @@ async function flushDirty() {
   state.dirty.clear();
   flashSaved();
 
+  // 抓每一张便签「挪动之前」的 custom，用于 Ctrl+Z 还原位置。
+  // 一次拖拽可能带动多张（框选整组移动），所以最后只登记一条撤销记录。
+  const changes = [];
+
   for (const [id, pos] of batch) {
     const note = state.notes.find(n => n.id === id);
     if (!note) continue;
+    const before = JSON.parse(JSON.stringify(note.custom || {}));
     const nextCustom = { ...(note.custom || {}) };
     nextCustom._bd = {
       x: Math.round(pos.x),
@@ -816,6 +822,7 @@ async function flushDirty() {
       await patchRecord(id, { custom: nextCustom });
       note.custom = nextCustom;
       note.hasPos = true;
+      changes.push({ id, before, after: nextCustom });
     } catch (error) {
       logToFile('error', `[board] 保存便签 #${id} 失败: ${error?.stack || error}`);
       if (dom?.saveBox) {
@@ -824,6 +831,33 @@ async function flushDirty() {
       }
     }
   }
+
+  registerLayoutUndo(changes);
+}
+
+/**
+ * 便签位置 / 尺寸的变化登记到全局撤销栈。
+ * 撤销时只写库 + 重绘，不重建整个白板（重建会把用户当前缩放和平移一起丢掉）。
+ */
+function registerLayoutUndo(changes) {
+  if (!changes.length) return;
+  const label = changes.length === 1 ? '移动便签' : `移动 ${changes.length} 张便签`;
+
+  const apply = async customs => {
+    for (let i = 0; i < changes.length; i += 1) {
+      await patchRecord(changes[i].id, { custom: customs[i] });
+    }
+    // 不在白板页时就只写库：回到白板时 loadNotes 会读到最新布局
+    if (!dom?.stage) return;
+    await loadNotes();
+    renderNotes();
+  };
+
+  undoStack.push({
+    label,
+    undo: () => apply(changes.map(item => item.before)),
+    redo: () => apply(changes.map(item => item.after)),
+  });
 }
 
 function updateEmptyState() {
@@ -1188,13 +1222,29 @@ async function deleteSelected() {
   const ids = [...state.sel];
   if (!ids.length) return;
   state.sel.clear();
+
+  // 剪线之前把「谁连着被删的便签」记下来：撤销时线要一起接回去，
+  // 否则记录回来了线没了，用户会以为撤销只修好了一半。
+  const cutLinks = [];
+  state.notes.forEach(note => {
+    if (ids.includes(note.id)) return;
+    const kept = note.links.filter(to => !ids.includes(to));
+    if (kept.length !== note.links.length) {
+      cutLinks.push({ note, before: [...note.links], after: kept });
+    }
+  });
+
+  const removed = [];
   for (const id of ids) {
     try {
       await deleteRecord(id);
+      removed.push(id);
     } catch (error) {
       logToFile('error', `[board] 删除便签失败 #${id}: ${error?.stack || error}`);
     }
   }
+  if (!removed.length) return;
+
   state.notes = state.notes.filter(n => !ids.includes(n.id));
   // 别人指向已删便签的连线一并剪掉（源在对方身上）
   state.notes.forEach(note => {
@@ -1207,6 +1257,80 @@ async function deleteSelected() {
   renderNotes();
   rebuildEdges();
   renderEdges();
+
+  registerDeleteUndo(removed, cutLinks);
+}
+
+/**
+ * 保留 _bd 布局的整体形状，只换 links —— 直接 patchRecord 而不是 markDirty，
+ * 因为撤销时马上要 loadNotes()，走 420ms 防抖会把还没落库的改动冲掉。
+ */
+function bdCustomWithLinks(note, links) {
+  const next = { ...(note.custom || {}) };
+  next._bd = {
+    x: Math.round(note.x),
+    y: Math.round(note.y),
+    w: Math.round(note.w),
+    h: Math.round(note.h),
+    c: Math.round(note.c),
+    board: note.board || state.boardId,
+    ...(links.length ? { links } : {}),
+  };
+  return next;
+}
+
+/**
+ * 删除便签的撤销：走软删除的 restoreRecord（record 一直躺在库里，
+ * 只是视图按 kind='log#deleted' 过滤掉了），所以能原样复活、id 不变。
+ */
+function registerDeleteUndo(removedIds, cutLinks) {
+  const applyLinks = async (pick) => {
+    for (const item of cutLinks) {
+      // loadNotes 之后 state.notes 里是新对象，cutLinks 里的引用已经过期；
+      // 位置以「当前活着的这张便签」为准，否则撤销+重做会把人挪回删除前的位置。
+      const live = state.notes.find(n => n.id === item.note.id) || item.note;
+      try {
+        await patchRecord(live.id, { custom: bdCustomWithLinks(live, pick(item)) });
+      } catch (error) {
+        logToFile('error', `[board] 撤销时恢复连线失败 #${live.id}: ${error?.stack || error}`);
+      }
+    }
+  };
+
+  const refresh = async () => {
+    // 不在白板页时就只写库：回到白板时 loadNotes 会读到最新状态
+    if (!dom?.stage) return;
+    await loadNotes();
+    renderNotes();
+    rebuildEdges();
+    renderEdges();
+  };
+
+  undoStack.push({
+    label: removedIds.length === 1 ? '删除便签' : `删除 ${removedIds.length} 张便签`,
+    undo: async () => {
+      for (const id of removedIds) {
+        try {
+          await restoreRecord(id);
+        } catch (error) {
+          logToFile('error', `[board] 撤销删除失败 #${id}: ${error?.stack || error}`);
+        }
+      }
+      await applyLinks(item => item.before);
+      await refresh();
+    },
+    redo: async () => {
+      for (const id of removedIds) {
+        try {
+          await deleteRecord(id);
+        } catch (error) {
+          logToFile('error', `[board] 重做删除失败 #${id}: ${error?.stack || error}`);
+        }
+      }
+      await applyLinks(item => item.after);
+      await refresh();
+    },
+  });
 }
 
 function cycleColor(note) {

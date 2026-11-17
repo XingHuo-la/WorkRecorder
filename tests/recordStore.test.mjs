@@ -14,6 +14,7 @@ import {
   createRecord,
   setParent,
   deleteRecord,
+  restoreRecord,
   moveRecordToSheet,
   removeRecordFromSheet,
   searchRecords,
@@ -47,7 +48,8 @@ CREATE TABLE record (
     custom TEXT DEFAULT '{}',
     legacy_id INTEGER,
     created_at TEXT DEFAULT '',
-    updated_at TEXT DEFAULT ''
+    updated_at TEXT DEFAULT '',
+    deleted_at TEXT DEFAULT ''
 );
 CREATE TABLE sheet (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -172,6 +174,7 @@ console.log('\n[6] deleteRecord：三步');
 await patchRecord(D, { parent_id: A });
 await patchRecord(A, { parent_id: R });
 await patchRecord(E, { custom: { f_rel: [A, D, 999] } });
+const kindBefore = db.prepare('SELECT kind FROM record WHERE id = ?').get(A)?.kind;
 const result = await deleteRecord(A);
 eq('子项被提到祖父 R', db.prepare('SELECT parent_id FROM record WHERE id = ?').get(D).parent_id, Number(R));
 eq('reparented 计数', result.reparented, 1);
@@ -179,8 +182,17 @@ eq('挂载的表被释放', db.prepare('SELECT task_id FROM sheet WHERE id = 2')
 eq('releasedSheets 计数', result.releasedSheets, 1);
 eq('同表引用被摘掉，且不误伤其他 id', JSON.parse(db.prepare('SELECT custom FROM record WHERE id = ?').get(E).custom).f_rel, [D, 999]);
 eq('clearedRefs 计数', result.clearedRefs, 1);
-eq('A 已删除', db.prepare('SELECT COUNT(*) c FROM record WHERE id = ?').get(A).c, 0);
-ok('别的行没被误删', db.prepare('SELECT COUNT(*) c FROM record').get().c >= 3);
+// v13 起删除是软删除：行留在库里，只打 kind 后缀 + deleted_at，否则 Ctrl+Z 无从恢复
+const deletedA = db.prepare('SELECT kind, deleted_at FROM record WHERE id = ?').get(A);
+ok('A 被软删除：kind 带 #deleted 后缀', String(deletedA?.kind || '').endsWith('#deleted'), deletedA?.kind);
+ok('A 的 deleted_at 有值', Boolean(deletedA?.deleted_at));
+ok('软删除不销毁行', db.prepare('SELECT COUNT(*) c FROM record').get().c >= 4);
+
+// 撤销删除：后缀摘掉、时间清空，记录回到正常语义
+const restored = await restoreRecord(A);
+eq('恢复后 kind 回到原值', db.prepare('SELECT kind FROM record WHERE id = ?').get(A).kind, kindBefore);
+eq('恢复后 deleted_at 清空', db.prepare('SELECT deleted_at FROM record WHERE id = ?').get(A).deleted_at, '');
+eq('恢复返回记录本体', restored?.id, A);
 
 console.log('\n[7] 移入 / 移出表格');
 await moveRecordToSheet(LOG, 1);

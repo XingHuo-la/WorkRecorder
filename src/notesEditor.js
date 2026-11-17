@@ -19,6 +19,7 @@ import {
   removeNoteRecord
 } from './notesStore.js';
 import { getRecords, searchRecords } from './recordStore.js';
+import { undoStack } from './undoCore.js';
 import {
   getPreferredEditor,
   openInExternalEditor
@@ -611,6 +612,112 @@ export function createNewNote() {
   setStatus('新建中，写入内容后自动保存');
 }
 
+/* ───────────── 撤销 ───────────── */
+
+// 笔记的撤销边界刻意比表格窄：**正文输入不登记**。
+// 理由是没有收益只有副作用 —— textarea 自带原生 Ctrl+Z（bindUndoShortcuts 会主动让开），
+// 而自动保存每 1.2s 跑一次，每次都压一条的话 Ctrl+Z 一次只退一小步，比没有更难用。
+// 真正需要保护的是两类**结构性**改动：换分类（文件换目录）、删除笔记（文件消失）。
+
+/**
+ * 换分类会让文件在磁盘上换目录，textarea 的原生撤销管不了，登记到全局撤销栈。
+ * @param {{ id:number|string, relPath:string, title:string, created_at:string,
+ *           record_ids:number[], content:string,
+ *           before:{tag:string, sub_tag:string}, after:{tag:string, sub_tag:string} }} entry
+ */
+function registerNoteMetaUndo(entry) {
+  const apply = async meta => {
+    // 同一篇还开着就用它**当前**的 rel_path：标题改过之后路径会变，
+    // 拿旧路径写会新造一个文件、老文件还留在磁盘上。
+    const live = state.doc && String(state.doc.id || '') === String(entry.id) ? state.doc : null;
+    const target = live?.rel_path || entry.relPath;
+    if (!target) return false;
+
+    // 正文取 textarea 里的实时值：撤销分类不该顺手把用户刚敲的字回退掉
+    const content = live ? (els.source?.value ?? live.content ?? '') : entry.content;
+    try {
+      const saved = await writeNote({
+        id: entry.id,
+        title: live?.title || entry.title,
+        content,
+        note_type: live?.note_type || entry.note_type || '',
+        status: live?.status || entry.status || '',
+        tag: meta.tag,
+        sub_tag: meta.sub_tag,
+        created_at: live?.created_at || entry.created_at,
+        updated_at: nowString(),
+        rel_path: target,
+        record_ids: normalizeRecordIds(live?.record_ids || entry.record_ids)
+      });
+      if (!saved) throw new Error('后端未返回保存结果');
+
+      if (live) {
+        state.doc = saved;
+        state.draft = saved.content;
+        state.dirty = false;
+        if (els.titleInput && saved.title !== els.titleInput.value) els.titleInput.value = saved.title;
+        void refreshLinkRow();
+        updateDocFoot();
+      }
+      await refreshNotesCache({ keepSelection: true });
+      setStatus(`分类已回到「${meta.tag || '未分类'}」`);
+      return true;
+    } catch (error) {
+      console.error('撤销笔记分类失败:', error);
+      setStatus(`撤销失败：${error.message || error}`, 'error');
+      return false;
+    }
+  };
+
+  undoStack.push({
+    label: '修改笔记分类',
+    undo: () => apply(entry.before),
+    redo: () => apply(entry.after)
+  });
+}
+
+/**
+ * 删除笔记的撤销。
+ * 笔记是文件优先的，删掉就是真删文件 —— 撤销只能把整份内容重新写回去
+ * （id / 创建时间 / 关联都带着，内容一条不丢）。新文件名可能和原来不同
+ * （同名文件存在时 Rust 侧会加后缀），可见但无害。
+ * @param {object} snapshot 删除前的完整笔记
+ */
+function registerNoteDeleteUndo(snapshot) {
+  let relPath = snapshot.rel_path;
+
+  undoStack.push({
+    label: `删除笔记「${snapshot.title || '未命名'}」`,
+    undo: async () => {
+      try {
+        const saved = await writeNote({ ...snapshot, rel_path: '', updated_at: nowString() });
+        if (!saved) throw new Error('后端未返回保存结果');
+        relPath = saved.rel_path;
+        setStatus('已恢复刚才删除的笔记');
+        await refreshNotesCache();
+        return true;
+      } catch (error) {
+        console.error('恢复笔记失败:', error);
+        setStatus(`恢复失败：${error.message || error}`, 'error');
+        return false;
+      }
+    },
+    redo: async () => {
+      if (!relPath) return false;
+      try {
+        await deleteNote(relPath);
+        if (state.doc?.rel_path === relPath) loadIntoEditor(null);
+        await refreshNotesCache();
+        setStatus('已删除');
+        return true;
+      } catch (error) {
+        console.error('重做删除笔记失败:', error);
+        return false;
+      }
+    }
+  });
+}
+
 /**
  * 保存当前笔记。
  *
@@ -633,6 +740,11 @@ export async function saveCurrentNote(options = {}) {
 
   state.saving = true;
   if (!options.silent) setStatus('保存中...');
+
+  // 换分类会让文件换目录，撤销要靠「写回旧分类」—— 先把改之前的分类记下来
+  const metaBefore = state.doc
+    ? { tag: state.doc.tag || '', sub_tag: state.doc.sub_tag || '' }
+    : null;
 
   try {
     const payload = {
@@ -667,6 +779,26 @@ export async function saveCurrentNote(options = {}) {
     setStatus(`已保存 ${saved.updated_at.substring(11, 16)}`);
     void refreshLinkRow();
     updateDocFoot();
+
+    // 只在分类真的变了时才登记：正文输入交给 textarea 原生撤销（见上方注释）
+    const metaAfter = { tag: saved.tag || '', sub_tag: saved.sub_tag || '' };
+    if (metaBefore && (metaBefore.tag !== metaAfter.tag || metaBefore.sub_tag !== metaAfter.sub_tag)) {
+      registerNoteMetaUndo({
+        id: saved.id,
+        relPath: saved.rel_path,
+        title: saved.title,
+        created_at: saved.created_at,
+        // 撤销时这篇笔记可能没开着，note_type / status 必须一起带上：
+        // 缺省会落回 'idea' / 'usable'，等于顺手把用户设定的类型也改了
+        note_type: saved.note_type,
+        status: saved.status,
+        record_ids: saved.record_ids || [],
+        content: saved.content,
+        before: metaBefore,
+        after: metaAfter
+      });
+    }
+
     await refreshNotesCache({ keepSelection: true });
     return true;
   } catch (error) {
@@ -717,9 +849,12 @@ export async function deleteCurrentNote() {
   }
 
   const title = state.doc.title || '未命名笔记';
-  if (!window.confirm(`确定删除笔记「${title}」吗？\n文件会一并从磁盘删除，此操作不可恢复。`)) {
+  if (!window.confirm(`确定删除笔记「${title}」吗？\n文件会一并从磁盘删除，删除后可按 Ctrl+Z 撤销。`)) {
     return;
   }
+
+  // 正文取 textarea 实时值：可能刚敲完、自动保存还没跑到
+  const snapshot = { ...state.doc, content: els.source?.value ?? state.doc.content ?? '' };
 
   const ok = await deleteNote(state.doc.rel_path);
   if (!ok) {
@@ -727,6 +862,7 @@ export async function deleteCurrentNote() {
     return;
   }
 
+  registerNoteDeleteUndo(snapshot);
   loadIntoEditor(null);
   await refreshNotesCache();
   setStatus('已删除');

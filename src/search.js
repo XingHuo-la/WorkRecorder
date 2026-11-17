@@ -173,6 +173,7 @@ async function searchSheetRows(keyword) {
        FROM record r
        LEFT JOIN sheet s ON s.id = r.sheet_id
       WHERE r.sheet_id IS NOT NULL
+        AND r.deleted_at = ''
         AND COALESCE(r.custom, '') LIKE ?
       ORDER BY r.updated_at DESC, r.id DESC
       LIMIT ?`,

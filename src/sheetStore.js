@@ -224,8 +224,8 @@ export async function listSheets() {
     `SELECT s.id, s.name, s.task_id, s.task_id AS anchor_record_id,
             s.created_at, s.updated_at, s.sort,
             (SELECT COUNT(*) FROM sheet_field f WHERE f.sheet_id = s.id) AS field_count,
-            (SELECT COUNT(*) FROM record r WHERE r.sheet_id = s.id) AS row_count,
-            (SELECT r2.updated_at FROM record r2 WHERE r2.sheet_id = s.id ORDER BY r2.updated_at DESC LIMIT 1) AS last_at
+            (SELECT COUNT(*) FROM record r WHERE r.sheet_id = s.id AND r.deleted_at = '') AS row_count,
+            (SELECT r2.updated_at FROM record r2 WHERE r2.sheet_id = s.id AND r2.deleted_at = '' ORDER BY r2.updated_at DESC LIMIT 1) AS last_at
      FROM sheet s
      ORDER BY s.sort, s.id`
   );
@@ -330,8 +330,11 @@ export async function deleteSheet(sheetId) {
   await db().dbExecute('DELETE FROM sheet_field WHERE sheet_id = ?', [sheetId]);
 
   // kind 是「出生地」，删表的语义按它分两类，顺序不能反：
-  // 1) 在表格里出生的行，只存在于这张表的语境 → 随表销毁；
-  await db().dbExecute("DELETE FROM record WHERE sheet_id = ? AND kind = 'sheet_row'", [sheetId]);
+  // 1) 在表格里出生的行，只存在于这张表的语境 → 随表销毁（v13 起是软删除）；
+  await db().dbExecute(
+    "UPDATE record SET deleted_at = ?, kind = kind || '#deleted' WHERE sheet_id = ? AND kind = 'sheet_row'",
+    [nowStamp(), sheetId],
+  );
   // 2) 被「移入」的行（kind = log / todo）有独立的出生语境 → 退回记录页继续存在。
   //    必须在 DELETE 之后跑，否则会把第 1 类也一起放生，产生「表没了、行还在」的孤儿。
   //    ⚠️ NULL 只能写成 SQL 字面量：dbExecute 会 params.map(String)，传 null 落库是字符串 'null'，
@@ -420,7 +423,7 @@ export async function loadRows(sheetId) {
             height, created_at, updated_at,
             kind, title, body, parent_id, status
        FROM record
-      WHERE sheet_id = ?
+      WHERE sheet_id = ? AND deleted_at = ''
       ORDER BY sort, id`,
     [sheetId]
   );
@@ -491,7 +494,12 @@ export async function saveRowValues(rowId, values) {
 }
 
 export async function deleteRow(rowId) {
-  await db().dbExecute('DELETE FROM record WHERE id = ?', [rowId]);
+  // v13 软删除：kind 打 '#deleted' 后缀，sheet_row 视图的 `WHERE kind='sheet_row'` 自动过滤。
+  // 直接 DELETE 会绕过视图的 INSTEAD OF 触发器，所以这里手写同一套标记。
+  await db().dbExecute(
+    "UPDATE record SET deleted_at = ?, kind = kind || '#deleted' WHERE id = ? AND kind NOT LIKE '%#deleted'",
+    [nowStamp(), rowId],
+  );
 }
 
 export async function duplicateRow(sheetId, values) {

@@ -46,7 +46,7 @@ const RECORD_COLUMNS = [
   'happened_date', 'happened_time', 'deadline', 'tag', 'sub_tag',
   'parent_id', 'linked_todo', 'is_overdue', 'record_type',
   'sheet_id', 'sort', 'height', 'start_at', 'end_at', 'completed_at',
-  'custom', 'legacy_id', 'created_at', 'updated_at',
+  'custom', 'legacy_id', 'created_at', 'updated_at', 'deleted_at',
 ].join(', ');
 
 // 允许 patch 的列。kind / legacy_id / id / created_at 是结构列，不在名单里 ——
@@ -108,7 +108,7 @@ export async function listChildren(parentId) {
   const id = toId(parentId);
   if (id === null) return [];
   const rows = await db().dbQuery(
-    `SELECT ${RECORD_COLUMNS} FROM record WHERE parent_id = ? ORDER BY sort, id`,
+    `SELECT ${RECORD_COLUMNS} FROM record WHERE parent_id = ? AND deleted_at = '' ORDER BY sort, id`,
     [id]
   );
   return (rows || []).map(normalizeRow);
@@ -351,6 +351,10 @@ export async function searchRecords(keyword, opts = {}) {
     params.push(...exclude);
   }
 
+  // 软删除的记录不参与搜索。这里必须显式写：searchRecords 直读 record，
+  // 不走三个视图，视图的 kind 过滤救不了它。
+  where.push("deleted_at = ''");
+
   // 关键字为空且没有排除项时，where 为空 —— 返回最近的 N 条（等价于「随便挑」）
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
   const rows = await db().dbQuery(
@@ -433,8 +437,13 @@ export async function deleteRecord(id) {
     }
   }
 
-  // 4) 删除
-  await db().dbExecute('DELETE FROM record WHERE id = ?', [recordId]);
+  // 4) 软删除（v13）。不再真删：记录留在库里，只打标记，Ctrl+Z 才恢复得回来。
+  //    级联三步（提子项 / 释放表 / 清引用）照旧执行 —— 界面语义仍是一次「删除」，
+  //    子项不能挂在一条看不见的记录下面。代价是撤销只回滚记录本体，不回滚这三步。
+  await db().dbExecute(
+    "UPDATE record SET deleted_at = ?, kind = kind || '#deleted' WHERE id = ? AND kind NOT LIKE '%#deleted'",
+    [nowStamp(), recordId]
+  );
 
   return {
     reparented: children.length,
@@ -442,6 +451,68 @@ export async function deleteRecord(id) {
     clearedRefs,
     childCount: children.length,
   };
+}
+
+/**
+ * 撤销删除：把 kind 上的 '#deleted' 摘掉、清空 deleted_at。
+ *
+ * 为什么 kind 后缀是「删除标记」而不是加一列 `is_deleted`：
+ * 三个视图的 WHERE 是 `kind='log'` 这类等值判断，kind 一变它们自动过滤，
+ * 前端 90 余处 SQL 零改动、零遗漏。加列则要给每个读路径补条件，漏一个就是
+ * 「删掉的记录还在界面上」这种静默 bug。
+ *
+ * @param {number|string} id
+ * @returns {Promise<object|null>} 恢复后的记录；记录不存在时 null
+ */
+export async function restoreRecord(id) {
+  const recordId = toId(id);
+  if (recordId === null) return null;
+  await db().dbExecute(
+    "UPDATE record SET deleted_at = '', kind = REPLACE(kind, '#deleted', '') WHERE id = ?",
+    [recordId]
+  );
+  return getRecord(recordId);
+}
+
+/**
+ * 回收站列表。按删除时间倒序，默认最近 100 条。
+ * @param {{limit?: number}} [opts]
+ */
+export async function listDeletedRecords(opts = {}) {
+  const limit = Math.min(500, Math.max(1, Math.trunc(Number(opts.limit)) || 100));
+  const rows = await db().dbQuery(
+    `SELECT ${RECORD_COLUMNS} FROM record WHERE deleted_at != '' ORDER BY deleted_at DESC, id DESC LIMIT ${limit}`,
+    []
+  );
+  return (rows || []).map(normalizeRow);
+}
+
+/**
+ * 真删（清空回收站 / 定时清理）。
+ *
+ * 默认只清 30 天前的，手工点「清空回收站」时传 `olderThanDays: 0`。
+ * 附件文件不在这里删：路径存在 custom.attachments 里，删记录前要先收集再删文件，
+ * 这一步留给调用方，否则回收站里恢复出来的记录会全是死链。
+ *
+ * @param {{olderThanDays?: number}} [opts]
+ * @returns {Promise<number>} 删掉的行数
+ */
+export async function purgeDeletedRecords(opts = {}) {
+  const days = Number.isFinite(Number(opts.olderThanDays)) ? Math.max(0, Number(opts.olderThanDays)) : 30;
+  if (days === 0) {
+    const rows = await db().dbQuery("SELECT id FROM record WHERE deleted_at != ''", []);
+    await db().dbExecute("DELETE FROM record WHERE deleted_at != ''", []);
+    return (rows || []).length;
+  }
+  const rows = await db().dbQuery(
+    `SELECT id FROM record WHERE deleted_at != '' AND deleted_at < datetime('now','localtime', ?)`,
+    [`-${days} days`]
+  );
+  await db().dbExecute(
+    `DELETE FROM record WHERE deleted_at != '' AND deleted_at < datetime('now','localtime', ?)`,
+    [`-${days} days`]
+  );
+  return (rows || []).length;
 }
 
 /**

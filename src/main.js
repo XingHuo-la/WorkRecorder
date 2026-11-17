@@ -19,6 +19,7 @@ import { initCommandPalette } from './commandPalette.js';
 import { flushDrawerBody } from './rowDrawer.js';
 import { escapeHtml } from './htmlUtils.js';
 import { initBoardPage, flushBoard, setBoardAdapter } from './board.js';
+import { bindUndoShortcuts } from './undoCore.js';
 
 // Tauri 全局对象由 withGlobalTauri 同步注入，正常情况可直接取用。
 // 这里做一次防御：万一注入时序异常，也不要让整个模块崩溃。
@@ -81,6 +82,15 @@ async function initApp() {
 
   // 日志通道已可用
   markLogReady();
+
+  // 全局撤销：表格、笔记、白板共用一条历史线。
+  // 输入框内的 Ctrl+Z 由 bindUndoShortcuts 放行给原生，不抢浏览器/系统行为。
+  bindUndoShortcuts({
+    onAfter: (entry, kind) => {
+      const verb = kind === 'undo' ? '撤销' : '重做';
+      logToFile('info', `${verb}: ${entry?.label || '操作'}`);
+    },
+  });
 
   await loadData();
 

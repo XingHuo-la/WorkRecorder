@@ -1,0 +1,79 @@
+/* =====================================================================
+   WorkRecorder · 设计层 v5（表格网格交互）
+   ---------------------------------------------------------------------
+   只做一件事：把「选中格 / 活动格 / 键盘焦点」画出来。
+   与 v4 同作用域（body[data-skin="v4"]），必须在 styles-v4.css 之后加载。
+
+   为什么必须单独一层：
+   1. 选中态是新增语义，v4 里没有对应规则，追加进 v4 会打乱那一层的编号；
+   2. 它要压过 .wr-cell:hover 的底色 —— 靠「后加载 + 同权重」取胜，不动旧层。
+
+   动效取舍：方向键连按时选区会一格一格跳。这里只给 60ms 背景过渡，
+   不用常规的 150–200ms —— 那个时长在连按方向键时会拖成一串残影。
+   描边（box-shadow）完全不过渡，必须瞬时跟手。
+   ===================================================================== */
+
+/* 表格整体不吃原生文字选择：拖框选格时不能顺带把整行文字刷蓝。
+   编辑器和下拉面板里的文字选择要恢复，否则输入时没法选中改字。 */
+body[data-skin="v4"] .wr-table {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+body[data-skin="v4"] .wr-cell .ft-inline-input,
+body[data-skin="v4"] .wr-cell .ft-dropdown,
+body[data-skin="v4"] .ft-dropdown {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+body[data-skin="v4"] .wr-cell {
+  outline: none; /* 焦点由下面的描边表达，系统 outline 在深色底上是一圈蓝，太跳 */
+  transition: background-color 60ms linear;
+}
+
+/* 选区内（矩形或 Ctrl 离散） */
+body[data-skin="v4"] .wr-cell.is-sel {
+  background: color-mix(in srgb, var(--color-text) 9%, transparent);
+  border-radius: 3px;
+}
+
+/* 活动格：键盘落点。必须比选区内更重，否则连按方向键时看不出光标在哪 */
+body[data-skin="v4"] .wr-cell.is-active {
+  background: color-mix(in srgb, var(--color-text) 13%, transparent);
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--color-text) 62%, transparent);
+  border-radius: 3px;
+}
+
+/* 只用键盘走到某格时（Tab 进入表格），再补一圈更亮的描边 */
+body[data-skin="v4"] .wr-cell:focus-visible {
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--color-text) 78%, transparent);
+}
+
+/* 智能表格（.sh-cell）同一套语义。
+   它原来只有 is-sel，且是浅色底；这里统一到「选区 9% / 活动 13% + 2px 描边」，
+   免得两个表格一个是背景高亮、一个是描边，切来切去像两个产品。 */
+body[data-skin="v4"] .sh-cell {
+  transition: background-color 60ms linear;
+}
+
+body[data-skin="v4"] .sh-cell.is-sel {
+  background: color-mix(in srgb, var(--color-text) 9%, transparent);
+}
+
+body[data-skin="v4"] .sh-cell.is-active {
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--color-text) 62%, transparent);
+}
+
+/* 拖框选格期间给个十字光标，跟 Excel 一致 */
+body[data-skin="v4"] .wr-cell,
+body[data-skin="v4"] .sh-cell {
+  cursor: cell;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body[data-skin="v4"] .wr-cell,
+  body[data-skin="v4"] .sh-cell {
+    transition: none;
+  }
+}

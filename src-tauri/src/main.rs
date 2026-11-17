@@ -578,6 +578,59 @@ fn init_and_migrate_db_at(db_path: &str, json_path: &str) -> Result<(), String> 
             .map_err(|e| format!("数据库升级到 v12 失败: {}", e))?;
     }
 
+    // v13：软删除。**不动视图列，只改三个 DELETE 触发器 + 加一列。**
+    //
+    // 为什么用 kind 后缀而不是给视图加 `WHERE deleted_at IS NULL`：
+    // 视图列被 v10 的冻结测试锁着；重建视图会连带重建 9 个 INSTEAD OF 触发器，
+    // 而触发器是「全列 NEW.* 覆写」——漏写一列就把那列静默抹空（见 v10 注释）。
+    // 把删除标记写进 kind 之后，视图原有的 `WHERE kind='log'` 自动过滤掉软删除行，
+    // 前端 90 余处 `SELECT ... FROM logs/todos/sheet_row` 一行都不用改，也不可能漏路径。
+    //
+    // 直读 record 的少数路径（recordStore 的 listChildren/search、board、search、sheetStore）
+    // 需要各自补 `deleted_at = ''`，这些是显式清单，见前端改动。
+    if schema_version < 13 {
+        add_column_if_missing(&conn, "record", "deleted_at", "deleted_at TEXT DEFAULT ''")?;
+
+        // 三个 DELETE 触发器原来都是 `DELETE FROM record WHERE id = OLD.id`（真删）。
+        // 改成打标记：kind 加 '#deleted' 后缀 → 视图自动过滤；deleted_at 记时间，供回收站排序。
+        // `AND kind = 'log'` 这类条件是防二次删除把后缀叠成 'log#deleted#deleted'。
+        conn.execute_batch(
+            "DROP TRIGGER IF EXISTS logs_delete;
+             CREATE TRIGGER logs_delete INSTEAD OF DELETE ON logs BEGIN
+                 UPDATE record
+                    SET deleted_at = datetime('now','localtime'),
+                        kind = 'log#deleted'
+                  WHERE id = OLD.id AND kind = 'log';
+             END;
+
+             DROP TRIGGER IF EXISTS todos_delete;
+             CREATE TRIGGER todos_delete INSTEAD OF DELETE ON todos BEGIN
+                 UPDATE record
+                    SET deleted_at = datetime('now','localtime'),
+                        kind = 'todo#deleted'
+                  WHERE id = OLD.id AND kind = 'todo';
+             END;
+
+             DROP TRIGGER IF EXISTS sheet_row_delete;
+             CREATE TRIGGER sheet_row_delete INSTEAD OF DELETE ON sheet_row BEGIN
+                 UPDATE record
+                    SET deleted_at = datetime('now','localtime'),
+                        kind = 'sheet_row#deleted'
+                  WHERE id = OLD.id AND kind = 'sheet_row';
+             END;",
+        )
+        .map_err(|e| format!("改造删除触发器为软删除失败: {}", e))?;
+
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_record_deleted
+                 ON record(deleted_at) WHERE deleted_at != '';",
+        )
+        .map_err(|e| format!("创建软删除索引失败: {}", e))?;
+
+        conn.execute_batch("PRAGMA user_version = 13;")
+            .map_err(|e| format!("数据库升级到 v13 失败: {}", e))?;
+    }
+
     let json_exists = Path::new(json_path).exists();
     // ✅ 修复了之前的借用检查器报错，一步到位！
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM tags", [], |row| row.get(0)).unwrap_or(0);
@@ -1116,6 +1169,51 @@ fn main() {
 mod tests {
     use super::*;
 
+    // v13 起「删除」不再是 DELETE，而是给 kind 打 '#deleted' 后缀 + 写 deleted_at。
+    // 三个 delete 触发器因此必然与 v10 的定义不同 —— 冻结校验只锁
+    // 「视图 + insert/update 触发器」：这三类一旦被改，就会有列被静默抹空。
+    fn frozen_snapshot(c: &Connection) -> Vec<(String, String)> {
+        let mut stmt = c
+            .prepare(
+                "SELECT name, sql FROM sqlite_master \
+                 WHERE type IN ('view','trigger') AND sql IS NOT NULL \
+                   AND name NOT IN ('logs_delete','todos_delete','sheet_row_delete') \
+                 ORDER BY name",
+            )
+            .unwrap();
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .unwrap()
+            .filter_map(|x| x.ok())
+            .collect();
+        rows
+    }
+
+    // 三个 delete 触发器必须真的改成软删除，否则「删了就没了」，Ctrl+Z 无从恢复。
+    fn assert_soft_delete_triggers(c: &Connection) {
+        for name in ["logs_delete", "todos_delete", "sheet_row_delete"] {
+            let sql: String = c
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?1",
+                    [name],
+                    |r| r.get(0),
+                )
+                .unwrap_or_else(|_| panic!("缺少触发器 {}", name));
+            assert!(
+                sql.contains("deleted_at"),
+                "{} 不是软删除（缺 deleted_at）：{}",
+                name,
+                sql
+            );
+            assert!(
+                !sql.contains("DELETE FROM record"),
+                "{} 仍在真删：{}",
+                name,
+                sql
+            );
+        }
+    }
+
     // v10 迁移必须在副本上验证：它会改表名、建视图、建触发器，任何一步出错
     // 都是用户数据层面的灾难。断言五件事：
     // ①行数守恒 ②视图列名与旧表逐一对应 ③视图可写 ④二次迁移幂等 ⑤引用无悬空。
@@ -1205,19 +1303,34 @@ mod tests {
             .unwrap();
         assert_eq!(title, "迁移写入测试", "单列 UPDATE 不应抹掉其他列");
 
+        // v13 起视图 DELETE = 软删除：行还留在 record 里（Ctrl+Z 要能恢复），视图查不到。
         conn.execute("DELETE FROM logs WHERE id = ?1", [new_id])
             .expect("视图 DELETE 失败");
-        let gone: i64 = conn
-            .query_row("SELECT COUNT(*) FROM record WHERE id = ?1", [new_id], |r| r.get(0))
+        let (kept_kind, kept_at): (String, String) = conn
+            .query_row(
+                "SELECT kind, COALESCE(deleted_at, '') FROM record WHERE id = ?1",
+                [new_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
             .unwrap();
-        assert_eq!(gone, 0, "视图 DELETE 未删除 record 行");
+        assert_eq!(kept_kind, "log#deleted", "视图 DELETE 没有走软删除");
+        assert!(!kept_at.is_empty(), "软删除没写 deleted_at");
+        let hidden: i64 = conn
+            .query_row("SELECT COUNT(*) FROM logs WHERE id = ?1", [new_id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(hidden, 0, "软删除的记录仍出现在 logs 视图里");
 
-        // ④ 二次迁移幂等：版本号已到 11，不应重复插入
+        // ④ 二次迁移幂等：版本号已到 11，不应重复插入。
+        // 基准必须现取：v13 起视图 DELETE 是软删除，行数不随删除减少，
+        // 拿上面那个 n（视图 INSERT 之前的快照）会比出「多 1 行」的假失败。
+        let n_now: i64 = conn
+            .query_row("SELECT COUNT(*) FROM record", [], |r| r.get(0))
+            .unwrap();
         drop(conn);
         init_and_migrate_db_at(&db_str, &json_str).expect("二次迁移失败");
         let conn = Connection::open(&db).unwrap();
         let n2: i64 = conn.query_row("SELECT COUNT(*) FROM record", [], |r| r.get(0)).unwrap();
-        assert_eq!(n2, n, "二次迁移不应改变行数");
+        assert_eq!(n2, n_now, "二次迁移不应改变行数");
 
         // ⑤ 引用重映射：linked_todo 必须指向真实存在的 todo
         let dangling: i64 = conn
@@ -1440,29 +1553,21 @@ mod tests {
         };
         assert!(has_record_id, "note_index 缺少 record_id 列");
 
-        // ② 冻结校验：把版本号退回 10 再跑一次，视图/触发器必须逐字不变
-        let snapshot = |c: &Connection| -> Vec<(String, String)> {
-            let mut stmt = c
-                .prepare(
-                    "SELECT name, sql FROM sqlite_master \
-                     WHERE type IN ('view','trigger') AND sql IS NOT NULL ORDER BY name",
-                )
-                .unwrap();
-            let rows = stmt
-                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
-                .unwrap()
-                .filter_map(|x| x.ok())
-                .collect();
-            rows
-        };
-        let before_sql = snapshot(&conn);
+        // ② 冻结校验：把版本号退回 10 再跑一次，视图与 insert/update 触发器必须逐字不变。
+        //    delete 触发器由 v13 合法改写成软删除，单独由 assert_soft_delete_triggers 守。
+        let before_sql = frozen_snapshot(&conn);
         assert!(!before_sql.is_empty(), "没有视图/触发器，说明 v10 没跑");
 
         conn.execute_batch("PRAGMA user_version = 10;").unwrap();
         drop(conn);
         init_and_migrate_db_at(&db_str, &json_str).expect("v11 重跑失败");
         let conn = Connection::open(&db).unwrap();
-        assert_eq!(snapshot(&conn), before_sql, "v11 改动了视图或触发器定义");
+        assert_eq!(
+            frozen_snapshot(&conn),
+            before_sql,
+            "v11 之后的迁移改动了视图或 insert/update 触发器定义"
+        );
+        assert_soft_delete_triggers(&conn);
 
         // ③ 行为校验：视图里没有 body / parent_id，经视图 UPDATE 后必须还在
         conn.execute(
@@ -1520,7 +1625,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 12, "全新库版本号应为 12，实际 {}", version);
+        assert!(version >= 12, "全新库版本号应至少为 12，实际 {}", version);
 
         // ① 表与索引
         for name in ["note_record", "idx_note_record_record"] {
@@ -1556,34 +1661,25 @@ mod tests {
             .unwrap();
         assert_eq!(ghost_type, "text", "探针没复现出 'null' 幽灵值，用例失真");
 
-        // ③ 冻结快照
-        let snapshot = |c: &Connection| -> Vec<(String, String)> {
-            let mut stmt = c
-                .prepare(
-                    "SELECT name, sql FROM sqlite_master \
-                     WHERE type IN ('view','trigger') AND sql IS NOT NULL ORDER BY name",
-                )
-                .unwrap();
-            let rows = stmt
-                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
-                .unwrap()
-                .filter_map(|x| x.ok())
-                .collect();
-            rows
-        };
-        let before_sql = snapshot(&conn);
+        // ③ 冻结快照：视图与 insert/update 触发器逐字不变（delete 触发器由 v13 合法改写）
+        let before_sql = frozen_snapshot(&conn);
         assert!(!before_sql.is_empty(), "没有视图/触发器，说明 v10 没跑");
 
         conn.execute_batch("PRAGMA user_version = 11;").unwrap();
         drop(conn);
         init_and_migrate_db_at(&db_str, &json_str).expect("v12 重跑失败");
         let conn = Connection::open(&db).unwrap();
-        assert_eq!(snapshot(&conn), before_sql, "v12 改动了视图或触发器定义");
+        assert_eq!(
+            frozen_snapshot(&conn),
+            before_sql,
+            "v12 之后的迁移改动了视图或 insert/update 触发器定义"
+        );
+        assert_soft_delete_triggers(&conn);
 
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 12, "v12 重跑后版本号应为 12");
+        assert!(version >= 12, "v12 重跑后版本号应至少为 12，实际 {}", version);
 
         // ② + ④ 搬迁范围：只有整数那一行进来
         let rows: Vec<(String, i64)> = {
@@ -1610,6 +1706,103 @@ mod tests {
             0,
             "note_record 里混进了非整数或非正数 id"
         );
+
+        drop(conn);
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    // v13 = 软删除：DELETE 不再销毁数据，只给 kind 打 '#deleted' 后缀。
+    // 守四件事：
+    //   ① 三个 delete 触发器真的改成软删除（真删了 Ctrl+Z 无从恢复）
+    //   ② 打标记后视图立刻查不到 → 前端 90 余处 SQL 一行都不用改
+    //   ③ 摘标记后原样回来，且重复删除不会把后缀叠成 '#deleted#deleted'
+    //   ④ 三个视图（logs / todos / sheet_row）规则一致
+    #[test]
+    fn v13_soft_delete_hides_from_views_and_can_be_restored() {
+        let tmp = std::env::temp_dir().join("wr-v13-soft-delete");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).expect("创建临时目录失败");
+        let db = tmp.join("t.db");
+        let json = tmp.join("t.json");
+        init_and_migrate_db_at(&db.to_string_lossy(), &json.to_string_lossy())
+            .expect("全新库迁移失败");
+
+        let conn = Connection::open(&db).unwrap();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert!(version >= 13, "全新库版本号应至少为 13，实际 {}", version);
+
+        // ① 列与触发器
+        assert!(
+            table_has_column(&conn, "record", "deleted_at").unwrap(),
+            "record 缺 deleted_at 列"
+        );
+        assert_soft_delete_triggers(&conn);
+
+        // ② 走视图写一条，再从视图删掉
+        conn.execute(
+            "INSERT INTO logs (date, time, text, tag, sub_tag) \
+             VALUES ('2026-11-17', '10:00', '软删除探针', '工作', '')",
+            [],
+        )
+        .unwrap();
+        let id: i64 = conn
+            .query_row("SELECT id FROM logs WHERE text = '软删除探针'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+
+        conn.execute("DELETE FROM logs WHERE id = ?1", [id]).unwrap();
+
+        let visible: i64 = conn
+            .query_row("SELECT COUNT(*) FROM logs WHERE id = ?1", [id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(visible, 0, "软删除后 logs 视图仍在返回该行（kind 后缀没生效）");
+
+        let (kind, deleted_at): (String, String) = conn
+            .query_row(
+                "SELECT kind, COALESCE(deleted_at, '') FROM record WHERE id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(kind, "log#deleted", "kind 没打上删除后缀");
+        assert!(!deleted_at.is_empty(), "deleted_at 没写时间");
+
+        // ③ 恢复：摘后缀 + 清时间，视图重新可见
+        conn.execute(
+            "UPDATE record SET deleted_at = '', kind = REPLACE(kind, '#deleted', '') WHERE id = ?1",
+            [id],
+        )
+        .unwrap();
+        let back: i64 = conn
+            .query_row("SELECT COUNT(*) FROM logs WHERE id = ?1", [id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(back, 1, "恢复后 logs 视图仍看不到该行");
+
+        // 连删两次：第二次不能再叠一层 '#deleted'
+        conn.execute("DELETE FROM logs WHERE id = ?1", [id]).unwrap();
+        let twice: String = conn
+            .query_row("SELECT kind FROM record WHERE id = ?1", [id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(twice, "log#deleted", "重复删除把后缀叠成了 {}", twice);
+
+        // ④ todos 同一套规则
+        conn.execute("INSERT INTO todos (task, done) VALUES ('软删除待办', 'false')", [])
+            .unwrap();
+        let todo_id: i64 = conn
+            .query_row("SELECT id FROM todos WHERE task = '软删除待办'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        conn.execute("DELETE FROM todos WHERE id = ?1", [todo_id]).unwrap();
+        let todo_visible: i64 = conn
+            .query_row("SELECT COUNT(*) FROM todos WHERE id = ?1", [todo_id], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(todo_visible, 0, "todos 视图没过滤软删除");
 
         drop(conn);
         let _ = fs::remove_dir_all(&tmp);
