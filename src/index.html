@@ -640,6 +640,11 @@
                 </div>
                 <span class="rec-tabs-sep" aria-hidden="true"></span>
                 <button type="button" id="table-fields-btn" class="ghost-btn">字段</button>
+                <!-- 筛选 / 排序：与自建表共用同一套面板（sheetPanels），徽标显示生效条件数 -->
+                <button type="button" id="table-filter-btn" class="ghost-btn" aria-label="筛选" aria-haspopup="true">
+                  筛选<span id="table-filter-count" class="rec-tool-count" style="display: none;">0</span>
+                </button>
+                <button type="button" id="table-sort-btn" class="ghost-btn" aria-label="排序" aria-haspopup="true">排序</button>
                 <label class="rec-filter">
                   <select id="timeline-main-filter" aria-label="按主分类筛选"></select>
                 </label>

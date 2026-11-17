@@ -17,7 +17,12 @@ import {
   renderFieldIcon,
   renderCell,
   openCellEditor,
+  resolveOption,
+  normalizeMulti,
 } from './fieldTypes.js';
+// 筛选/排序面板与自建表共用：sheetPanels 只依赖 htmlUtils + fieldTypes（都零依赖），
+// 顶层静态 import 不会把调试壳（无 __TAURI__）拖挂。
+import { openFilterPanel, openSortPanel } from './sheetPanels.js';
 
 const TABLE_ENTITY = 'log';
 const DEFAULT_TAG = '未分类';
@@ -53,15 +58,159 @@ let writeTick = 0;
 // v4 快速筛选：mode = all | today | inbox，另外可按主分类/子项目收窄。
 // 过滤只影响渲染，不改变 rows —— 「今天」切回「全部」时不用重读库。
 let activeFilter = { mode: 'all', tag: '', subTag: '' };
+/* 条件筛选 / 排序（Excel 式按列）。与快速 chip 并存，职责不同：
+   chip 先划范围（今天 / 待整理 / 某分类），条件在范围内再收窄，最后排序。
+   排序只支持单列 —— 多列排序的 UI 复杂度和收益不成正比，缺了再说。 */
+let baseFilters = [];   // [{ key, op, value }]
+let baseSorts = [];     // [{ key, dir }]
 
 export function setTableFilter(patch = {}) {
   activeFilter = { ...activeFilter, ...patch };
   if (document.getElementById('table-view-root')) render();
 }
 
+/**
+ * 设/清排序。列头菜单和工具栏排序面板都走这里 —— 两个入口写同一份状态，
+ * 不然很容易出现「面板里清掉了，列头还挂着箭头」。
+ */
+function setBaseSort(key, dir) {
+  baseSorts = key ? [{ key, dir: dir === 'desc' ? 'desc' : 'asc' }] : [];
+  // 行序变了，原来选中的坐标指向的是另一条记录 —— 必须先清，否则下一次
+  // 键盘编辑会写到隔壁行去。
+  grid?.sel.clear();
+  syncToolbarState();
+  render();
+  if (key) {
+    const field = fields.find(item => item.key === key);
+    showTableToast(`已按「${field?.label || key}」${dir === 'desc' ? '降序' : '升序'}排列`, 'info');
+  } else {
+    showTableToast('已取消排序', 'info');
+  }
+}
+
+function setBaseFilters(next) {
+  baseFilters = Array.isArray(next)
+    ? next.filter(item => item && item.key).map(item => ({ key: item.key, op: item.op || 'contains', value: item.value ?? '' }))
+    : [];
+  grid?.sel.clear();
+  syncToolbarState();
+  render();
+  // 筛选后行数从 renderedRows 读 —— render() 刚把它换成过滤后的集合
+  showTableToast(
+    baseFilters.length ? `筛选出 ${renderedRows.length} 条记录` : '已清除筛选条件',
+    'info'
+  );
+}
+
+/** 工具栏徽标/高亮跟着状态走。DOM 可能还没渲染（首次 init 前），全部可选链。 */
+function syncToolbarState() {
+  const filterBtn = document.getElementById('table-filter-btn');
+  const badge = document.getElementById('table-filter-count');
+  if (badge) {
+    badge.textContent = String(baseFilters.length);
+    badge.style.display = baseFilters.length ? '' : 'none';
+  }
+  if (filterBtn) {
+    filterBtn.classList.toggle('is-on', baseFilters.length > 0);
+    filterBtn.setAttribute('aria-label', baseFilters.length ? `筛选（${baseFilters.length} 个条件生效）` : '筛选');
+  }
+  document.getElementById('table-sort-btn')?.classList.toggle('is-on', baseSorts.length > 0);
+}
+
+function visibleFieldList() {
+  return fields.filter(field => Number(field.visible) !== 0);
+}
+
+function isEmptyCell(value) {
+  return value === '' || value === null || value === undefined
+    || (Array.isArray(value) && value.length === 0);
+}
+
+/**
+ * 一个单元格的「原始值 / 展示文本」两条路。
+ * 条件既可能来自选项下拉（拿到的是 value 码，如 unprocessed），也可能是手输
+ * （拿到的是中文 label）。两种都认，用户不用记哪个字段存的是码哪个是文字。
+ */
+function filterPair(field, row) {
+  const value = readFieldValue(field, row);
+  const raw = Array.isArray(value)
+    ? value.map(item => (typeof item === 'object' ? item.name || item.path || '' : item)).join(',')
+    : String(value ?? '');
+  let text = raw;
+  const ctx = cellCtxFor(field, row);
+  if (field.type === 'select') {
+    text = String(resolveOption(field, value, ctx).label ?? '');
+  } else if (field.type === 'multi_select') {
+    text = normalizeMulti(value).map(item => resolveOption(field, item, ctx).label).join('、');
+  } else if (field.type === 'checkbox') {
+    text = value === true || value === 'true' || value === 1 ? '是' : '否';
+  } else if (field.type === 'attachment') {
+    text = Array.isArray(value) && value.length ? value.map(item => item?.name || item?.path || '').join(' ') : '';
+  }
+  return { raw, text };
+}
+
+function matchFilter(row, filter) {
+  const field = fields.find(item => item.key === filter.key);
+  if (!field) return true;
+  const { raw, text } = filterPair(field, row);
+  const target = String(filter.value ?? '');
+  const hit = (haystack) => haystack === target
+    || (target !== '' && haystack.toLowerCase().includes(target.toLowerCase()));
+  switch (filter.op) {
+    case 'equals':
+      return raw === target || text === target;
+    case 'not_equals':
+      return !(raw === target || text === target);
+    case 'empty':
+      return isEmptyCell(raw) && text === '';
+    case 'not_empty':
+      return !(isEmptyCell(raw) && text === '');
+    case 'contains':
+    default:
+      return target ? hit(raw) || hit(text) : true;
+  }
+}
+
+function compareField(field, a, b) {
+  const av = readFieldValue(field, a);
+  const bv = readFieldValue(field, b);
+  if (field.type === 'number') {
+    const an = Number(av);
+    const bn = Number(bv);
+    const aOk = Number.isFinite(an) && String(av ?? '') !== '';
+    const bOk = Number.isFinite(bn) && String(bv ?? '') !== '';
+    if (aOk && bOk) return an - bn;
+    if (aOk !== bOk) return aOk ? -1 : 1;
+  }
+  if (field.type === 'checkbox') {
+    const at = av === true || av === 'true' || av === 1 ? 1 : 0;
+    const bt = bv === true || bv === 'true' || bv === 1 ? 1 : 0;
+    return at - bt;
+  }
+  // 日期是 'YYYY-MM-DD HH:MM'，字典序即时间序；其余文本按中文拼音排
+  return String(av ?? '').localeCompare(String(bv ?? ''), 'zh-CN');
+}
+
+function sortList(list) {
+  if (!baseSorts.length) return list;
+  const { key, dir } = baseSorts[0];
+  const field = fields.find(item => item.key === key);
+  if (!field) return list;
+  const sign = dir === 'desc' ? -1 : 1;
+  return [...list].sort((a, b) => {
+    // 空值永远沉底：跟着 sign 一起翻转的话，一按降序空行全冲到最上面
+    const aEmpty = isEmptyCell(readFieldValue(field, a));
+    const bEmpty = isEmptyCell(readFieldValue(field, b));
+    if (aEmpty !== bEmpty) return aEmpty ? 1 : -1;
+    if (aEmpty && bEmpty) return 0;
+    return compareField(field, a, b) * sign;
+  });
+}
+
 function filterRows(list) {
   const today = todayString();
-  return list.filter(row => {
+  let out = list.filter(row => {
     if (activeFilter.tag && row.tag !== activeFilter.tag) return false;
     if (activeFilter.subTag) {
       const subs = String(row.sub_tag || '').split(',').map(item => item.trim()).filter(Boolean);
@@ -71,6 +220,10 @@ function filterRows(list) {
     if (activeFilter.mode === 'inbox' && row.status !== 'unprocessed') return false;
     return true;
   });
+  if (baseFilters.length) {
+    out = out.filter(row => baseFilters.every(filter => matchFilter(row, filter)));
+  }
+  return sortList(out);
 }
 
 // ==========================================
@@ -266,13 +419,19 @@ function cellCtxFor(field, row) {
 }
 
 function buildHeadHtml(visibleFields) {
-  const cells = visibleFields.map(field => `
-    <th class="wr-table-th" data-key="${escapeHtml(field.key)}">
+  const sorted = baseSorts[0] || null;
+  const cells = visibleFields.map(field => {
+    const isSorted = Boolean(sorted) && sorted.key === field.key;
+    const arrow = isSorted ? (sorted.dir === 'desc' ? '▼' : '▲') : '';
+    return `
+    <th class="wr-table-th${isSorted ? ' is-sorted' : ''}" data-key="${escapeHtml(field.key)}">
       <button type="button" class="wr-th-btn" data-key="${escapeHtml(field.key)}" aria-haspopup="true" aria-expanded="false">
         ${renderFieldIcon(field.type)}
         <span class="wr-th-label">${escapeHtml(field.label)}</span>
+        ${isSorted ? `<span class="wr-th-sort" aria-label="${sorted.dir === 'desc' ? '降序' : '升序'}">${arrow}</span>` : ''}
       </button>
-    </th>`).join('');
+    </th>`;
+  }).join('');
   return `<tr>${cells}<th class="wr-table-th wr-table-th-add">
     <button type="button" class="wr-th-add-btn" aria-label="添加字段">＋</button>
   </th></tr>`;
@@ -941,8 +1100,23 @@ function openColumnMenu(anchorEl, field) {
   const panel = openFloatingPanel(anchorEl, 'wr-colmenu');
 
   const renderMenu = () => {
+    const sorted = baseSorts[0] || null;
+    const isSorted = Boolean(sorted) && sorted.key === field.key;
     panel.innerHTML = `
       <div class="wr-colmenu-main">
+        <!-- 排序放在列头上，是 Excel / Notion 的共同习惯：想按哪列排就点哪列 -->
+        <button type="button" class="wr-colmenu-item" data-action="sort-asc">
+          <span class="wr-colmenu-glyph" aria-hidden="true">↑</span>升序
+          ${isSorted && sorted.dir === 'asc' ? '<svg class="wr-icon wr-type-check" aria-hidden="true"><use href="#ic-check"/></svg>' : ''}
+        </button>
+        <button type="button" class="wr-colmenu-item" data-action="sort-desc">
+          <span class="wr-colmenu-glyph" aria-hidden="true">↓</span>降序
+          ${isSorted && sorted.dir === 'desc' ? '<svg class="wr-icon wr-type-check" aria-hidden="true"><use href="#ic-check"/></svg>' : ''}
+        </button>
+        ${isSorted ? `<button type="button" class="wr-colmenu-item" data-action="sort-clear">
+          <span class="wr-colmenu-glyph" aria-hidden="true">×</span>清除排序
+        </button>` : ''}
+        <div class="wr-colmenu-sep"></div>
         <button type="button" class="wr-colmenu-item" data-action="change-type">
           <svg class="wr-icon" aria-hidden="true"><use href="#ic-swap"/></svg>更改类型
         </button>
@@ -983,6 +1157,16 @@ function openColumnMenu(anchorEl, field) {
 
   panel.addEventListener('click', async event => {
     const action = event.target.closest('[data-action]')?.dataset.action;
+    if (action === 'sort-asc' || action === 'sort-desc') {
+      closeFloatingPanel();
+      setBaseSort(field.key, action === 'sort-desc' ? 'desc' : 'asc');
+      return;
+    }
+    if (action === 'sort-clear') {
+      closeFloatingPanel();
+      setBaseSort('', '');
+      return;
+    }
     if (action === 'change-type') {
       typesPane.hidden = !typesPane.hidden;
       panel.classList.toggle('show-types', !typesPane.hidden);
@@ -1160,8 +1344,6 @@ async function createRecord() {
 const NOT_READY_MESSAGES = {
   kanban: '看板视图：开发中，后续版本提供',
   calendar: '日历视图：开发中，后续版本提供',
-  filter: '筛选：开发中，后续版本提供',
-  sort: '排序：开发中，后续版本提供',
 };
 
 function notReady(feature) {
@@ -1222,8 +1404,26 @@ function bindToolbar() {
   document.getElementById('table-fields-btn')?.addEventListener('click', event => {
     openFieldsPanel(event.currentTarget);
   });
-  document.getElementById('table-filter-btn')?.addEventListener('click', () => notReady('filter'));
-  document.getElementById('table-sort-btn')?.addEventListener('click', () => notReady('sort'));
+  // 筛选 / 排序面板与自建表是同一套（sheetPanels），只是数据源换成 logs + field_def
+  document.getElementById('table-filter-btn')?.addEventListener('click', event => {
+    const anchor = event.currentTarget;
+    openFilterPanel(anchor, {
+      fields: visibleFieldList(),
+      filters: baseFilters,
+      onApply: next => setBaseFilters(next),
+    });
+  });
+  document.getElementById('table-sort-btn')?.addEventListener('click', event => {
+    const anchor = event.currentTarget;
+    openSortPanel(anchor, {
+      fields: visibleFieldList(),
+      sorts: baseSorts,
+      onApply: next => {
+        const first = Array.isArray(next) ? next[0] : null;
+        setBaseSort(first?.key || '', first?.dir || 'asc');
+      },
+    });
+  });
   document.querySelectorAll('.table-view-tab').forEach(tab => {
     tab.addEventListener('click', () => {
       const mode = tab.dataset.viewMode;
@@ -1251,6 +1451,9 @@ export async function initTablePage() {
   try {
     await loadFields();
     await refresh();
+    // 筛选/排序是模块级状态：切走再切回来、或重进这张表时要让按钮跟上，
+    // 否则「有 2 个条件生效」的徽标会消失，用户以为筛选失效了。
+    syncToolbarState();
   } catch (error) {
     console.error('表格页加载失败:', error);
     showTableToast('表格加载失败，请查看日志', 'danger');

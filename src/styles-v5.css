@@ -77,3 +77,82 @@ body[data-skin="v4"] .sh-cell {
     transition: none;
   }
 }
+
+/* =====================================================================
+   第 2 节 · 基础表的条件筛选 / 排序
+   ---------------------------------------------------------------------
+   排序有两个入口（列头菜单里的升序/降序、工具栏的排序面板），
+   筛选只有一个入口但状态活在工具栏上。三处视觉必须说同一件事：
+   生效 = 主色 + 一层淡底；列头 = 标签后跟 ↑ / ↓。
+   ===================================================================== */
+
+body[data-skin="v4"] .subview #table-filter-btn.is-on,
+body[data-skin="v4"] .subview #table-sort-btn.is-on {
+  color: var(--color-primary) !important;
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent) !important;
+}
+
+/* 生效条件数。默认 inline 显示，隐藏由 JS 写 inline display:none 控制 ——
+   这里绝不能用 display !important，否则徽标再也藏不回去。 */
+#table-filter-btn .rec-tool-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  margin-left: 5px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--color-primary);
+  color: #fff;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 列头排序标记：字号压到 9px 并抬 1px，读起来像上标而不是「多打了一个字符」 */
+body[data-skin="v4"] .wr-th-sort {
+  margin-left: 4px;
+  font-size: 9px;
+  line-height: 1;
+  color: var(--color-primary);
+  vertical-align: 1px;
+}
+
+body[data-skin="v4"] .wr-table-th.is-sorted .wr-th-label {
+  color: var(--color-primary);
+}
+
+/* 列头菜单里的 ↑ ↓ × 用字形而非新加 sprite：尺寸/透明度与旁边的 .wr-icon 对齐，
+   否则四个带图标的项和三个字形项会参差不齐。 */
+body[data-skin="v4"] .wr-colmenu-glyph {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 14px !important;
+  height: 14px !important;
+  flex: none !important;
+  font-size: 12px !important;
+  line-height: 1 !important;
+  opacity: .8 !important;
+}
+
+/* 顶栏工具条的降级阶梯（第 2 节续）。
+   v4 的 .rec-detail-head 是定高 52px、单行不换行，工具一多就把「新建」顶出屏幕 ——
+   1360 下加完筛选/排序只剩约 12px 余量。这里按窗口宽度依次让位，保证主操作永远可达：
+   ① 先收「排序」：列头菜单里的升序/降序是同一功能的另一个入口；
+   ② 再收两个分类下拉：条件筛选面板能表达同样的收窄。
+   不用 flex-wrap —— 定高 52px 下换行会把页头撑破。 */
+@media (max-width: 1180px) {
+  body[data-skin="v4"] #table-sort-btn { display: none !important; }
+}
+@media (max-width: 1000px) {
+  body[data-skin="v4"] .rec-detail-tools .rec-filter { display: none !important; }
+}
+
+/* 分类名可能很长（用户自建标签）。不让它无限撑宽把按钮挤走 —— 截断，下拉展开时能看全。 */
+body[data-skin="v4"] .rec-detail-tools .rec-filter select {
+  max-width: 132px !important;
+  text-overflow: ellipsis !important;
+}
