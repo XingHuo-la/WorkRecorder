@@ -244,7 +244,13 @@ function timeString() {
   return `${pad2(now.getHours())}:${pad2(now.getMinutes())}:${pad2(now.getSeconds())}`;
 }
 
+/**
+ * 列宽权重。优先用库里存的（v14 起 field_def.width 有真实值），
+ * 没存过才回落到内置比例 —— 否则用户拖过的宽度一刷新就白拖。
+ */
 function widthOf(field) {
+  const stored = Number(field.width);
+  if (stored > 0) return stored;
   return DEFAULT_WIDTHS[field.key] || FALLBACK_WIDTH;
 }
 
@@ -430,6 +436,8 @@ function buildHeadHtml(visibleFields) {
         <span class="wr-th-label">${escapeHtml(field.label)}</span>
         ${isSorted ? `<span class="wr-th-sort" aria-label="${sorted.dir === 'desc' ? '降序' : '升序'}">${arrow}</span>` : ''}
       </button>
+      <span class="wr-th-resize" data-resize="${escapeHtml(field.key)}" role="separator" aria-orientation="vertical"
+            aria-label="拖动调整「${escapeHtml(field.label)}」列宽，双击按内容自适应"></span>
     </th>`;
   }).join('');
   return `<tr>${cells}<th class="wr-table-th wr-table-th-add">
@@ -453,6 +461,125 @@ function buildEmptyHtml(colSpan) {
   return `<tr class="wr-table-empty-row"><td colspan="${colSpan}">
     <div class="wr-table-empty">还没有记录。点「＋ 新建记录」写下第一条。</div>
   </td></tr>`;
+}
+
+// ==========================================
+// 列宽：拖边界调整 / 双击按内容自适应
+// ==========================================
+//
+// 列宽存的是**权重**不是 px：colgroup 用百分比，权重按比例分配容器宽度。
+// 存 px 的话 table-layout:fixed 会把「px 之和」当成硬下限，窗口一窄就横向溢出
+// （这是当初把列宽改成百分比的原因，不能退回去）。
+
+const MIN_COL_PX = 84;
+const MAX_COL_PX = 560;
+
+let measureCanvas = null;
+
+function textWidthPx(text, font) {
+  if (!measureCanvas) measureCanvas = document.createElement('canvas').getContext('2d');
+  measureCanvas.font = font || '13.5px system-ui, sans-serif';
+  return measureCanvas.measureText(String(text ?? '')).width;
+}
+
+/**
+ * 这一列「按内容该多宽」。字体从真实单元格取 —— 写死 13.5px 在三套主题里
+ * 会差 1~2px，量出来的宽度就跟渲染对不上，双击自适后会差一点点。
+ */
+function desiredWidthOf(field) {
+  const sample = tableRoot()?.querySelector('.wr-cell');
+  const font = sample ? getComputedStyle(sample).font : '13.5px system-ui, sans-serif';
+  let widest = textWidthPx(field.label, font);
+  for (const row of rows) {
+    const width = textWidthPx(filterPair(field, row).text, font);
+    if (width > widest) widest = width;
+  }
+  // 32 = 左右各 12 的内边距 + 8 的呼吸位，免得文字贴着边界
+  return Math.max(MIN_COL_PX, Math.min(MAX_COL_PX, Math.ceil(widest) + 32));
+}
+
+/**
+ * 把「这一列应该多宽（px）」换算成权重落库。
+ * 已知目标宽 d、表格宽 T、其它列权重和 S，解 w/(S+w) = d/T → w = S·d/(T−d)。
+ * 直接按 px 存会让百分比模型失效，所以必须解这一步。
+ */
+async function applyColumnWidth(field, desiredPx) {
+  const table = tableRoot()?.querySelector('.wr-table');
+  if (!table || !adapter) return;
+  const total = table.getBoundingClientRect().width || 0;
+  if (total <= 0) return;
+
+  // 至少给其它列留 140px，否则把某一列拖到占满会把别的列挤成 0
+  const cap = Math.max(MIN_COL_PX, total - 140);
+  const d = Math.max(MIN_COL_PX, Math.min(MAX_COL_PX, cap, Math.round(desiredPx)));
+
+  const others = visibleFieldList()
+    .filter(item => item.key !== field.key)
+    .reduce((sum, item) => sum + widthOf(item), 0) + ADD_COL_WIDTH;
+
+  const weight = total > d && others > 0
+    ? Math.max(40, Math.round((others * d) / (total - d)))
+    : Math.round(widthOf(field));
+
+  try {
+    await adapter.dbExecute('UPDATE field_def SET width=? WHERE id=?', [weight, field.id]);
+    field.width = weight;
+  } catch (error) {
+    console.error('保存列宽失败:', error);
+    showTableToast('列宽保存失败，请看日志', 'danger');
+    return;
+  }
+  render();
+}
+
+async function autofitColumn(field) {
+  const px = desiredWidthOf(field);
+  await applyColumnWidth(field, px);
+  showTableToast(`「${field.label}」已按内容调宽`, 'info');
+}
+
+let colDrag = null;
+
+function onRootPointerDown(event) {
+  const handle = event.target.closest('.wr-th-resize');
+  if (!handle || !adapter) return;
+  const key = handle.dataset.resize;
+  const field = fields.find(item => item.key === key);
+  const index = renderedFields.findIndex(item => item.key === key);
+  const th = handle.closest('.wr-table-th');
+  const col = tableRoot()?.querySelectorAll('.wr-table col')[index];
+  if (!field || index < 0 || !th || !col) return;
+
+  // 不 preventDefault 的话拖动会顺带把表头文字刷蓝
+  event.preventDefault();
+  event.stopPropagation();
+
+  colDrag = { field, col, startX: event.clientX, startPx: th.getBoundingClientRect().width, px: 0, moved: false };
+  tableRoot()?.classList.add('is-col-resizing');
+  document.addEventListener('pointermove', onColResizeMove);
+  document.addEventListener('pointerup', onColResizeEnd, { once: true });
+  document.addEventListener('pointercancel', onColResizeEnd, { once: true });
+}
+
+function onColResizeMove(event) {
+  if (!colDrag) return;
+  const dx = event.clientX - colDrag.startX;
+  // 2px 抖动容差：手抖一下不该被记成「改过列宽」
+  if (!colDrag.moved && Math.abs(dx) < 2) return;
+  colDrag.moved = true;
+  const px = Math.round(Math.max(MIN_COL_PX, Math.min(MAX_COL_PX, colDrag.startPx + dx)));
+  colDrag.px = px;
+  // 拖动过程中只改这一列的 col 宽度，不重排整表 —— 重排会掉帧，也会打断正在编辑的格
+  colDrag.col.style.width = `${px}px`;
+}
+
+function onColResizeEnd() {
+  document.removeEventListener('pointermove', onColResizeMove);
+  tableRoot()?.classList.remove('is-col-resizing');
+  const drag = colDrag;
+  colDrag = null;
+  if (!drag || !drag.moved) return;
+  void applyColumnWidth(drag.field, drag.px);
 }
 
 // 渲染入口（壳内也直接调用本函数渲染演示数据；
@@ -787,6 +914,17 @@ function onRootPaste(event) {
 
 function onRootDblClick(event) {
   if (event.target.closest('.ft-inline-input, .ft-dropdown')) return;
+  // 双击列边界 = 按内容自适应（Excel 同款手势；不放在列头文字上，
+  // 那里单击是开列菜单，双击会变成「开了又关」）
+  const resizeHandle = event.target.closest('.wr-th-resize');
+  if (resizeHandle) {
+    const field = fields.find(item => item.key === resizeHandle.dataset.resize);
+    if (field) {
+      event.preventDefault();
+      void autofitColumn(field);
+    }
+    return;
+  }
   const cell = event.target.closest('.wr-cell');
   if (!cell) return;
   const r = Number(cell.dataset.rowindex);
@@ -1116,6 +1254,9 @@ function openColumnMenu(anchorEl, field) {
         ${isSorted ? `<button type="button" class="wr-colmenu-item" data-action="sort-clear">
           <span class="wr-colmenu-glyph" aria-hidden="true">×</span>清除排序
         </button>` : ''}
+        <button type="button" class="wr-colmenu-item" data-action="autofit">
+          <span class="wr-colmenu-glyph" aria-hidden="true">⇔</span>按内容自适应列宽
+        </button>
         <div class="wr-colmenu-sep"></div>
         <button type="button" class="wr-colmenu-item" data-action="change-type">
           <svg class="wr-icon" aria-hidden="true"><use href="#ic-swap"/></svg>更改类型
@@ -1165,6 +1306,11 @@ function openColumnMenu(anchorEl, field) {
     if (action === 'sort-clear') {
       closeFloatingPanel();
       setBaseSort('', '');
+      return;
+    }
+    if (action === 'autofit') {
+      closeFloatingPanel();
+      void autofitColumn(field);
       return;
     }
     if (action === 'change-type') {
@@ -1396,6 +1542,7 @@ export function bindTableEvents(rootEl) {
   rootEl.addEventListener('dblclick', onRootDblClick);
   rootEl.addEventListener('keydown', onRootKeydown);
   rootEl.addEventListener('paste', onRootPaste);
+  rootEl.addEventListener('pointerdown', onRootPointerDown);
   ensureGrid();
 }
 

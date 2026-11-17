@@ -631,6 +631,37 @@ fn init_and_migrate_db_at(db_path: &str, json_path: &str) -> Result<(), String> 
             .map_err(|e| format!("数据库升级到 v13 失败: {}", e))?;
     }
 
+    // v14：基础表列宽可调。
+    //
+    // field_def.width 从 v7 建表起就是 schema 默认 160，前端一直没读过它
+    // （列宽由 tablePage 里的 DEFAULT_WIDTHS 常量决定）。现在要让用户能拖宽、
+    // 能双击自适应，就得有个可信的存储位；若继续全是 160，一打开表所有列
+    // 会被拉成等宽，把原来调好的比例抹平。
+    // 只改「还停在 schema 默认值」的行 —— 用户已经调过的宽度不能被迁移覆盖。
+    if schema_version < 14 {
+        // field_def 在 v7 建表时没有 width（列宽一直由前端常量决定），这里补上。
+        add_column_if_missing(&conn, "field_def", "width", "width INTEGER DEFAULT 160")?;
+
+        let log_widths: [(&str, i64); 7] = [
+            ("text", 280),
+            ("tag", 120),
+            ("sub_tag", 170),
+            ("date", 128),
+            ("attachments", 96),
+            ("status", 108),
+            ("detail", 180),
+        ];
+        for (key, width) in log_widths {
+            conn.execute(
+                "UPDATE field_def SET width = ?1 WHERE entity = 'log' AND key = ?2 AND width = 160",
+                rusqlite::params![width, key],
+            )
+            .map_err(|e| format!("初始化基础表列宽失败({}): {}", key, e))?;
+        }
+        conn.execute_batch("PRAGMA user_version = 14;")
+            .map_err(|e| format!("数据库升级到 v14 失败: {}", e))?;
+    }
+
     let json_exists = Path::new(json_path).exists();
     // ✅ 修复了之前的借用检查器报错，一步到位！
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM tags", [], |row| row.get(0)).unwrap_or(0);
@@ -1803,6 +1834,64 @@ mod tests {
             })
             .unwrap();
         assert_eq!(todo_visible, 0, "todos 视图没过滤软删除");
+
+        drop(conn);
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    // v14 = 基础表列宽初值。守三件事：
+    //   ① 全新库的内置字段宽度不再统一 160（否则一开表所有列等宽，比例全丢）
+    //   ② 用户已调过的宽度不被迁移覆盖（只动「还停在 160」的行）
+    //   ③ 迁移可重跑：跑第二遍不该把宽度改回种子值
+    #[test]
+    fn v14_seeds_base_table_column_widths() {
+        let tmp = std::env::temp_dir().join("wr-v14-col-widths");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).expect("创建临时目录失败");
+        let db = tmp.join("t.db");
+        let json = tmp.join("t.json");
+        init_and_migrate_db_at(&db.to_string_lossy(), &json.to_string_lossy())
+            .expect("全新库迁移失败");
+
+        let conn = Connection::open(&db).unwrap();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert!(version >= 14, "全新库版本号应至少为 14，实际 {}", version);
+
+        let width_of = |key: &str| -> i64 {
+            conn.query_row(
+                "SELECT width FROM field_def WHERE entity = 'log' AND key = ?1",
+                [key],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+
+        // ① 不再是等宽 160，且与前端 DEFAULT_WIDTHS 一致
+        assert_eq!(width_of("text"), 280, "内容列宽度未初始化");
+        assert_eq!(width_of("date"), 128, "时间列宽度未初始化");
+        assert_eq!(width_of("attachments"), 96, "附件列宽度未初始化");
+
+        // ② 模拟用户把内容列拖到 400，再跑一遍迁移，不该被改回 280
+        conn.execute(
+            "UPDATE field_def SET width = 400 WHERE entity = 'log' AND key = 'text'",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        init_and_migrate_db_at(&db.to_string_lossy(), &json.to_string_lossy())
+            .expect("二次迁移失败");
+
+        let conn = Connection::open(&db).unwrap();
+        let kept: i64 = conn
+            .query_row(
+                "SELECT width FROM field_def WHERE entity = 'log' AND key = 'text'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(kept, 400, "二次迁移覆盖了用户调过的列宽");
 
         drop(conn);
         let _ = fs::remove_dir_all(&tmp);

@@ -233,3 +233,49 @@ body[data-skin="v4"] .sh-cell.is-wrap .ft-inline-input.is-multiline {
   width: auto !important;
   align-self: stretch !important;
 }
+
+/* =====================================================================
+   第 4 节 · 列宽：拖边界 / 双击自适应
+   ---------------------------------------------------------------------
+   抓手贴在 th 右缘，宽度 7px（光标是 col-resize 时 4px 就够，但 7px 更好点中；
+   代价是表头最右侧 7px 内点击会变成拖宽而不是开列菜单 —— Excel 也是这样）。
+   抓手平时完全透明，只在悬停表头时显一条淡线，避免表头看起来像有一排竖线。
+   ===================================================================== */
+
+body[data-skin="v4"] .wr-th-resize {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 3;
+  width: 7px;
+  height: 100%;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+body[data-skin="v4"] .wr-th-resize::after {
+  content: '';
+  position: absolute;
+  top: 24%;
+  right: 3px;
+  width: 1px;
+  height: 52%;
+  background: transparent;
+  transition: background-color .12s linear;
+}
+
+body[data-skin="v4"] .wr-table-th:hover .wr-th-resize::after {
+  background: var(--border-medium);
+}
+
+/* 拖动中：整表光标保持 col-resize，并且不许选中文字 */
+body[data-skin="v4"] .is-col-resizing,
+body[data-skin="v4"] .is-col-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+
+body[data-skin="v4"] .is-col-resizing .wr-th-resize::after {
+  background: var(--color-primary);
+}
