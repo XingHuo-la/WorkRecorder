@@ -387,6 +387,9 @@ async function refresh(depth = 0) {
   const gen = ++refreshGen;
   const tick = writeTick;
   const logs = await adapter.dbQuery('SELECT * FROM logs ORDER BY date DESC, time DESC, id DESC');
+  // 行高存在 record.height（智能表早就在用这一列），logs 视图里没有它 —— 视图定义
+  // 被测试冻结，不为一行高度去动视图和 9 个触发器，这里单独补一次读。
+  const heights = await adapter.dbQuery("SELECT id, height FROM record WHERE kind = 'log' AND height IS NOT NULL");
   // 读取期间有写入落地：这份快照可能不含刚写进去的值，重读（最多重试 2 次，避免写多时打转）
   if (tick !== writeTick && depth < 2) { await refresh(depth + 1); return; }
   const nextRows = Array.isArray(logs) ? logs : [];
@@ -396,7 +399,17 @@ async function refresh(depth = 0) {
   // （实测缺陷：库已更新、界面回退）。有更新的刷新接管时也一样，让位给它。
   if (gen !== refreshGen) return;
   if (tick !== writeTick && depth < 2) { await refresh(depth + 1); return; }
-  rows = nextRows;
+  const heightMap = new Map();
+  (Array.isArray(heights) ? heights : []).forEach(item => {
+    const value = Number(item?.height);
+    if (Number.isFinite(value) && value > 0) heightMap.set(String(item.id), value);
+  });
+  rows = heightMap.size
+    ? nextRows.map(row => {
+      const height = heightMap.get(String(row.id));
+      return height ? { ...row, height } : row;
+    })
+    : nextRows;
   render();
 }
 
@@ -454,7 +467,11 @@ function buildRowHtml(row, visibleFields, rowIndex = 0) {
       <div class="wr-cell" tabindex="-1" data-key="${escapeHtml(field.key)}" data-id="${escapeHtml(row.id)}" data-rowindex="${rowIndex}" data-col="${colIndex}">${renderCell(field, value, cellCtxFor(field, row))}</div>
     </td>`;
   }).join('');
-  return `<tr class="wr-table-row" data-id="${escapeHtml(row.id)}">${cells}<td class="wr-table-td wr-table-td-add"></td></tr>`;
+  // 行高按 record.height 落到 <tr> 上；没有值就走 CSS 的 46px 自然高度。
+  const rowHeight = Number(row.height) || 0;
+  const trCls = `wr-table-row${rowHeight ? ' is-row-sized' : ''}`;
+  const trStyle = rowHeight ? ` style="height:${rowHeight}px"` : '';
+  return `<tr class="${trCls}" data-id="${escapeHtml(row.id)}"${trStyle}>${cells}<td class="wr-table-td wr-table-td-add"></td></tr>`;
 }
 
 function buildEmptyHtml(colSpan) {
@@ -541,6 +558,8 @@ async function autofitColumn(field) {
 let colDrag = null;
 
 function onRootPointerDown(event) {
+  // 行下缘优先：这一段和单元格区域重叠，交给行高处理器先判断
+  if (onRowEdgePointerDown(event)) return;
   const handle = event.target.closest('.wr-th-resize');
   if (!handle || !adapter) return;
   const key = handle.dataset.resize;
@@ -580,6 +599,145 @@ function onColResizeEnd() {
   colDrag = null;
   if (!drag || !drag.moved) return;
   void applyColumnWidth(drag.field, drag.px);
+}
+
+// ==========================================
+// 行高：拖行下边界调整 / 双击复位
+// ==========================================
+//
+// 基础表没有行首编号列，Excel 那种「在行号栏拖边界」的入口在这里不存在。
+// 改成「行下缘 5px 热区」—— 那段正好落在单元格 12px 下内边距里，压不到文字，
+// 也不用往表格骨架里插一列（插列会连带改 colgroup 权重、列宽换算、探针坐标）。
+
+const MIN_ROW_PX = 32;
+const MAX_ROW_PX = 600;
+const ROW_EDGE_PX = 5;
+const DEFAULT_ROW_PX = 46; // 与 styles-v4 里 .wr-cell 的 min-height 对齐
+
+let rowDrag = null;
+let swallowNextClick = false;
+
+function rowIndexOf(tr) {
+  const cell = tr?.querySelector?.('.wr-cell[data-rowindex]');
+  const index = Number(cell?.dataset.rowindex);
+  return Number.isInteger(index) ? index : -1;
+}
+
+function rowOfTr(tr) {
+  const index = rowIndexOf(tr);
+  return index >= 0 ? renderedRows[index] : null;
+}
+
+function isNearRowEdge(tr, clientY) {
+  const rect = tr.getBoundingClientRect();
+  const gap = rect.bottom - clientY;
+  return gap >= -1 && gap <= ROW_EDGE_PX;
+}
+
+// 光标提示：CSS 没法表达「一行的最下面 5px」，只能靠 JS 挂类。
+// 没有这个提示，用户永远发现不了行下缘可以拖。
+function onRowEdgeHover(event) {
+  const root = tableRoot();
+  if (!root || rowDrag || colDrag || fillDrag) return;
+  const tr = event.target.closest?.('.wr-table-row');
+  const onEdge = Boolean(tr) && !isEditingCell() && isNearRowEdge(tr, event.clientY);
+  root.querySelectorAll('.wr-table-row.is-row-edge').forEach(el => {
+    if (!onEdge || el !== tr) el.classList.remove('is-row-edge');
+  });
+  if (onEdge) tr.classList.add('is-row-edge');
+}
+
+function onRowEdgePointerDown(event) {
+  if (event.button !== 0) return false;
+  const tr = event.target.closest?.('.wr-table-row');
+  if (!tr || isEditingCell() || !isNearRowEdge(tr, event.clientY)) return false;
+  const row = rowOfTr(tr);
+  if (!row) return false;
+
+  // 这里**不能** preventDefault：pointerdown 被拦掉后浏览器不再补发 mousedown/click，
+  // 「双击行下缘复位」就永远收不到 dblclick。文字选中靠 .is-row-resizing 的
+  // user-select:none 挡住；真拖动过之后吞掉紧跟的那次 click，免得顺手改了选区。
+  event.stopPropagation();
+  rowDrag = { tr, row, startY: event.clientY, startPx: tr.getBoundingClientRect().height, px: 0, moved: false };
+  tableRoot()?.classList.add('is-row-resizing');
+  document.addEventListener('pointermove', onRowResizeMove);
+  document.addEventListener('pointerup', onRowResizeEnd, { once: true });
+  document.addEventListener('pointercancel', onRowResizeEnd, { once: true });
+  return true;
+}
+
+function onRowResizeMove(event) {
+  if (!rowDrag) return;
+  const dy = event.clientY - rowDrag.startY;
+  // 2px 抖动容差：手抖一下不该被记成「改过行高」
+  if (!rowDrag.moved && Math.abs(dy) < 2) return;
+  rowDrag.moved = true;
+  const px = Math.round(Math.max(MIN_ROW_PX, Math.min(MAX_ROW_PX, rowDrag.startPx + dy)));
+  rowDrag.px = px;
+  // 拖动中只改这一行的行内高度，不重绘 —— 重绘会打断正在进行的编辑
+  rowDrag.tr.style.height = `${px}px`;
+  rowDrag.tr.classList.add('is-row-sized');
+}
+
+function onRowResizeEnd() {
+  document.removeEventListener('pointermove', onRowResizeMove);
+  tableRoot()?.classList.remove('is-row-resizing');
+  const drag = rowDrag;
+  rowDrag = null;
+  if (!drag || !drag.moved) return;
+  // 指针抬起后浏览器还会补一次 click，落到行下缘那格上会把选区挪走
+  swallowNextClick = true;
+  void applyRowHeight(drag.row, drag.px);
+}
+
+// 参数会被适配器统一 String()，null 传下去会写成字符串 'null'（INTEGER 列存成 TEXT）。
+// 「恢复默认行高」必须走不带参数的 SQL NULL。
+async function writeRowHeight(row, px) {
+  if (!px) {
+    await adapter.dbExecute('UPDATE record SET height = NULL WHERE id = ?', [row.id]);
+    delete row.height;
+  } else {
+    await adapter.dbExecute('UPDATE record SET height = ? WHERE id = ?', [px, row.id]);
+    row.height = px;
+  }
+  writeTick += 1;
+}
+
+async function applyRowHeight(row, px) {
+  const before = Number(row.height) || 0;
+  const next = px || 0;
+  if (before === next) {
+    render();
+    return;
+  }
+  await writeRowHeight(row, next);
+  undoStack.push({
+    label: next ? `调整行高到 ${next}px` : '恢复默认行高',
+    undo: async () => { await writeRowHeight(row, before); render(); },
+    redo: async () => { await writeRowHeight(row, next); render(); },
+  });
+  render();
+}
+
+// 双击行下边界 = 让它自己合适。
+// 基础表的单元格是单行不折行，量出来的自然高度就是默认值，所以这一步实际是
+// 「复位被拖高的行」；名字仍叫自适应，因为用户的心智是「让它自己合适」。
+async function autofitRow(tr) {
+  const row = rowOfTr(tr);
+  if (!row) return;
+  const previous = Number(row.height) || 0;
+  tr.style.height = '';
+  tr.classList.remove('is-row-sized');
+  const natural = Math.round(tr.getBoundingClientRect().height) || DEFAULT_ROW_PX;
+  const target = natural <= DEFAULT_ROW_PX + 1 ? 0 : natural;
+  if (previous === target) {
+    render();
+    if (!previous) showTableToast(`行高已经是默认的 ${DEFAULT_ROW_PX}px`, 'info');
+    return;
+  }
+  await writeRowHeight(row, target);
+  render();
+  showTableToast(target ? `行高已按内容调整为 ${natural}px` : `行高已恢复默认 ${DEFAULT_ROW_PX}px`, 'info');
 }
 
 // 渲染入口（壳内也直接调用本函数渲染演示数据；
@@ -1107,6 +1265,13 @@ function onRootDblClick(event) {
       event.preventDefault();
       void autofitColumn(field);
     }
+    return;
+  }
+  // 双击行下边界 = 行高按内容自适应（先判，这一段落在单元格内边距里）
+  const rowEl = event.target.closest('.wr-table-row');
+  if (rowEl && !isEditingCell() && isNearRowEdge(rowEl, event.clientY)) {
+    event.preventDefault();
+    void autofitRow(rowEl);
     return;
   }
   const cell = event.target.closest('.wr-cell');
@@ -1685,6 +1850,11 @@ function notReady(feature) {
 // ==========================================
 
 function onRootClick(event) {
+  // 刚拖完行高：浏览器补发的那次 click 不该改变选区
+  if (swallowNextClick) {
+    swallowNextClick = false;
+    return;
+  }
   const thBtn = event.target.closest('.wr-th-btn');
   if (thBtn) {
     const field = fields.find(item => item.key === thBtn.dataset.key);
@@ -1727,6 +1897,12 @@ export function bindTableEvents(rootEl) {
   rootEl.addEventListener('keydown', onRootKeydown);
   rootEl.addEventListener('paste', onRootPaste);
   rootEl.addEventListener('pointerdown', onRootPointerDown);
+  // 行下缘的 row-resize 光标提示（CSS 表达不了「一行的最下面 5px」）
+  rootEl.addEventListener('pointermove', onRowEdgeHover);
+  rootEl.addEventListener('pointerleave', () => {
+    tableRoot()?.querySelectorAll('.wr-table-row.is-row-edge')
+      .forEach(el => el.classList.remove('is-row-edge'));
+  });
   // 填充柄单独挂：它不在 .wr-cell 里，和列宽抓手互不干扰。
   // 用 pointerdown 而不是 click —— 拖拽必须从按下那一刻开始接管，等 click 已经晚了。
   rootEl.addEventListener('pointerdown', onFillHandleDown);

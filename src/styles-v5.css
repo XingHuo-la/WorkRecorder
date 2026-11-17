@@ -329,3 +329,28 @@ body[data-skin="v4"] .wr-fill-handle[hidden],
 body[data-skin="v4"] .wr-fill-preview[hidden] {
   display: none !important;
 }
+
+/* ==========================================
+   六 / 行高：拖行下缘调整
+   ========================================== */
+
+/* 单元格的 46px 是「自然高度」，也是收缩时的地板。
+   要让用户能把行拖矮，就得在被调过的行里放掉这个下限 ——
+   不加这条，<tr> 上的 height 会被 min-height 顶回去，表现为「怎么拖都不变」。 */
+body[data-skin="v4"] .wr-table-row.is-row-sized .wr-cell {
+  min-height: 0 !important;
+}
+
+/* 拖动中：整表光标保持 row-resize，且不许顺手选中文字 */
+body[data-skin="v4"] .is-row-resizing,
+body[data-skin="v4"] .is-row-resizing * {
+  cursor: row-resize !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+
+/* 悬停在行下缘：光标换成 row-resize（由 JS 挂类，CSS 选不到「最下面 5px」） */
+body[data-skin="v4"] .wr-table-row.is-row-edge,
+body[data-skin="v4"] .wr-table-row.is-row-edge .wr-cell {
+  cursor: row-resize !important;
+}
