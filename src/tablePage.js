@@ -27,6 +27,9 @@ import { openFilterPanel, openSortPanel } from './sheetPanels.js';
 const TABLE_ENTITY = 'log';
 const DEFAULT_TAG = '未分类';
 const ADD_COL_WIDTH = 44;
+// 行号列的宽度权重。Excel 的行号栏就是这个作用：既是「第几行」的读数，
+// 也是点选整行的抓手。没有它，用户没法表达「我要这一整行」。
+const ROWNUM_WIDTH = 56;
 
 // 列宽基准权重（对照设计稿：内容 280 / 主分类 120 / 标签 170 / 时间 128 / 附件 96 / 状态 108 / 说明 180）。
 // 渲染时换算为百分比列宽，随容器宽度等比缩放；容器 < 900px 才出现横向滚动。
@@ -453,7 +456,8 @@ function buildHeadHtml(visibleFields) {
             aria-label="拖动调整「${escapeHtml(field.label)}」列宽，双击按内容自适应"></span>
     </th>`;
   }).join('');
-  return `<tr>${cells}<th class="wr-table-th wr-table-th-add">
+  // 左上角那格留空：Excel 里点它是「全选」，这里不做全选，留空更不容易误触
+  return `<tr><th class="wr-table-th wr-th-rownum" aria-label="行号"></th>${cells}<th class="wr-table-th wr-table-th-add">
     <button type="button" class="wr-th-add-btn" aria-label="添加字段">＋</button>
   </th></tr>`;
 }
@@ -471,7 +475,9 @@ function buildRowHtml(row, visibleFields, rowIndex = 0) {
   const rowHeight = Number(row.height) || 0;
   const trCls = `wr-table-row${rowHeight ? ' is-row-sized' : ''}`;
   const trStyle = rowHeight ? ` style="height:${rowHeight}px"` : '';
-  return `<tr class="${trCls}" data-id="${escapeHtml(row.id)}"${trStyle}>${cells}<td class="wr-table-td wr-table-td-add"></td></tr>`;
+  // data-row 存的是渲染顺序下标（不是 id）：行号列点选、Shift 连选都按它算
+  const rownum = `<td class="wr-table-td wr-rownum" data-row="${rowIndex}">${rowIndex + 1}</td>`;
+  return `<tr class="${trCls}" data-id="${escapeHtml(row.id)}"${trStyle}>${rownum}${cells}<td class="wr-table-td wr-table-td-add"></td></tr>`;
 }
 
 function buildEmptyHtml(colSpan) {
@@ -532,7 +538,7 @@ async function applyColumnWidth(field, desiredPx) {
 
   const others = visibleFieldList()
     .filter(item => item.key !== field.key)
-    .reduce((sum, item) => sum + widthOf(item), 0) + ADD_COL_WIDTH;
+    .reduce((sum, item) => sum + widthOf(item), 0) + ADD_COL_WIDTH + ROWNUM_WIDTH;
 
   const weight = total > d && others > 0
     ? Math.max(40, Math.round((others * d) / (total - d)))
@@ -566,7 +572,8 @@ function onRootPointerDown(event) {
   const field = fields.find(item => item.key === key);
   const index = renderedFields.findIndex(item => item.key === key);
   const th = handle.closest('.wr-table-th');
-  const col = tableRoot()?.querySelectorAll('.wr-table col')[index];
+  // +1 跳过行号列（colgroup 第 0 个）
+  const col = tableRoot()?.querySelectorAll('.wr-table col')[index + 1];
   if (!field || index < 0 || !th || !col) return;
 
   // 不 preventDefault 的话拖动会顺带把表头文字刷蓝
@@ -615,7 +622,10 @@ const ROW_EDGE_PX = 5;
 const DEFAULT_ROW_PX = 46; // 与 styles-v4 里 .wr-cell 的 min-height 对齐
 
 let rowDrag = null;
-let swallowNextClick = false;
+// 拖动行高后浏览器会补发一次 click，落到行下缘那格上会把选区挪走。
+// 用**时间窗**而不是布尔量：布尔量要等那次 click 来才复位，一旦 click 没来
+// （松手在窗口外、或事件是合成的），它就会一直挂着，把后面第一次正常点击吞掉。
+let swallowClickUntil = 0;
 
 function rowIndexOf(tr) {
   const cell = tr?.querySelector?.('.wr-cell[data-rowindex]');
@@ -686,7 +696,7 @@ function onRowResizeEnd() {
   rowDrag = null;
   if (!drag || !drag.moved) return;
   // 指针抬起后浏览器还会补一次 click，落到行下缘那格上会把选区挪走
-  swallowNextClick = true;
+  swallowClickUntil = performance.now() + 400;
   void applyRowHeight(drag.row, drag.px);
 }
 
@@ -758,15 +768,18 @@ export function renderTable(rootEl, data = {}) {
   // 列宽用百分比（基准权重见 DEFAULT_WIDTHS）：
   // table-layout:fixed 下 px 列宽之和是表格的硬下限，会导致容器窄时无法压缩列；
   // 百分比则随表格宽度（100% 或 min-width:900px）等比缩放。
-  const totalWeight = visibleFields.reduce((sum, field) => sum + widthOf(field), 0) + ADD_COL_WIDTH;
+  // 行号列也参与权重分配，否则它会挤占别的列（百分比总和必须为 100）
+  const totalWeight = visibleFields.reduce((sum, field) => sum + widthOf(field), 0)
+    + ADD_COL_WIDTH + ROWNUM_WIDTH;
   const colgroup = [
+    `<col style="width:${((ROWNUM_WIDTH / totalWeight) * 100).toFixed(3)}%" class="wr-col-rownum" />`,
     ...visibleFields.map(field => `<col style="width:${((widthOf(field) / totalWeight) * 100).toFixed(3)}%" />`),
     `<col style="width:${((ADD_COL_WIDTH / totalWeight) * 100).toFixed(3)}%" />`,
   ].join('');
 
   const tbody = useRows.length
     ? useRows.map((row, index) => buildRowHtml(row, visibleFields, index)).join('')
-    : buildEmptyHtml(visibleFields.length + 1);
+    : buildEmptyHtml(visibleFields.length + 2); // 行号 + 字段 + 加列
 
   rootEl.innerHTML = `
     <div class="wr-table-shell">
@@ -862,6 +875,30 @@ function paintGridSelection() {
   if (!root || !grid) return;
   root.querySelectorAll('.wr-cell.is-sel, .wr-cell.is-active')
     .forEach(el => el.classList.remove('is-sel', 'is-active'));
+  root.querySelectorAll('.wr-table-th.is-sel, .wr-rownum.is-sel')
+    .forEach(el => el.classList.remove('is-sel'));
+
+  const snap = grid.sel.snapshot();
+  // 整行/整列模式没有活动格（anchor 为空），高亮靠宿主自己按行列画
+  if (snap.mode === 'rows' || snap.mode === 'cols') {
+    root.querySelectorAll('.wr-cell[data-rowindex]').forEach(el => {
+      const r = Number(el.dataset.rowindex);
+      const c = Number(el.dataset.col);
+      if (grid.sel.contains(r, c)) el.classList.add('is-sel');
+    });
+    if (snap.mode === 'rows') {
+      root.querySelectorAll('.wr-rownum').forEach(td => {
+        if (snap.rows.includes(Number(td.dataset.row))) td.classList.add('is-sel');
+      });
+    } else {
+      root.querySelectorAll('.wr-table-th[data-key]').forEach(th => {
+        const index = renderedFields.findIndex(item => item.key === th.dataset.key);
+        if (index >= 0 && snap.cols.includes(index)) th.classList.add('is-sel');
+      });
+    }
+    positionFillHandle();
+    return;
+  }
 
   const active = grid.sel.active();
   if (!active) {
@@ -1849,16 +1886,60 @@ function notReady(feature) {
 // 事件绑定（一次性，事件委托）
 // ==========================================
 
+function selectColumnByKey(key, event) {
+  const index = renderedFields.findIndex(item => item.key === key);
+  if (index < 0 || !grid) return;
+  const snap = grid.sel.snapshot();
+  // 还没有整列选区时，Shift 点击当成普通点击（否则 extendCols 找不到起点）
+  const extend = Boolean(event.shiftKey) && snap.mode === 'cols' && snap.cols.length > 0;
+  grid.selectLine({
+    axis: 'col',
+    index,
+    additive: Boolean(event.ctrlKey || event.metaKey),
+    extend,
+  });
+  paintGridSelection();
+}
+
+function selectRowByIndex(index, event) {
+  if (!Number.isInteger(index) || index < 0 || !grid) return;
+  const snap = grid.sel.snapshot();
+  const extend = Boolean(event.shiftKey) && snap.mode === 'rows' && snap.rows.length > 0;
+  grid.selectLine({
+    axis: 'row',
+    index,
+    additive: Boolean(event.ctrlKey || event.metaKey),
+    extend,
+  });
+  paintGridSelection();
+}
+
+function onRootContextMenu(event) {
+  const th = event.target.closest('.wr-table-th[data-key]');
+  if (!th) return;
+  const field = fields.find(item => item.key === th.dataset.key);
+  if (!field) return;
+  event.preventDefault();
+  openColumnMenu(th, field);
+}
+
 function onRootClick(event) {
-  // 刚拖完行高：浏览器补发的那次 click 不该改变选区
-  if (swallowNextClick) {
-    swallowNextClick = false;
+  // 刚拖完行高：浏览器补发的那次 click 不该改变选区（只吞 400ms 内的那一次）
+  if (swallowClickUntil && performance.now() < swallowClickUntil) {
+    swallowClickUntil = 0;
     return;
   }
+  // 左键点列头 = 选中整列，列菜单走右键 —— 这是 Excel 的手势。
+  // 以前这里点一下就弹菜单，和自建表正好相反，也是「两套手感」最刺眼的一处。
   const thBtn = event.target.closest('.wr-th-btn');
   if (thBtn) {
-    const field = fields.find(item => item.key === thBtn.dataset.key);
-    if (field) openColumnMenu(thBtn, field);
+    selectColumnByKey(thBtn.dataset.key, event);
+    return;
+  }
+  // 点行号 = 选中整行
+  const rownum = event.target.closest('.wr-rownum');
+  if (rownum) {
+    selectRowByIndex(Number(rownum.dataset.row), event);
     return;
   }
   const addFieldBtn = event.target.closest('.wr-th-add-btn');
@@ -1894,6 +1975,7 @@ export function bindTableEvents(rootEl) {
   rootEl.dataset.wrTableBound = '1';
   rootEl.addEventListener('click', onRootClick);
   rootEl.addEventListener('dblclick', onRootDblClick);
+  rootEl.addEventListener('contextmenu', onRootContextMenu);
   rootEl.addEventListener('keydown', onRootKeydown);
   rootEl.addEventListener('paste', onRootPaste);
   rootEl.addEventListener('pointerdown', onRootPointerDown);

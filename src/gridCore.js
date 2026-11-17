@@ -105,6 +105,10 @@ export function createSelection() {
   let anchor = null; // { r, c }
   let focus = null;  // { r, c }
   const extras = new Set(); // "r:c"
+  // 整行 / 整列选中。矩形表达不了「第 2、5 行」「第 1、3 列」这种离散集合，
+  // 而 Excel 里 Ctrl 点行号正是这个语义 —— 只能单独存。
+  let pickedRows = [];
+  let pickedCols = [];
 
   const key = (r, c) => `${r}:${c}`;
 
@@ -122,6 +126,8 @@ export function createSelection() {
     anchor = null;
     focus = null;
     extras.clear();
+    pickedRows = [];
+    pickedCols = [];
   }
 
   /** 单选：普通点击。 */
@@ -132,6 +138,47 @@ export function createSelection() {
     focus = { r, c };
     return snapshot();
   }
+
+  /**
+   * 整行 / 整列选中。indexes 已经由宿主按「行号列」「列头」算好，
+   * 内核只管存 —— 它没有行高列宽，也不知道哪些下标可见。
+   * additive=false 时先清掉旧选区（普通点击）；true 时并集（Ctrl 点）。
+   */
+  function selectLines(axis, indexes, { additive = false } = {}) {
+    const list = Array.from(new Set((indexes || []).filter(i => Number.isInteger(i) && i >= 0)));
+    if (!additive) clear();
+    const merged = additive
+      ? Array.from(new Set([...(axis === 'row' ? pickedRows : pickedCols), ...list]))
+      : list;
+    if (axis === 'row') {
+      pickedRows = merged.sort((a, b) => a - b);
+      pickedCols = [];
+      mode = 'rows';
+    } else {
+      pickedCols = merged.sort((a, b) => a - b);
+      pickedRows = [];
+      mode = 'cols';
+    }
+    return snapshot();
+  }
+
+  /** Shift 连选：从 anchor 那一行/列一直拉到现在这一行/列。 */
+  function extendLines(axis, index) {
+    const from = axis === 'row' ? (pickedRows[0] ?? anchor?.r) : (pickedCols[0] ?? anchor?.c);
+    if (!Number.isInteger(from)) return snapshot();
+    const lo = Math.min(from, index);
+    const hi = Math.max(from, index);
+    const list = [];
+    for (let i = lo; i <= hi; i += 1) list.push(i);
+    if (axis === 'row') { pickedRows = list; pickedCols = []; mode = 'rows'; }
+    else { pickedCols = list; pickedRows = []; mode = 'cols'; }
+    return snapshot();
+  }
+
+  function rowsList() { return pickedRows.slice(); }
+  function colsList() { return pickedCols.slice(); }
+  function isPickedRow(r) { return pickedRows.includes(r); }
+  function isPickedCol(c) { return pickedCols.includes(c); }
 
   /** Shift 扩展：保持 anchor，只动 focus。 */
   function extendTo(r, c) {
@@ -173,6 +220,10 @@ export function createSelection() {
   }
 
   function size() {
+    // 整行/整列模式下 size 是「选了几行 / 几列」，不是格子数 ——
+    // 没有行高列宽，内核算不出真实格数。要格数请用 expand()。
+    if (mode === 'rows') return pickedRows.length;
+    if (mode === 'cols') return pickedCols.length;
     const box = bounds();
     // 矩形按面积算，不展开成集合 —— 1000 行 × 20 列的表全选时，
     // 逐格生成对象会把一次 Ctrl+A 变成两万次分配。
@@ -188,9 +239,33 @@ export function createSelection() {
   }
 
   function contains(r, c) {
+    if (mode === 'rows') return pickedRows.includes(r);
+    if (mode === 'cols') return pickedCols.includes(c);
     const box = bounds();
     if (box && r >= box.r1 && r <= box.r2 && c >= box.c1 && c <= box.c2) return true;
     return extras.has(key(r, c));
+  }
+
+  /**
+   * 摊平成真实格子。整行/整列选区必须由宿主给出 rowCount/colCount 才能展开 ——
+   * 内核不知道表有几行几列。清空、复制这类要逐格处理的操作走这里。
+   */
+  function expand(rowCount, colCount) {
+    if (mode === 'rows') {
+      const out = [];
+      pickedRows.forEach(r => {
+        for (let c = 0; c < colCount; c += 1) out.push({ r, c });
+      });
+      return out;
+    }
+    if (mode === 'cols') {
+      const out = [];
+      pickedCols.forEach(c => {
+        for (let r = 0; r < rowCount; r += 1) out.push({ r, c });
+      });
+      return out;
+    }
+    return cells();
   }
 
   function snapshot() {
@@ -201,6 +276,8 @@ export function createSelection() {
       bounds: bounds(),
       size: size(),
       extras: [...extras],
+      rows: pickedRows.slice(),
+      cols: pickedCols.slice(),
     };
   }
 
@@ -209,7 +286,15 @@ export function createSelection() {
     return anchor ? { ...anchor } : null;
   }
 
-  return { clear, select, extendTo, toggle, setMode, cells, size, contains, snapshot, active, bounds };
+  return {
+    clear, select, extendTo, toggle, setMode,
+    selectRows: (indexes, opts) => selectLines('row', indexes, opts),
+    selectCols: (indexes, opts) => selectLines('col', indexes, opts),
+    extendRows: index => extendLines('row', index),
+    extendCols: index => extendLines('col', index),
+    rowsList, colsList, isPickedRow, isPickedCol,
+    cells, expand, size, contains, snapshot, active, bounds,
+  };
 }
 
 // ==========================================
@@ -456,6 +541,23 @@ export function createGrid(adapter) {
 
   function selectedMatrix() {
     if (sel.size() === 0) return [];
+    const snap = sel.snapshot();
+    // 整列：每行取这几个列，压成紧凑矩阵（不相邻的列不留空档，粘贴才对得上）
+    if (snap.mode === 'cols' && snap.cols.length) {
+      const list = snap.cols;
+      const matrix = [];
+      for (let r = 0; r < rows(); r += 1) {
+        matrix.push(list.map(c => adapter.readValue?.(r, c) ?? ''));
+      }
+      return matrix;
+    }
+    if (snap.mode === 'rows' && snap.rows.length) {
+      return snap.rows.map(r => {
+        const line = [];
+        for (let c = 0; c < cols(); c += 1) line.push(adapter.readValue?.(r, c) ?? '');
+        return line;
+      });
+    }
     const box = sel.bounds();
     if (!box) return [];
     const matrix = [];
@@ -503,7 +605,8 @@ export function createGrid(adapter) {
         adapter.onEditCancel?.();
         return true;
       case 'clear': {
-        const cells = sel.cells();
+        // 整行/整列要摊成真实格子才能逐格清空 —— 内核不知道表有多大
+        const cells = sel.expand(rows(), cols());
         if (!cells.length) return false;
         adapter.onClear?.(cells);
         return true;
@@ -562,6 +665,26 @@ export function createGrid(adapter) {
       else if (opts.additive) sel.toggle(r, c);
       else sel.select(r, c);
       adapter.focus?.(r, c);
+      emit();
+      return sel.snapshot();
+    },
+    /**
+     * 整行/整列选中（Excel：点行号 / 点列头）。
+     * axis='row' 时 index 是行下标，'col' 时是列下标。
+     * 键盘的方向键会把它收成单格 —— moveTo 走的是 sel.select()，天然复位。
+     */
+    selectLine: ({ axis, index, additive = false, extend = false } = {}) => {
+      if (!Number.isInteger(index) || index < 0) return sel.snapshot();
+      if (extend) {
+        if (axis === 'row') sel.extendRows(index);
+        else sel.extendCols(index);
+      } else if (axis === 'row') {
+        sel.selectRows([index], { additive });
+      } else {
+        sel.selectCols([index], { additive });
+      }
+      // 整行整列时不给单元格焦点：浏览器会把页面滚到那一格，
+      // 用户点的是行号，视线不该被拽走
       emit();
       return sel.snapshot();
     },

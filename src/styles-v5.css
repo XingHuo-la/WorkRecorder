@@ -32,15 +32,18 @@ body[data-skin="v4"] .wr-cell {
   transition: background-color 60ms linear;
 }
 
-/* 选区内（矩形或 Ctrl 离散） */
+/* 选区内（矩形、Ctrl 离散、整行整列）。
+   background 必须带 !important：styles-v4 给 .wr-cell 写的是
+   `background: transparent !important`，不带就永远被压成透明 ——
+   现象是「选中了，格子上有 is-sel 类，但一点颜色都没有」。 */
 body[data-skin="v4"] .wr-cell.is-sel {
-  background: color-mix(in srgb, var(--color-text) 9%, transparent);
+  background: color-mix(in srgb, var(--color-text) 9%, transparent) !important;
   border-radius: 3px;
 }
 
 /* 活动格：键盘落点。必须比选区内更重，否则连按方向键时看不出光标在哪 */
 body[data-skin="v4"] .wr-cell.is-active {
-  background: color-mix(in srgb, var(--color-text) 13%, transparent);
+  background: color-mix(in srgb, var(--color-text) 13%, transparent) !important;
   box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--color-text) 62%, transparent);
   border-radius: 3px;
 }
@@ -353,4 +356,41 @@ body[data-skin="v4"] .is-row-resizing * {
 body[data-skin="v4"] .wr-table-row.is-row-edge,
 body[data-skin="v4"] .wr-table-row.is-row-edge .wr-cell {
   cursor: row-resize !important;
+}
+
+/* ==========================================
+   七 / 行号列（Excel 的行号栏）
+   ========================================== */
+/* 它同时承担两件事：读出「第几行」，以及点选整行。没有它，用户没法表达
+   「我要这一整行」—— 这也是基础表此前和自建表手感分裂的根源之一。 */
+
+body[data-skin="v4"] .wr-th-rownum {
+  padding: 0 !important;
+  cursor: default;
+}
+
+body[data-skin="v4"] .wr-rownum {
+  padding: 0 !important;
+  text-align: center !important;
+  font-size: 12px !important;
+  /* 等宽数字：行号从 9 跳到 10 时不会左右抖 */
+  font-variant-numeric: tabular-nums !important;
+  color: var(--v4-text-3) !important;
+  user-select: none !important;
+  cursor: default;
+  white-space: nowrap;
+}
+
+body[data-skin="v4"] .wr-rownum:hover {
+  color: var(--v4-text) !important;
+  background: var(--v4-surface-2) !important;
+}
+
+/* 整行 / 整列选中：行号格和列头一起亮，用户才知道「选的是整行」而不是「选了一格」 */
+/* 用和单元格选区同一族的灰（单元格 9% / 这里 13%），只是重一档。
+   早先试过主色 16%，结果行号格泛紫、行内泛灰，同一个选区两种颜色 —— 像两个控件。 */
+body[data-skin="v4"] .wr-rownum.is-sel,
+body[data-skin="v4"] .wr-table-th.is-sel {
+  background: color-mix(in srgb, var(--color-text) 13%, transparent) !important;
+  color: var(--v4-text) !important;
 }

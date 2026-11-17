@@ -263,5 +263,60 @@ console.log('\n填充柄：源矩形 + 落点 → 填哪些格');
   eq('源矩形为空返回 null', fillPlan(null, { r: 1, c: 1 }, 5, 5), null);
 }
 
+console.log('\n整行 / 整列选区（Excel 点行号、点列头）');
+{
+  const sel = createSelection();
+
+  sel.selectCols([2]);
+  eq('点列头 → 模式是 cols', sel.snapshot().mode, 'cols');
+  ok('整列的任意一行都算选中', sel.contains(0, 2) && sel.contains(99, 2));
+  ok('别的列不算选中', !sel.contains(0, 1));
+  eq('size 是「选了几列」', sel.size(), 1);
+
+  sel.selectCols([1, 3]);
+  eq('Ctrl 多选列：size=2', sel.size(), 2);
+  eq('列集合按升序存', sel.colsList(), [1, 3]);
+
+  // additive 是并集，不是切换
+  sel.selectCols([3], { additive: true });
+  eq('再加一次已有的列不重复', sel.colsList(), [1, 3]);
+  sel.clear();
+  sel.selectCols([0], { additive: false });
+  eq('普通点击会清掉上一次的选择', sel.colsList(), [0]);
+
+  // Shift 连选
+  sel.clear();
+  sel.selectCols([1]);
+  sel.extendCols(4);
+  eq('Shift 连选得到 1..4', sel.colsList(), [1, 2, 3, 4]);
+
+  // 整行
+  sel.clear();
+  sel.selectRows([2]);
+  eq('点行号 → 模式是 rows', sel.snapshot().mode, 'rows');
+  ok('整行的任意一列都算选中', sel.contains(2, 0) && sel.contains(2, 7));
+  ok('别的行不算选中', !sel.contains(1, 0));
+
+  // 摊平成真实格子：没有行列数就没法展开，必须由宿主给
+  sel.clear();
+  sel.selectCols([1]);
+  const colCells = sel.expand(3, 4);
+  eq('整列展开：3 行 × 1 列 = 3 格', colCells.length, 3);
+  ok('展开出来的列号都对', colCells.every(x => x.c === 1));
+  eq('展开是按行铺的', colCells.map(x => x.r), [0, 1, 2]);
+
+  sel.clear();
+  sel.selectRows([1]);
+  eq('整行展开：1 行 × 4 列 = 4 格', sel.expand(3, 4).length, 4);
+
+  // 键盘把选区收成单格：整行整列状态必须被清掉，否则 Delete 会清一整列
+  sel.clear();
+  sel.selectCols([2]);
+  sel.select(1, 1);
+  eq('点单元格后模式回到 cell', sel.snapshot().mode, 'cell');
+  eq('之前选的列已清空', sel.colsList(), []);
+  eq('矩形选区照常工作', sel.expand(3, 4).length, 1);
+}
+
 console.log(`\n结果：${pass} passed, ${fail} failed`);
 if (fail) process.exitCode = 1;
