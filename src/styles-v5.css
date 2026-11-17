@@ -279,3 +279,53 @@ body[data-skin="v4"] .is-col-resizing * {
 body[data-skin="v4"] .is-col-resizing .wr-th-resize::after {
   background: var(--color-primary);
 }
+
+/* ==========================================
+   五 / 填充柄（选区右下角小方块，拖拽循环复制）
+   ========================================== */
+
+/* 手柄靠绝对定位贴在滚动容器里 —— 必须给它一个定位上下文。
+   好处是横向滚动时手柄跟着格子走，不需要监听 scroll 反复重算。 */
+body[data-skin="v4"] .wr-table-scroll {
+  position: relative;
+}
+
+body[data-skin="v4"] .wr-fill-handle {
+  position: absolute;
+  z-index: 6;
+  width: 8px;
+  height: 8px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 1px;
+  background: var(--color-primary);
+  /* 用页面底色描一圈，压在格线上才不会糊成一坨 */
+  box-shadow: 0 0 0 1px var(--v4-bg);
+  cursor: crosshair;
+  touch-action: none;
+}
+
+/* 拖拽中的目标范围：虚线 + 极淡主色底，只标范围不遮内容 */
+body[data-skin="v4"] .wr-fill-preview {
+  position: absolute;
+  z-index: 5;
+  pointer-events: none;
+  border: 1.5px dashed var(--color-primary);
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--color-primary) 7%, transparent);
+}
+
+/* 拖拽中：整表光标保持十字，不许顺手选中文字（否则屏幕上一片蓝） */
+body[data-skin="v4"] .is-filling,
+body[data-skin="v4"] .is-filling * {
+  cursor: crosshair !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+
+/* 显式守住 hidden：这两块是新类，将来任何一层写 display 都不会把它们顶出来 */
+body[data-skin="v4"] .wr-fill-handle[hidden],
+body[data-skin="v4"] .wr-fill-preview[hidden] {
+  display: none !important;
+}

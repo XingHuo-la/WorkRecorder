@@ -570,3 +570,68 @@ export function createGrid(adapter) {
     selectedMatrix,
   };
 }
+
+// ==========================================
+// 四、填充柄（选区右下角小方块，拖拽复制）
+// ==========================================
+
+// 负数也要正着取模：向左/向上拖时，紧贴源矩形左/上方的格子应当接上源矩形
+// 的末列/末行，这才是 Excel 的连续感；直接用 % 会整轮回错位。
+function mod(value, base) {
+  return ((value % base) + base) % base;
+}
+
+/**
+ * 源矩形 + 拖到的落点 → 要填哪些格、每格的值从哪来。
+ *
+ * 只返回「扩张出去」的部分，源矩形自身不在 cells 里 —— 填充不改源格。
+ * 落点仍在源矩形内 = 没有扩张，返回 null（Excel 这时也什么都不做）。
+ *
+ * 语义是**循环复制**：源是一行两格 [A, B]，往下拖四行就是 A B A B。
+ * 单格源拖出 = 纯复制（Excel 不按 Ctrl 拖单格就是这个行为）。
+ * 数字/日期序列外推（1,2 → 3,4）故意不做：那是 Ctrl 拖的语义，默认行为里
+ * 猜错一次比不支持更难受。
+ *
+ * @param {{r1:number,r2:number,c1:number,c2:number}} srcBox 源矩形（含端点）
+ * @param {{r:number,c:number}} point 拖到的落点
+ * @param {number} rowCount
+ * @param {number} colCount
+ * @returns {{box:{r1:number,r2:number,c1:number,c2:number},
+ *            cells:Array<{r:number,c:number,fromR:number,fromC:number}>}|null}
+ */
+export function fillPlan(srcBox, point, rowCount, colCount) {
+  if (!srcBox || !point || rowCount <= 0 || colCount <= 0) return null;
+  const h = srcBox.r2 - srcBox.r1 + 1;
+  const w = srcBox.c2 - srcBox.c1 + 1;
+  if (h <= 0 || w <= 0) return null;
+
+  const r = clampIndex(point.r, rowCount);
+  const c = clampIndex(point.c, colCount);
+
+  const box = {
+    r1: Math.min(srcBox.r1, r),
+    r2: Math.max(srcBox.r2, r),
+    c1: Math.min(srcBox.c1, c),
+    c2: Math.max(srcBox.c2, c),
+  };
+
+  const noGrow = box.r1 === srcBox.r1 && box.r2 === srcBox.r2
+    && box.c1 === srcBox.c1 && box.c2 === srcBox.c2;
+  if (noGrow) return null;
+
+  const cells = [];
+  for (let row = box.r1; row <= box.r2; row += 1) {
+    for (let col = box.c1; col <= box.c2; col += 1) {
+      const inSrc = row >= srcBox.r1 && row <= srcBox.r2
+        && col >= srcBox.c1 && col <= srcBox.c2;
+      if (inSrc) continue;
+      cells.push({
+        r: row,
+        c: col,
+        fromR: srcBox.r1 + mod(row - srcBox.r1, h),
+        fromC: srcBox.c1 + mod(col - srcBox.c1, w),
+      });
+    }
+  }
+  return { box, cells };
+}

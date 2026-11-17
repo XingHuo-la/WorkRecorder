@@ -10,6 +10,7 @@ import {
   wrapColumn,
   jumpToEdge,
   createGrid,
+  fillPlan,
 } from '../src/gridCore.js';
 
 let pass = 0;
@@ -213,6 +214,53 @@ console.log('\n[5] 控制器接线');
   calls.length = 0;
   grid.handleKeydown(K('ArrowDown'));
   ok('末行向下不越界', calls.every(c => c[0] !== 'focus' || c[1] <= 2));
+}
+
+console.log('\n填充柄：源矩形 + 落点 → 填哪些格');
+{
+  // 单格源往下拖 3 行 = 纯复制（不按 Ctrl 拖单格，Excel 就是复制）
+  const one = fillPlan({ r1: 0, r2: 0, c1: 1, c2: 1 }, { r: 3, c: 1 }, 10, 5);
+  eq('单格向下拖 3 行：填 3 格', one.cells.length, 3);
+  ok('单格向下拖：全部来自源行', one.cells.every(x => x.fromR === 0 && x.fromC === 1));
+  eq('源格本身不在填充列表里', one.cells.filter(x => x.r === 0).length, 0);
+
+  // 一行两格 [A,B] 往下拖 = 整行反复复制（横向源只纵向复制，列号不滚动）
+  const cyc = fillPlan({ r1: 0, r2: 0, c1: 0, c2: 1 }, { r: 4, c: 1 }, 10, 5);
+  eq('一行两格向下拖 4 行：填 8 格', cyc.cells.length, 8);
+  eq('两格源循环取列', cyc.cells.filter(x => x.r === 1).map(x => x.fromC).sort(), [0, 1]);
+  ok('每列始终取同列', cyc.cells.every(x => x.fromC === x.c));
+  ok('始终取源那一行', cyc.cells.every(x => x.fromR === 0));
+
+  // 纵向循环要靠「两行源」才看得出来：拖出两行后回到源首行
+  const vcyc = fillPlan({ r1: 0, r2: 1, c1: 0, c2: 0 }, { r: 4, c: 0 }, 10, 5);
+  eq('两行源向下拖：取行序列 0,1,0', vcyc.cells.map(x => x.fromR), [0, 1, 0]);
+
+  // 向上拖：紧贴源上方的格子要接源矩形的末行，不能整轮错位
+  const up = fillPlan({ r1: 2, r2: 3, c1: 0, c2: 0 }, { r: 1, c: 0 }, 10, 5);
+  eq('向上拖：源上方的格子取源末行', up.cells.find(x => x.r === 1).fromR, 3);
+
+  // 向左拖：同理接源末列
+  const left = fillPlan({ r1: 0, r2: 0, c1: 2, c2: 3 }, { r: 0, c: 1 }, 10, 5);
+  eq('向左拖：源左方的格子取源末列', left.cells.find(x => x.c === 1).fromC, 3);
+
+  // 落点还在源矩形内 = 没扩张，什么都不做
+  eq('落点在源矩形内返回 null', fillPlan({ r1: 1, r2: 2, c1: 1, c2: 2 }, { r: 2, c: 1 }, 10, 5), null);
+
+  // 双向拖（右下）= 2D 块，行列各自循环
+  const both = fillPlan({ r1: 0, r2: 1, c1: 0, c2: 1 }, { r: 3, c: 3 }, 10, 5);
+  eq('2×2 源拖到 4×4：扩张 12 格', both.cells.length, 12);
+  eq('右下角那格取源右下角', both.cells.find(x => x.r === 3 && x.c === 3), { r: 3, c: 3, fromR: 1, fromC: 1 });
+  eq('目标矩形覆盖到落点', both.box, { r1: 0, r2: 3, c1: 0, c2: 3 });
+
+  // 越界落点夹到边界，不能产出不存在的坐标
+  const clamp = fillPlan({ r1: 0, r2: 0, c1: 0, c2: 0 }, { r: 99, c: 99 }, 4, 3);
+  eq('越界落点夹到最后一行', clamp.box.r2, 3);
+  eq('越界落点夹到最后一列', clamp.box.c2, 2);
+  ok('不产出越界坐标', clamp.cells.every(x => x.r < 4 && x.c < 3));
+
+  // 空表 / 非法输入不炸
+  eq('行数为 0 返回 null', fillPlan({ r1: 0, r2: 0, c1: 0, c2: 0 }, { r: 1, c: 1 }, 0, 5), null);
+  eq('源矩形为空返回 null', fillPlan(null, { r: 1, c: 1 }, 5, 5), null);
 }
 
 console.log(`\n结果：${pass} passed, ${fail} failed`);

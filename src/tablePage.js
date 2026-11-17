@@ -9,7 +9,7 @@
 
 import { escapeHtml } from './htmlUtils.js';
 import { pickAttachmentItems, storeImageFile, filesFromDataTransfer, setAttachmentNotifier, convertSrc } from './attachmentOps.js';
-import { createGrid, serializeTSV, parseTSV } from './gridCore.js';
+import { createGrid, serializeTSV, parseTSV, fillPlan } from './gridCore.js';
 import { undoStack } from './undoCore.js';
 import {
   FIELD_TYPE_ORDER,
@@ -618,6 +618,8 @@ export function renderTable(rootEl, data = {}) {
           <thead>${buildHeadHtml(visibleFields)}</thead>
           <tbody>${tbody}</tbody>
         </table>
+        <div class="wr-fill-handle" hidden aria-hidden="true"></div>
+        <div class="wr-fill-preview" hidden aria-hidden="true"></div>
       </div>
       <div class="wr-table-footer">
         <button type="button" class="wr-table-addrow">＋ 新建记录</button>
@@ -704,7 +706,10 @@ function paintGridSelection() {
     .forEach(el => el.classList.remove('is-sel', 'is-active'));
 
   const active = grid.sel.active();
-  if (!active) return;
+  if (!active) {
+    positionFillHandle();
+    return;
+  }
 
   root.querySelectorAll('.wr-cell[data-rowindex]').forEach(el => {
     const r = Number(el.dataset.rowindex);
@@ -713,6 +718,185 @@ function paintGridSelection() {
     if (grid.sel.contains(r, c)) el.classList.add('is-sel');
   });
   cellElOf(active.r, active.c)?.classList.add('is-active');
+  positionFillHandle();
+}
+
+// ==========================================
+// 填充柄
+// ==========================================
+//
+// 选区右下角一个 8px 小方块，拖出去按 Excel 规则循环复制（见 gridCore.fillPlan）。
+// 手柄用绝对定位贴在 .wr-table-scroll 里，所以横向滚动时它跟着格子走，不用监听 scroll。
+
+let fillDrag = null;
+
+function fillEl(className) {
+  return tableRoot()?.querySelector(`.${className}`) || null;
+}
+
+function positionFillHandle() {
+  const handle = fillEl('wr-fill-handle');
+  if (!handle) return;
+  const box = grid?.sel.bounds();
+  const scroll = tableRoot()?.querySelector('.wr-table-scroll');
+  const corner = box ? cellElOf(box.r2, box.c2)?.closest('td') : null;
+  // 编辑态下手柄必须让位：它会盖住格子右下角，正对着输入框的光标落点
+  if (!box || !scroll || !corner || isEditingCell() || !renderedRows.length) {
+    handle.hidden = true;
+    return;
+  }
+  const cr = scroll.getBoundingClientRect();
+  const tr = corner.getBoundingClientRect();
+  handle.hidden = false;
+  // -4 = 手柄边长的一半，让它骑在角上（Excel 也是骑在角上的）
+  handle.style.left = `${Math.round(tr.right - cr.left + scroll.scrollLeft) - 4}px`;
+  handle.style.top = `${Math.round(tr.bottom - cr.top + scroll.scrollTop) - 4}px`;
+}
+
+function fillPointAt(x, y) {
+  // 命中真实格就信它；命中不到（拖到表格外/边框上）再按方向夹到已有行列边界。
+  // Excel 不会因为你拖到末行下面就在数据里长出新行，这里也不长。
+  const direct = document.elementFromPoint(x, y)?.closest?.('.wr-cell');
+  if (direct && direct.dataset.rowindex != null && direct.dataset.col != null) {
+    return { r: Number(direct.dataset.rowindex), c: Number(direct.dataset.col) };
+  }
+  const table = tableRoot()?.querySelector('.wr-table');
+  if (!table || !fillDrag) return null;
+  const rect = table.getBoundingClientRect();
+  const r = y >= rect.bottom ? renderedRows.length - 1 : y <= rect.top ? 0 : null;
+  const c = x >= rect.right ? renderedFields.length - 1 : x <= rect.left ? 0 : null;
+  if (r === null && c === null) return null;
+  return {
+    r: r === null ? fillDrag.last.r : r,
+    c: c === null ? fillDrag.last.c : c,
+  };
+}
+
+function paintFillPreview(box) {
+  const preview = fillEl('wr-fill-preview');
+  const scroll = tableRoot()?.querySelector('.wr-table-scroll');
+  if (!preview || !scroll) return;
+  const head = box ? cellElOf(box.r1, box.c1)?.closest('td') : null;
+  const tail = box ? cellElOf(box.r2, box.c2)?.closest('td') : null;
+  if (!head || !tail) {
+    preview.hidden = true;
+    return;
+  }
+  const cr = scroll.getBoundingClientRect();
+  const hr = head.getBoundingClientRect();
+  const tr = tail.getBoundingClientRect();
+  preview.hidden = false;
+  preview.style.left = `${Math.round(hr.left - cr.left + scroll.scrollLeft)}px`;
+  preview.style.top = `${Math.round(hr.top - cr.top + scroll.scrollTop)}px`;
+  preview.style.width = `${Math.round(tr.right - hr.left)}px`;
+  preview.style.height = `${Math.round(tr.bottom - hr.top)}px`;
+}
+
+function onFillHandleDown(event) {
+  if (event.button !== 0 || !grid) return;
+  const handle = event.target.closest('.wr-fill-handle');
+  if (!handle) return;
+  const box = grid.sel.bounds();
+  if (!box) return;
+
+  // 不拦的话这一下会顺手把选区清掉、并且开始选文字
+  event.preventDefault();
+  event.stopPropagation();
+
+  fillDrag = { src: box, last: { r: box.r2, c: box.c2 }, plan: null, pointerId: event.pointerId };
+  // 捕获指针能保证拖出窗口也收得到 pointerup；但 pointerId 不活跃时（合成事件、
+  // 指针已释放）浏览器会抛 NotFoundError，不该因此中断整个拖拽。
+  try {
+    handle.setPointerCapture?.(event.pointerId);
+  } catch (error) {
+    /* 拿不到捕获也能靠 document 上的 pointermove/pointerup 走完 */
+  }
+  tableRoot()?.classList.add('is-filling');
+  document.addEventListener('pointermove', onFillMove);
+  document.addEventListener('pointerup', onFillUp);
+  document.addEventListener('pointercancel', onFillUp);
+}
+
+function onFillMove(event) {
+  if (!fillDrag || event.pointerId !== fillDrag.pointerId) return;
+  const point = fillPointAt(event.clientX, event.clientY) || fillDrag.last;
+  fillDrag.last = point;
+  const plan = fillPlan(fillDrag.src, point, renderedRows.length, renderedFields.length);
+  fillDrag.plan = plan;
+  // 没扩张时也画框：虚线框停在源矩形上，用户才知道「拖了但不够远」
+  paintFillPreview(plan ? plan.box : fillDrag.src);
+}
+
+function endFillDrag() {
+  document.removeEventListener('pointermove', onFillMove);
+  document.removeEventListener('pointerup', onFillUp);
+  document.removeEventListener('pointercancel', onFillUp);
+  tableRoot()?.classList.remove('is-filling');
+  const preview = fillEl('wr-fill-preview');
+  if (preview) preview.hidden = true;
+  const state = fillDrag;
+  fillDrag = null;
+  return state;
+}
+
+async function onFillUp(event) {
+  if (fillDrag && event && event.pointerId !== fillDrag.pointerId) return;
+  const state = endFillDrag();
+  if (!state || !state.plan) {
+    positionFillHandle();
+    return;
+  }
+  await applyFillPlan(state.plan);
+}
+
+async function applyFillPlan(plan) {
+  const picked = [];
+  for (const cell of plan.cells) {
+    const target = cellAt(cell.r, cell.c);
+    const source = cellAt(cell.fromR, cell.fromC);
+    if (!target || !source) continue;
+    const next = readFieldValue(source.field, source.row);
+    // 附件是数组，复制等于让两条记录共享同一批文件引用 —— 语义不清，直接跳过
+    if (Array.isArray(next)) continue;
+    const before = readFieldValue(target.field, target.row);
+    if (String(before ?? '') === String(next ?? '')) continue;
+    picked.push({ ...target, before, next });
+  }
+
+  if (!picked.length) {
+    showTableToast('没有可填充的内容', 'info');
+    positionFillHandle();
+    return;
+  }
+
+  for (const item of picked) {
+    await writeFieldValue(item.field, item.row, item.next);
+    repaintRowCell(item.row, item.field);
+  }
+  writeTick += 1;
+
+  undoStack.push({
+    label: `填充 ${picked.length} 格`,
+    undo: async () => {
+      for (const item of picked) await writeFieldValue(item.field, item.row, item.before);
+      writeTick += 1;
+      picked.forEach(item => repaintRowCell(item.row, item.field));
+    },
+    redo: async () => {
+      for (const item of picked) await writeFieldValue(item.field, item.row, item.next);
+      writeTick += 1;
+      picked.forEach(item => repaintRowCell(item.row, item.field));
+    },
+  });
+
+  // 填充完选区变成整个目标矩形（Excel 同款），用户接着按 Ctrl+C 就能整块复制
+  const box = plan.box;
+  if (grid && box) {
+    grid.select(box.r1, box.c1);
+    grid.sel.extendTo(box.r2, box.c2);
+    paintGridSelection();
+  }
+  showTableToast(`已填充 ${picked.length} 格`, 'success');
 }
 
 function startEditAt(r, c, opts = {}) {
@@ -1543,6 +1727,9 @@ export function bindTableEvents(rootEl) {
   rootEl.addEventListener('keydown', onRootKeydown);
   rootEl.addEventListener('paste', onRootPaste);
   rootEl.addEventListener('pointerdown', onRootPointerDown);
+  // 填充柄单独挂：它不在 .wr-cell 里，和列宽抓手互不干扰。
+  // 用 pointerdown 而不是 click —— 拖拽必须从按下那一刻开始接管，等 click 已经晚了。
+  rootEl.addEventListener('pointerdown', onFillHandleDown);
   ensureGrid();
 }
 
