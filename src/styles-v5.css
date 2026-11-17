@@ -288,12 +288,13 @@ body[data-skin="v4"] .is-col-resizing .wr-th-resize::after {
    ========================================== */
 
 /* 手柄靠绝对定位贴在滚动容器里 —— 必须给它一个定位上下文。
-   好处是横向滚动时手柄跟着格子走，不需要监听 scroll 反复重算。 */
+   好处是横向滚动时手柄跟着格子走，不需要监听 scroll 反复重算。
+   .gt-* = grid table 共用手势层（gridGestures.js），两个表格都用这套类名。 */
 body[data-skin="v4"] .wr-table-scroll {
   position: relative;
 }
 
-body[data-skin="v4"] .wr-fill-handle {
+body[data-skin="v4"] .gt-fill-handle {
   position: absolute;
   z-index: 6;
   width: 8px;
@@ -310,7 +311,7 @@ body[data-skin="v4"] .wr-fill-handle {
 }
 
 /* 拖拽中的目标范围：虚线 + 极淡主色底，只标范围不遮内容 */
-body[data-skin="v4"] .wr-fill-preview {
+body[data-skin="v4"] .gt-fill-preview {
   position: absolute;
   z-index: 5;
   pointer-events: none;
@@ -328,8 +329,8 @@ body[data-skin="v4"] .is-filling * {
 }
 
 /* 显式守住 hidden：这两块是新类，将来任何一层写 display 都不会把它们顶出来 */
-body[data-skin="v4"] .wr-fill-handle[hidden],
-body[data-skin="v4"] .wr-fill-preview[hidden] {
+body[data-skin="v4"] .gt-fill-handle[hidden],
+body[data-skin="v4"] .gt-fill-preview[hidden] {
   display: none !important;
 }
 
@@ -394,3 +395,49 @@ body[data-skin="v4"] .wr-table-th.is-sel {
   background: color-mix(in srgb, var(--color-text) 13%, transparent) !important;
   color: var(--v4-text) !important;
 }
+
+/* ==========================================
+   八 / 自建表（.sh-*）并入同一套内核
+   ==========================================
+   它原来有一套自己的选中态：主色 20% 底 + 1px 主色内描边，行/列选中又是
+   主色 9% 底 + 左缘 3px 主色条。基础表是灰底 + 2px 描边 —— 同一个动作、
+   两种画法，切换表格就像换了产品。
+
+   这里统一到基础表那一族灰（选区 9% / 活动 13% + 2px 描边），
+   并给 .sh-cell 的选中态补上 !important：styles.css 里
+   `.sh-cell.is-sel { background: … !important; box-shadow: … !important }`
+   权重更高，不补就永远压不过，表现为「新规则写了但没生效」。
+   ========================================== */
+
+body[data-skin="v4"] .sh-cell.is-sel {
+  background: color-mix(in srgb, var(--color-text) 9%, transparent) !important;
+  /* 旧层给每个选中格描了 1px 主色边。整片选区里每格都带边，看着像一堆小方块，
+     统一成「只有活动格有边」。 */
+  box-shadow: none !important;
+  border-radius: 3px;
+}
+
+body[data-skin="v4"] .sh-cell.is-active {
+  background: color-mix(in srgb, var(--color-text) 13%, transparent) !important;
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--color-text) 62%, transparent) !important;
+  border-radius: 3px;
+}
+
+/* 行号 / 列头：与基础表同一族（13% 灰 + 正文色） */
+body[data-skin="v4"] .sh-rownum.is-sel,
+body[data-skin="v4"] .sh-th.is-sel {
+  background: color-mix(in srgb, var(--color-text) 13%, transparent) !important;
+  color: var(--v4-text) !important;
+}
+
+/* 填充柄要绝对定位在滚动容器里，得先给它定位上下文（基础表同理） */
+body[data-skin="v4"] .sh-table-scroll {
+  position: relative;
+}
+
+/* 悬停在行下缘：光标换成 row-resize（由 gridGestures 挂类，CSS 选不到「最下面 5px」） */
+body[data-skin="v4"] .sh-row.is-row-edge,
+body[data-skin="v4"] .sh-row.is-row-edge .sh-cell {
+  cursor: row-resize !important;
+}
+

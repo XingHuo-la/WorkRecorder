@@ -5,7 +5,10 @@
 // 所有 DOM 由本模块生成，index.html 只留一个空壳，避免和旧样式打架。
 
 import { escapeHtml } from './htmlUtils.js';
-import { serializeTSV, parseTSV } from './gridCore.js';
+import { serializeTSV, parseTSV, createGrid, resolveKeyIntent } from './gridCore.js';
+// 填充柄 / 拖行下缘：和基础表共用同一套手势实现（gridGestures）。
+// 以前这两样只长在基础表里，空白表没有 —— 也正是「两套表格」最直接的体感来源。
+import { mountFillHandle, mountRowResizer } from './gridGestures.js';
 import { undoStack } from './undoCore.js';
 import { renderCell, openCellEditor, renderFieldIcon, FIELD_TYPE_LABELS } from './fieldTypes.js';
 import { pickAttachmentItems, storeImageFile, setAttachmentNotifier } from './attachmentOps.js';
@@ -442,6 +445,9 @@ function renderSheet({ resetScroll = false } = {}) {
   renderBodyRows(true);
   if (prevScroll) restoreScroll(prevScroll);
   bindScroll();
+  // 整页 innerHTML 换掉后，填充柄节点跟着旧滚动容器一起被丢了。
+  // 不补这一下，重绘后手柄会「消失」，直到下一次选区变化才被重新挂上。
+  fillHandle?.reposition();
 }
 
 function captureScroll() {
@@ -988,7 +994,7 @@ async function addRow() {
     const field = state.fields.find(item => item.key === cell.dataset.key);
     const row = state.rows.find(item => String(item.id) === String(id));
     if (field && row) {
-      if (sel.cells.size > 1 || sel.fieldKeys.length) clearSelection();
+      if (grid && grid.sel.size() > 1) clearSelection();
       startCellEdit(field, row, cell);
     }
   }
@@ -1069,34 +1075,41 @@ function copyRowToClipboard(row) {
   toast('已复制整行，选中目标行后 Ctrl+V 粘贴');
 }
 
-// Ctrl+C / 菜单「复制」的统一入口：行、单格、多格都能复制
+// Ctrl+C / 菜单「复制」的统一入口：行、单格、多格都能复制。
+// 选区形态由 gridCore 判定（矩形 / 离散 / 整行 / 整列），这里只做「摊平成格」。
 function copySelectionToClipboard() {
+  if (!grid) return false;
   const rows = rowsInView();
-  const cols = visibleOf(state.fields);
+  const cols = colsInView();
+  const snap = grid.sel.snapshot();
+  if (!snap.size) return false;
 
-  if (sel.mode === 'rows' && sel.rowIds.length) {
-    const row = rows.find(item => String(item.id) === String(sel.rowIds[0]));
+  // 单独一行：复制整条记录 —— 能连图片和类型化值一起粘到另一行
+  if (snap.mode === 'rows' && snap.rows.length === 1) {
+    const row = rows[snap.rows[0]];
     if (!row) return false;
     copyRowToClipboard(row);
     return true;
   }
-  if (!sel.cells.size) return false;
 
-  if (sel.cells.size === 1) {
-    const [r, c] = [...sel.cells][0].split(':').map(Number);
-    const row = rows[r];
-    const field = cols[c];
+  // 单格（矩形/离散形态）：走单格通道，粘贴时能校验字段类型
+  if (snap.mode !== 'rows' && snap.mode !== 'cols' && snap.size === 1) {
+    const at = grid.sel.active();
+    const row = at ? rows[at.r] : null;
+    const field = at ? cols[at.c] : null;
     if (!row || !field) return false;
     copyCellToClipboard(field, row);
     return true;
   }
 
-  // 多格：按相对偏移打包，保留「A1 + D5」这种不连续选区
-  const coords = [...sel.cells].map(key => key.split(':').map(Number));
-  const minR = Math.min(...coords.map(pair => pair[0]));
-  const minC = Math.min(...coords.map(pair => pair[1]));
+  // 多格：按相对偏移打包，保留「A1 + D5」这种不连续选区。
+  // 整行整列先摊成真实格子（expand），粘贴时才知道每格落在哪。
+  const coords = grid.sel.expand(rows.length, cols.length);
+  if (!coords.length) return false;
+  const minR = Math.min(...coords.map(pair => pair.r));
+  const minC = Math.min(...coords.map(pair => pair.c));
   const items = coords
-    .map(([r, c]) => {
+    .map(({ r, c }) => {
       const row = rows[r];
       const field = cols[c];
       if (!row || !field) return null;
@@ -1119,8 +1132,8 @@ function copySelectionToClipboard() {
   // 同时写一份 TSV 到系统剪贴板：粘到 Excel / WPS 时才不会挤成一格。
   // 内部剪贴板继续保留（它能搬图片和类型化值），两条路互不干扰。
   try {
-    const maxR = Math.max(...coords.map(pair => pair[0]));
-    const maxC = Math.max(...coords.map(pair => pair[1]));
+    const maxR = Math.max(...coords.map(pair => pair.r));
+    const maxC = Math.max(...coords.map(pair => pair.c));
     const lines = [];
     for (let r = minR; r <= maxR; r += 1) {
       const line = [];
@@ -1333,8 +1346,9 @@ function openCellMenuFor(cellEl, field, row) {
   const value = row.values[field.key];
   const attachItems = field.type === 'attachment' && Array.isArray(value) ? value.filter(item => item && item.path) : [];
   const hasImages = attachItems.some(item => item.kind !== 'file');
-  const cellKey = `${Number(cellEl.dataset.rowindex)}:${Number(cellEl.dataset.col)}`;
-  const count = (sel.mode === 'cells' || sel.mode === 'cell') && sel.cells.has(cellKey) ? sel.cells.size : 1;
+  // 菜单头写「已选 N 格」：右键落点在当前选区里就报整片，否则只报这一格
+  const inSelection = Boolean(grid) && grid.sel.contains(Number(cellEl.dataset.rowindex), Number(cellEl.dataset.col));
+  const count = inSelection ? Math.max(1, selectedCoords().length) : 1;
   openCellMenu(cellEl, { field, value, hasImages, hasItems: attachItems.length > 0, count }, {
     copy: () => copySelectionToClipboard(),
     paste: () => {
@@ -1365,8 +1379,9 @@ function openCellMenuFor(cellEl, field, row) {
     },
     clear: () => {
       // 菜单头写的是「已选 N 格」，就清整片选区，不能只清右键落点那一格
-      if ((sel.mode === 'cells' || sel.mode === 'cell') && sel.cells.size > 1 && sel.cells.has(cellKey)) {
-        bulkWriteCells('clear');
+      const at = { r: Number(cellEl.dataset.rowindex), c: Number(cellEl.dataset.col) };
+      if (grid && grid.sel.contains(at.r, at.c) && grid.sel.size() > 1) {
+        clearCells(selectedCoords());
         return;
       }
       const empty = field.type === 'checkbox' ? false : field.type === 'attachment' ? [] : '';
@@ -1540,14 +1555,26 @@ async function insertRows(row, count, side) {
   toast(`已插入 ${count} 行`);
 }
 
+// 行高：拖行下缘 / 双击自适应都落到这里。
+// 0 表示「恢复默认」—— 必须写 SQL NULL，不能写 0（buildRow 会把 0 当成没设过，
+// 但数据库里留个 0 会让「下次自适应」判等失效）。
 async function applyRowHeight(row, height) {
+  const before = Number(row.height) || 0;
+  const next = Math.round(Number(height) || 0);
+  if (before === next) { renderSheet(); return; }
   try {
-    await setRowHeight(row.id, height);
+    await setRowHeight(row.id, next || null);
   } catch (error) {
     toast(`行高没存住：${error?.message || error}`, 'danger');
+    renderSheet();
     return;
   }
-  row.height = height;
+  row.height = next;
+  undoStack.push({
+    label: next ? `调整行高到 ${next}px` : '恢复默认行高',
+    undo: async () => { await setRowHeight(row.id, before || null); row.height = before; renderSheet(); },
+    redo: async () => { await setRowHeight(row.id, next || null); row.height = next; renderSheet(); },
+  });
   renderSheet();
 }
 
@@ -1879,22 +1906,28 @@ export function openSheetMenuFor(sheetId, anchorEl) {
 // ==========================================
 
 // ==========================================
-// 多选：拖框选单元格 / Ctrl 点表头选列
+// 选区（与基础表同一套内核：gridCore.createSelection）
 // ==========================================
+//
+// 这里原来是一套自建状态：{ mode, cells:Set, rowIds, fieldKeys, anchor }，
+// 每种形态各配一条绘制路径（applyCellSet / paintCellSelection /
+// toggleFieldSelection / toggleRowSelection / paintRowSelection），
+// 加上自己的拖框与键盘，约 400 行。基础表那边另有一套 —— 于是「选中一格再按
+// 方向键」在两个表里是两种手感，改一个快捷键要改两处。
+//
+// 现在统一走 gridCore，本文件只做两件事：
+//   ① 把内核快照画到 DOM 上（paintSelection）；
+//   ② 把「下标」翻译成「行 id / 字段 key」（数据库认的是这两个，不认下标）。
+// 内核的坐标 = 筛选后列表里的下标，和 data-rowindex / data-col 完全一致。
 
-const sel = {
-  mode: '',           // '' | 'cell' | 'cells' | 'fields'
-  cells: new Set(),   // "rowIndex:colIndex"，只用于高亮
-  rowIds: [],
-  fieldKeys: [],
-  anchor: null,       // Ctrl 扩展选区的起点 {r,c}
-};
+let grid = null;
+let fillHandle = null;
 
+// "行:列" → 单元格元素。拖框选择时按格遍历，避免每次 pointermove 全表
+// querySelectorAll（几千格时明显卡）。
+let cellEls = new Map();
 let dragSel = null;
 let suppressClick = false;
-// "行:列" → 单元格元素。拖框选择时按 diff 只改变化的格子，
-// 避免每次 pointermove 全表 querySelectorAll + classList（几千格时明显卡）。
-let cellEls = new Map();
 
 function rebuildCellIndex() {
   cellEls = new Map();
@@ -1907,168 +1940,201 @@ function rowsInView() {
   return filterRows(state.rows);
 }
 
+function colsInView() {
+  return visibleOf(state.fields);
+}
+
+function cellElAt(r, c) {
+  return cellEls.get(`${r}:${c}`) || null;
+}
+
+function rowAt(r) {
+  return rowsInView()[r] || null;
+}
+
+function fieldAt(c) {
+  return colsInView()[c] || null;
+}
+
+// 整行/整列选区在内核里存的是下标；批量条和写库认的是行 id / 字段 key。
+function pickedRowIds() {
+  const list = rowsInView();
+  if (!grid) return [];
+  return grid.sel.rowsList().map(r => list[r]?.id).filter(id => id != null);
+}
+
+function pickedFieldKeys() {
+  const list = colsInView();
+  if (!grid) return [];
+  return grid.sel.colsList().map(c => list[c]?.key).filter(Boolean);
+}
+
+function isEditingCell() {
+  return Boolean(host?.querySelector('.ft-cell-editing'));
+}
+
 function clearSelection() {
-  sel.mode = '';
-  sel.cells.clear();
-  sel.rowIds = [];
-  sel.fieldKeys = [];
-  sel.anchor = null;
+  if (grid) grid.sel.clear();
   cellEls.forEach(el => el.classList.remove('is-sel', 'is-active'));
-  host?.querySelectorAll('.sh-th.is-picked').forEach(el => el.classList.remove('is-picked'));
-  host?.querySelectorAll('.sh-row.is-picked').forEach(el => el.classList.remove('is-picked'));
-  host?.querySelector('.sh-bulk')?.remove();
-}
-
-// 用「目标集合」统一驱动高亮：只 toggle 进出集合的格子（拖选时通常只有一列/一行变化）。
-// anchorEl 会被标成 is-active（Ctrl+V 的粘贴起点）。
-function applyCellSet(next, anchorEl) {
-  const prev = sel.cells;
-  prev.forEach(key => {
-    if (next.has(key)) return;
-    cellEls.get(key)?.classList.remove('is-sel', 'is-active');
-  });
-  next.forEach(key => {
-    if (prev.has(key)) return;
-    cellEls.get(key)?.classList.add('is-sel');
-  });
-  cellEls.forEach(el => el.classList.remove('is-active'));
-  if (anchorEl) anchorEl.classList.add('is-active');
-
-  sel.cells = next;
-  sel.mode = next.size > 1 ? 'cells' : 'cell';
-  host.querySelectorAll('.sh-row.is-picked').forEach(el => el.classList.remove('is-picked'));
-  host.querySelectorAll('.sh-th.is-picked').forEach(el => el.classList.remove('is-picked'));
+  host?.querySelectorAll('.sh-th.is-sel, .sh-rownum.is-sel').forEach(el => el.classList.remove('is-sel'));
   updateBulkBar();
+  fillHandle?.reposition();
 }
 
-function paintCellSelection(a, b) {
-  const top = Math.min(a.r, b.r);
-  const bottom = Math.max(a.r, b.r);
-  const left = Math.min(a.c, b.c);
-  const right = Math.max(a.c, b.c);
-  const next = new Set();
-  for (let r = top; r <= bottom; r += 1) {
-    for (let c = left; c <= right; c += 1) next.add(`${r}:${c}`);
+/**
+ * 把内核的选区画到 DOM 上。
+ * 逐格扫一遍而不是维护三套 diff：一屏最多几百格，扫一遍比「三种形态各写
+ * 一条增量路径」简单得多，也不容易出现「切形态后残留高亮」。
+ */
+function paintSelection() {
+  if (!grid || !host) return;
+  const snap = grid.sel.snapshot();
+
+  cellEls.forEach((el, key) => {
+    const [r, c] = key.split(':').map(Number);
+    el.classList.toggle('is-sel', grid.sel.contains(r, c));
+    el.classList.remove('is-active');
+  });
+  host.querySelectorAll('.sh-th.is-sel').forEach(el => el.classList.remove('is-sel'));
+  host.querySelectorAll('.sh-rownum.is-sel').forEach(el => el.classList.remove('is-sel'));
+
+  // 整行/整列没有「活动格」—— 用户点的是行号 / 列头，描边画在格子上会误导
+  const whole = snap.mode === 'rows' || snap.mode === 'cols';
+  const active = grid.sel.active();
+  if (active && !whole) cellElAt(active.r, active.c)?.classList.add('is-active');
+
+  if (snap.mode === 'rows') {
+    const ids = new Set(pickedRowIds().map(String));
+    host.querySelectorAll('.sh-rownum').forEach(btn => btn.classList.toggle('is-sel', ids.has(String(btn.dataset.row))));
+  } else if (snap.mode === 'cols') {
+    const keys = new Set(pickedFieldKeys());
+    host.querySelectorAll('.sh-th[data-key]').forEach(th => th.classList.toggle('is-sel', keys.has(th.dataset.key)));
   }
-  const anchorEl = cellEls.get(`${a.r}:${a.c}`) || cellEls.get(`${top}:${left}`);
-  sel.anchor = { r: a.r, c: a.c };
-  applyCellSet(next, anchorEl);
+
+  updateBulkBar();
+  fillHandle?.reposition();
 }
 
-// 单击选中：普通=单格；Ctrl=加/减单格（不拉矩形）；Shift=从锚点扩展矩形
-function selectCell(cell, options = {}) {
-  const additive = options.additive === true;
-  const range = options.range === true;
-  const rowIndex = Number(cell.dataset.rowindex);
-  const colIndex = Number(cell.dataset.col);
-  if (Number.isNaN(rowIndex) || Number.isNaN(colIndex)) return;
+function ensureGrid() {
+  if (grid) return grid;
+  grid = createGrid({
+    rowCount: () => rowsInView().length,
+    colCount: () => colsInView().length,
+    isEditing: isEditingCell,
+    pageSize: () => 12,
+    isEmpty: (r, c) => {
+      const row = rowAt(r);
+      const field = fieldAt(c);
+      if (!row || !field) return true;
+      const value = row.values[field.key];
+      if (Array.isArray(value)) return value.length === 0;
+      return value === '' || value === null || value === undefined;
+    },
+    focus: (r, c) => {
+      // 行是分块渲染的：目标行可能还没画出来，先补块再落焦点。
+      // 不补的话方向键走到第 60 行（第一块末尾）就再也下不去了。
+      let el = cellElAt(r, c);
+      let guard = 0;
+      while (!el && state.rendered < rowsInView().length && guard < 200) {
+        renderBodyRows(false);
+        el = cellElAt(r, c);
+        guard += 1;
+      }
+      if (!el) return;
+      el.focus({ preventScroll: true });
+      el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    },
+    onSelection: paintSelection,
+    onEditStart: (r, c) => startEditAt(r, c),
+    onClear: coords => { clearCells(coords); },
+    onCopy: () => { copySelectionToClipboard(); },
+    onPasteRequest: () => pasteAtActiveCell(),
+    onSelectAll: selectAllCells,
+  });
+  return grid;
+}
 
-  if (range && sel.anchor) {
-    paintCellSelection(sel.anchor, { r: rowIndex, c: colIndex });
-    return;
-  }
+function startEditAt(r, c) {
+  const cellEl = cellElAt(r, c);
+  const row = rowAt(r);
+  const field = fieldAt(c);
+  if (!cellEl || !row || !field) return;
+  startCellEdit(field, row, cellEl);
+}
 
-  if (additive) {
-    const key = `${rowIndex}:${colIndex}`;
-    const base = sel.mode === 'cells' || sel.mode === 'cell' ? sel.cells : new Set();
-    const next = new Set(base);
-    if (next.has(key)) next.delete(key);
-    else next.add(key);
-    if (!next.size) { clearSelection(); return; }
-    sel.anchor = { r: rowIndex, c: colIndex };
-    applyCellSet(next, cell);
-    return;
-  }
-
-  clearSelection();
-  sel.anchor = { r: rowIndex, c: colIndex };
-  const next = new Set([`${rowIndex}:${colIndex}`]);
-  applyCellSet(next, cell);
-  const row = state.rows.find(item => String(item.id) === String(cell.dataset.row));
+function pasteAtActiveCell() {
+  const cell = host?.querySelector('.sh-cell.is-active');
+  if (!cell) return;
   const field = state.fields.find(item => item.key === cell.dataset.key);
-  sel.rowIds = row ? [row.id] : [];
-  sel.fieldKeys = field ? [field.key] : [];
+  const row = state.rows.find(item => String(item.id) === String(cell.dataset.row));
+  if (!field || !row) return;
+  pasteCellFromClipboard(field, row, cell);
 }
 
-function toggleFieldSelection(key, range, additive = true) {
-  const cols = visibleOf(state.fields);
-  if (!additive) {
-    // 普通左键：只选中这一列
-    sel.mode = 'fields';
-    sel.fieldKeys = [key];
-    sel.cells.clear();
-    sel.rowIds = [];
-    host.querySelectorAll('.sh-cell.is-sel, .sh-cell.is-active').forEach(el => el.classList.remove('is-sel', 'is-active'));
-    host.querySelectorAll('.sh-row.is-picked').forEach(el => el.classList.remove('is-picked'));
-    host.querySelectorAll('.sh-th').forEach(th => th.classList.toggle('is-picked', th.dataset.key === key));
-    updateBulkBar();
-    return;
-  }
-  if (range && sel.fieldKeys.length) {
-    const from = cols.findIndex(field => field.key === sel.fieldKeys[sel.fieldKeys.length - 1]);
-    const to = cols.findIndex(field => field.key === key);
-    if (from >= 0 && to >= 0) {
-      const [a, b] = from <= to ? [from, to] : [to, from];
-      sel.fieldKeys = cols.slice(a, b + 1).map(field => field.key);
-    }
-  } else if (sel.fieldKeys.includes(key)) {
-    sel.fieldKeys = sel.fieldKeys.filter(item => item !== key);
-  } else {
-    sel.fieldKeys = [...sel.fieldKeys, key];
-  }
-  sel.mode = 'fields';
-  sel.cells.clear();
-  sel.rowIds = [];
-  host.querySelectorAll('.sh-cell.is-sel').forEach(el => el.classList.remove('is-sel'));
-  host.querySelectorAll('.sh-row.is-picked').forEach(el => el.classList.remove('is-picked'));
-  host.querySelectorAll('.sh-th').forEach(th => th.classList.toggle('is-picked', sel.fieldKeys.includes(th.dataset.key)));
-  updateBulkBar();
+function selectAllCells() {
+  const rowTotal = rowsInView().length;
+  const colTotal = colsInView().length;
+  if (!rowTotal || !colTotal || !grid) return;
+  grid.sel.select(0, 0);
+  grid.sel.extendTo(rowTotal - 1, colTotal - 1);
+  paintSelection();
 }
 
-// 行选中：与列选中同一套手势——单击选一行、Ctrl 累加、Shift 连选。
-// 高亮整行（is-picked），批量条给「删除」。
-function paintRowSelection() {
-  host.querySelectorAll('.sh-cell.is-sel, .sh-cell.is-active').forEach(el => el.classList.remove('is-sel', 'is-active'));
-  host.querySelectorAll('.sh-th.is-picked').forEach(el => el.classList.remove('is-picked'));
-  const picked = new Set(sel.rowIds.map(id => String(id)));
-  host.querySelectorAll('.sh-row').forEach(tr => tr.classList.toggle('is-picked', picked.has(String(tr.dataset.id))));
-  updateBulkBar();
+// 左键点列头 = 选中整列（Ctrl 累加、Shift 连选）；列菜单走右键 —— Excel 的手势
+function selectColumnByKey(key, event) {
+  const index = colsInView().findIndex(item => item.key === key);
+  if (index < 0 || !grid) return;
+  const snap = grid.sel.snapshot();
+  const extend = Boolean(event?.shiftKey) && snap.mode === 'cols' && snap.cols.length > 0;
+  grid.selectLine({
+    axis: 'col',
+    index,
+    additive: Boolean(event?.ctrlKey || event?.metaKey),
+    extend,
+  });
 }
 
-function toggleRowSelection(rowId, range, additive = true) {
-  const rows = rowsInView();
-  const isPicked = sel.mode === 'rows' && sel.rowIds.some(id => String(id) === String(rowId));
+// 左键点行号 = 选中整行；行菜单走右键，详情走双击
+function selectRowByIndex(index, event) {
+  if (!Number.isInteger(index) || index < 0 || !grid) return;
+  const snap = grid.sel.snapshot();
+  const extend = Boolean(event?.shiftKey) && snap.mode === 'rows' && snap.rows.length > 0;
+  grid.selectLine({
+    axis: 'row',
+    index,
+    additive: Boolean(event?.ctrlKey || event?.metaKey),
+    extend,
+  });
+}
 
-  if (range && sel.mode === 'rows' && sel.rowIds.length) {
-    // Shift 连选：从最近一次选中的行拉到这一行
-    const from = rows.findIndex(item => String(item.id) === String(sel.rowIds[sel.rowIds.length - 1]));
-    const to = rows.findIndex(item => String(item.id) === String(rowId));
-    if (from >= 0 && to >= 0) {
-      const [a, b] = from <= to ? [from, to] : [to, from];
-      sel.rowIds = rows.slice(a, b + 1).map(item => item.id);
-    }
-  } else if (additive && sel.mode === 'rows') {
-    // Ctrl 累加 / 反选
-    sel.rowIds = isPicked
-      ? sel.rowIds.filter(id => String(id) !== String(rowId))
-      : [...sel.rowIds, rowId];
-  } else {
-    sel.rowIds = [rowId];
-  }
+function selectRowById(rowId, event) {
+  const index = rowsInView().findIndex(item => String(item.id) === String(rowId));
+  if (index < 0) return;
+  selectRowByIndex(index, event);
+}
 
-  sel.mode = 'rows';
-  sel.cells.clear();
-  sel.fieldKeys = [];
-  paintRowSelection();
+// 单击某格：普通=单选；Ctrl=加/减单格；Shift=从锚点扩矩形。双击才进编辑。
+function selectFromCell(cell, event) {
+  const r = Number(cell.dataset.rowindex);
+  const c = Number(cell.dataset.col);
+  if (Number.isNaN(r) || Number.isNaN(c)) return;
+  ensureGrid().select(r, c, {
+    additive: Boolean(event?.ctrlKey || event?.metaKey),
+    extend: Boolean(event?.shiftKey),
+  });
 }
 
 function updateBulkBar() {
   const page = host?.querySelector('.sh-page');
-  if (!page) return;
+  if (!page || !grid) return;
   let bar = page.querySelector('.sh-bulk');
-  const hasFields = sel.mode === 'fields' && sel.fieldKeys.length > 0;
-  const hasCells = sel.mode === 'cells' && sel.cells.size > 1;
-  const hasRows = sel.mode === 'rows' && sel.rowIds.length > 0;
+  const snap = grid.sel.snapshot();
+  const fieldKeys = pickedFieldKeys();
+  const rowIds = pickedRowIds();
+  const hasFields = snap.mode === 'cols' && fieldKeys.length > 0;
+  const hasRows = snap.mode === 'rows' && rowIds.length > 0;
+  // 多格：矩形、Ctrl 点出来的离散格、整行整列之外的任何形态，统一按格数判断
+  const hasCells = !hasRows && !hasFields && snap.size > 1;
 
   if (!hasFields && !hasCells && !hasRows) {
     bar?.remove();
@@ -2082,7 +2148,7 @@ function updateBulkBar() {
   }
 
   if (hasFields) {
-    const fields = sel.fieldKeys
+    const fields = fieldKeys
       .map(key => state.fields.find(field => field.key === key))
       .filter(Boolean);
     bar.innerHTML = `
@@ -2101,7 +2167,7 @@ function updateBulkBar() {
 
   if (hasRows) {
     bar.innerHTML = `
-      <span class="sh-bulk-count">已选 ${sel.rowIds.length} 行</span>
+      <span class="sh-bulk-count">已选 ${rowIds.length} 行</span>
       <span class="sh-bulk-sep"></span>
       <button type="button" class="sh-bulk-btn" data-bulk="dup-rows">复制一份</button>
       <button type="button" class="sh-bulk-btn is-danger" data-bulk="delete-rows">删除</button>
@@ -2111,7 +2177,7 @@ function updateBulkBar() {
   }
 
   bar.innerHTML = `
-    <span class="sh-bulk-count">已选 ${sel.cells.size} 格</span>
+    <span class="sh-bulk-count">已选 ${snap.size} 格</span>
     <span class="sh-bulk-sep"></span>
     <input type="text" class="sh-bulk-input is-wide" data-bulk-value placeholder="批量填入…" />
     <button type="button" class="sh-bulk-btn" data-bulk="fill">填充</button>
@@ -2120,73 +2186,69 @@ function updateBulkBar() {
     <button type="button" class="sh-bulk-btn" data-bulk="cancel">取消</button>`;
 }
 
-async function bulkWriteCells(mode, rawValue) {
-  const rows = rowsInView();
-  const cols = visibleOf(state.fields);
-  if (!sel.cells.size || !rows.length || !cols.length) return;
+function selectedCoords() {
+  if (!grid) return [];
+  return grid.sel.expand(rowsInView().length, colsInView().length);
+}
 
-  // 直接遍历选区集合（支持 Ctrl 加选的离散格），按行聚合后每行只存一次
-  const touchedRows = new Map(); // rowId → { row, touched }
-  const changes = [];            // [{ row, field, before, after }]，供撤销栈用
-  let touchedCells = 0;
-  sel.cells.forEach(key => {
-    const [r, c] = key.split(':').map(Number);
+function blankFor(field) {
+  if (field.type === 'checkbox') return false;
+  if (field.type === 'attachment') return [];
+  return '';
+}
+
+/**
+ * 把一批 {r,c} 坐标写成值：统一算「改哪行哪列、改前改后」，一次落库、一步撤销。
+ * 一次批量操作合成一步 —— 和 Excel 一致：Ctrl+Z 撤掉的是「刚才那次清空」，
+ * 不是清空里的某一格。pickValue 返回 undefined 表示「这一格不动」。
+ */
+async function writeCells(coords, pickValue, labelOf) {
+  const rows = rowsInView();
+  const cols = colsInView();
+  const changes = [];
+  for (const { r, c } of coords) {
     const row = rows[r];
     const field = cols[c];
-    if (!row || !field) return;
-    let entry = touchedRows.get(row.id);
-    if (!entry) { entry = { row, touched: false }; touchedRows.set(row.id, entry); }
-    const current = row.values[field.key];
-    if (mode === 'clear') {
-      if (current !== '' && current !== undefined && current !== null) {
-        const blank = field.type === 'checkbox' ? false : field.type === 'attachment' ? [] : '';
-        row.values[field.key] = blank;
-        changes.push({ row, field, before: current, after: blank });
-        entry.touched = true;
-        touchedCells += 1;
-      }
-      return;
-    }
-    if (field.type !== 'text' && field.type !== 'number') return;
-    const next = String(rawValue ?? '');
-    if (current !== next) {
-      row.values[field.key] = next;
-      changes.push({ row, field, before: current, after: next });
-      entry.touched = true;
-      touchedCells += 1;
-    }
-  });
-  if (![...touchedRows.values()].some(entry => entry.touched)) {
-    // 非文本列会被跳过：全都填不进去时给个明确提示，别静默无反应
-    if (mode === 'fill') toast('选中的单元格不是文本/数字列，填不进去', 'info');
-    return;
+    if (!row || !field) continue;
+    const before = row.values[field.key];
+    const after = pickValue(field, row, before);
+    if (after === undefined) continue;
+    if (sameCellValue(before, after)) continue;
+    changes.push({ row, field, before, after });
   }
-
-  const count = touchedCells;
+  if (!changes.length) return 0;
   const sheetId = state.sheet?.id;
-  markSaving();
-  try {
-    for (const { row, touched } of touchedRows.values()) {
-      if (touched) await writeRow(row);
-    }
-    await touchSheet(state.sheet.id);
-    markSaved();
-    registerCellUndo(
-      changes,
-      mode === 'clear' ? `清空 ${count} 格` : `填入 ${count} 格`,
-      sheetId
-    );
-    toast(mode === 'clear' ? `已清空 ${count} 格` : `已批量填入 ${count} 格`);
-    clearSelection();
-    renderSheet();
-  } catch (error) {
-    markSaved();
-    toast(`批量写入失败：${error?.message || error}`, 'danger');
-  }
+  await applyCellBatch(
+    changes.map(item => ({ row: item.row, field: item.field, value: item.after })),
+    sheetId
+  );
+  registerCellUndo(changes, labelOf(changes.length), sheetId);
+  return changes.length;
+}
+
+// 清空选区（Delete / Ctrl+X / 批量条「清空」）。
+// 不清选区也不重排整表：Excel 删完内容仍停在原处，重排会把滚动位置一起带走。
+async function clearCells(coords) {
+  const count = await writeCells(coords, field => blankFor(field), n => `清空 ${n} 格`);
+  if (count) toast(`已清空 ${count} 格`);
+  return count;
+}
+
+// 批量填同一个值（批量条「填充」）。只有文本/数字列能填，其余跳过。
+async function fillCells(coords, rawValue) {
+  const text = String(rawValue ?? '');
+  const count = await writeCells(
+    coords,
+    field => (field.type === 'text' || field.type === 'number' ? text : undefined),
+    n => `填入 ${n} 格`
+  );
+  if (count) toast(`已填入 ${count} 格`);
+  else toast('选中的单元格不是文本/数字列，填不进去', 'info');
+  return count;
 }
 
 async function bulkApplyToFields(action, widthValue) {
-  const fields = sel.fieldKeys.map(key => state.fields.find(field => field.key === key)).filter(Boolean);
+  const fields = pickedFieldKeys().map(key => state.fields.find(field => field.key === key)).filter(Boolean);
   if (!fields.length) return;
   try {
     for (const field of fields) {
@@ -2221,17 +2283,18 @@ async function onBulkBarClick(event) {
   }
   if (action === 'hide') { bulkApplyToFields('hide'); return; }
   if (action === 'delete') {
-    window.showModal?.('删除列', `<p style="margin:0;">删除选中的 ${sel.fieldKeys.length} 列？列里的数据会一起消失。</p>`, null, async () => {
+    window.showModal?.('删除列', `<p style="margin:0;">删除选中的 ${pickedFieldKeys().length} 列？列里的数据会一起消失。</p>`, null, async () => {
       await bulkApplyToFields('delete');
       return true;
     }, { danger: true, btnText: '删除' });
     return;
   }
-  if (action === 'clear') { bulkWriteCells('clear'); return; }
+  if (action === 'clear') { clearCells(selectedCoords()); return; }
   if (action === 'delete-rows') {
-    const count = sel.rowIds.length;
+    const ids = pickedRowIds();
+    const count = ids.length;
     window.showModal?.('删除记录', `<p style="margin:0;">删除选中的 ${count} 行？此操作无法撤销。</p>`, null, async () => {
-      for (const id of sel.rowIds) {
+      for (const id of ids) {
         try { await deleteRow(id); } catch (error) { console.warn('deleteRow failed', id, error); }
       }
       clearSelection();
@@ -2243,7 +2306,7 @@ async function onBulkBarClick(event) {
     return;
   }
   if (action === 'dup-rows') {
-    const ids = [...sel.rowIds];
+    const ids = pickedRowIds();
     const rowsInOrder = rowsInView().filter(row => ids.some(id => String(id) === String(row.id)));
     for (const row of rowsInOrder) {
       try { await duplicateRow(state.sheet.id, row.values); } catch (error) { console.warn('duplicateRow failed', row.id, error); }
@@ -2256,20 +2319,23 @@ async function onBulkBarClick(event) {
   }
   if (action === 'fill') {
     const value = bar.querySelector('[data-bulk-value]')?.value ?? '';
-    bulkWriteCells('fill', value);
+    fillCells(selectedCoords(), value);
   }
 }
 
 // 拖框选：按住单元格拖出一个矩形。
-// 用 rAF 合帧 + 目标格去重 → 每次 pointermove 不再全表重排/全表 toggle。
+// 用 rAF 合帧 + 目标格去重 → 每次 pointermove 不再全表重排。
 function onSelectPointerMove(event) {
-  if (!dragSel) return;
+  if (!dragSel || !grid) return;
   const dx = Math.abs(event.clientX - dragSel.x);
   const dy = Math.abs(event.clientY - dragSel.y);
   if (!dragSel.moved) {
     if (dx < 5 && dy < 5) return;
     dragSel.moved = true;
     document.body.classList.add('sh-selecting');
+    // 真正开始拖了才把起点定成锚点：单纯点一下的语义交给 click 处理，
+    // 在这里抢先选中会让 Ctrl 点选、Shift 连选失去锚点。
+    grid.sel.select(dragSel.r, dragSel.c);
   }
 
   const under = document.elementFromPoint(event.clientX, event.clientY)?.closest('.sh-cell');
@@ -2281,8 +2347,9 @@ function onSelectPointerMove(event) {
   if (dragSel.raf) return; // 一帧只画一次
   dragSel.raf = requestAnimationFrame(() => {
     dragSel.raf = 0;
-    if (!dragSel?.last) return;
-    paintCellSelection({ r: dragSel.r, c: dragSel.c }, dragSel.last);
+    if (!dragSel?.last || !grid) return;
+    grid.sel.extendTo(dragSel.last.r, dragSel.last.c);
+    paintSelection();
   });
 }
 
@@ -2292,10 +2359,102 @@ function onSelectPointerUp() {
   document.body.classList.remove('sh-selecting');
   if (dragSel?.raf) {
     cancelAnimationFrame(dragSel.raf);
-    if (dragSel.last) paintCellSelection({ r: dragSel.r, c: dragSel.c }, dragSel.last);
+    if (dragSel.last && grid) {
+      grid.sel.extendTo(dragSel.last.r, dragSel.last.c);
+      paintSelection();
+    }
   }
   if (dragSel?.moved) suppressClick = true;
   dragSel = null;
+}
+
+// ==========================================
+// 填充柄 / 行高拖拽（与基础表同一套手势层）
+// ==========================================
+
+/**
+ * 拖填充柄松手：把源矩形的值按 Excel 规则循环铺到目标区。
+ * 只有「扩张出去」的格会写，源格不动（fillPlan 已保证）。
+ */
+async function applyFillPlan(plan) {
+  const rows = rowsInView();
+  const cols = colsInView();
+  const changes = [];
+  for (const cell of plan.cells) {
+    const targetRow = rows[cell.r];
+    const targetField = cols[cell.c];
+    const sourceRow = rows[cell.fromR];
+    const sourceField = cols[cell.fromC];
+    if (!targetRow || !targetField || !sourceRow || !sourceField) continue;
+    const next = cloneValue(sourceRow.values[sourceField.key]);
+    // 附件是数组，复制等于让两行共享同一批文件引用 —— 语义不清，跳过（基础表同样）
+    if (Array.isArray(next)) continue;
+    const before = targetRow.values[targetField.key];
+    if (sameCellValue(before, next)) continue;
+    changes.push({ row: targetRow, field: targetField, before, after: next });
+  }
+  if (!changes.length) {
+    toast('没有可填充的内容', 'info');
+    fillHandle?.reposition();
+    return;
+  }
+  const sheetId = state.sheet?.id;
+  try {
+    await applyCellBatch(
+      changes.map(item => ({ row: item.row, field: item.field, value: item.after })),
+      sheetId
+    );
+    registerCellUndo(changes, `填充 ${changes.length} 格`, sheetId);
+  } catch (error) {
+    toast(`填充失败：${error?.message || error}`, 'danger');
+    return;
+  }
+  // 填充完选区扩到整个目标矩形（Excel 同款），接着按 Ctrl+C 就能整块复制
+  if (grid && plan.box) {
+    grid.sel.select(plan.box.r1, plan.box.c1);
+    grid.sel.extendTo(plan.box.r2, plan.box.c2);
+    paintSelection();
+  }
+  toast(`已填充 ${changes.length} 格`);
+}
+
+function rowOfEl(rowEl) {
+  const id = rowEl?.dataset?.id;
+  if (id == null) return null;
+  return state.rows.find(item => String(item.id) === String(id)) || null;
+}
+
+// 手势只挂一次（宿主容器在页面生命周期内不变）。
+// 滚动容器每次重绘都会被换掉，所以 getScroll 必须惰性取 —— 传死节点会在
+// 第二次 renderSheet 之后把填充柄挂进一个已经脱离文档的 div 里。
+function mountGestures(rootEl) {
+  if (fillHandle) return;
+  fillHandle = mountFillHandle({
+    root: rootEl,
+    getScroll: () => rootEl.querySelector('[data-scroll]'),
+    cellSelector: '.sh-cell',
+    tableSelector: '.sh-table',
+    getBounds: () => (grid ? grid.sel.bounds() : null),
+    getCounts: () => ({ rows: rowsInView().length, cols: colsInView().length }),
+    isBlocked: isEditingCell,
+    onFill: plan => { applyFillPlan(plan); },
+  });
+  mountRowResizer({
+    root: rootEl,
+    rowSelector: '.sh-row',
+    cellSelector: '.sh-cell',
+    min: 28,
+    max: 600,
+    isBlocked: isEditingCell,
+    onResize: (rowEl, px) => {
+      const row = rowOfEl(rowEl);
+      if (row) void applyRowHeight(row, px);
+    },
+    onAutoFit: rowEl => {
+      const row = rowOfEl(rowEl);
+      if (row) void autoFitRow(row);
+    },
+  });
 }
 
 // ==========================================
@@ -2462,11 +2621,12 @@ function onHostContextMenu(event) {
   const th = event.target.closest('.sh-th[data-key]');
   if (th) {
     const field = state.fields.find(item => item.key === th.dataset.key);
-    if (!field) return;
-    event.preventDefault();
-    toggleFieldSelection(field.key, false, false);
-    openColumnMenuFor(th, field);
-    return;
+    if (field) {
+      event.preventDefault();
+      selectColumnByKey(field.key);
+      openColumnMenuFor(th, field);
+      return;
+    }
   }
   // 右键单元格 = 单元格菜单（复制/粘贴/编辑/清除/插行/删行），WPS 同款。
   // 如果右键的格子已在当前多选里，保留选区（要操作的是整片选中格）；否则才切成单格。
@@ -2476,9 +2636,9 @@ function onHostContextMenu(event) {
     const row = state.rows.find(item => String(item.id) === String(cellEl.dataset.row));
     if (field && row) {
       event.preventDefault();
-      const key = `${Number(cellEl.dataset.rowindex)}:${Number(cellEl.dataset.col)}`;
-      const inSelection = (sel.mode === 'cells' || sel.mode === 'cell') && sel.cells.has(key);
-      if (!inSelection) selectCell(cellEl, {});
+      const r = Number(cellEl.dataset.rowindex);
+      const c = Number(cellEl.dataset.col);
+      if (grid && !grid.sel.contains(r, c)) ensureGrid().select(r, c);
       openCellMenuFor(cellEl, field, row);
       return;
     }
@@ -2529,7 +2689,7 @@ function onHostClick(event) {
   if (thBtn) {
     // 左键点列头 = 选中这一列（Ctrl/⌘ 累加、Shift 连选）；
     // 列菜单改到右键，避免「想选列却弹菜单」。
-    toggleFieldSelection(thBtn.dataset.key, event.shiftKey, Boolean(event.ctrlKey || event.metaKey || event.shiftKey));
+    selectColumnByKey(thBtn.dataset.key, event);
     return;
   }
   if (event.target.closest('.sh-th-add-btn')) { addFieldAt(null, 'right'); return; }
@@ -2538,7 +2698,7 @@ function onHostClick(event) {
   if (rownum) {
     // 左键点行号 = 选中这一行（Ctrl 累加 / Shift 连选），和列头同一套手势；
     // 行菜单走右键，详情走双击。
-    toggleRowSelection(rownum.dataset.row, event.shiftKey, Boolean(event.ctrlKey || event.metaKey || event.shiftKey));
+    selectRowById(rownum.dataset.row, event);
     return;
   }
 
@@ -2556,14 +2716,14 @@ function onHostClick(event) {
   const thumb = event.target.closest('img.ft-att-thumb');
   if (thumb) {
     const cell = thumb.closest('.sh-cell');
-    if (cell) selectCell(cell, { additive: event.ctrlKey || event.metaKey, range: event.shiftKey });
+    if (cell) selectFromCell(cell, event);
     return;
   }
 
   const cell = event.target.closest('.sh-cell');
   if (cell) {
     // 单击只选中；Ctrl=加减单个格，Shift=从锚点扩展矩形，双击才编辑
-    selectCell(cell, { additive: event.ctrlKey || event.metaKey, range: event.shiftKey });
+    selectFromCell(cell, event);
     return;
   }
 
@@ -2682,94 +2842,26 @@ function openFieldsPanel(anchorEl) {
 // 键盘
 // ==========================================
 
+// 键盘语义全部交给 gridCore 的意图解析 —— 与基础表同一套：
+// 方向键 / Ctrl+方向跳数据边界 / Tab 绕行 / Home·End / Delete 清空 / Ctrl+A 全选。
+// 以前这里是手写的另一份：Ctrl+方向只能跳到首末，Tab 不会补新行，
+// 于是一个快捷键在两个表里是两种结果 —— 这正是「两套体系」的日常体感。
 function onHostKeydown(event) {
+  // 全局 Ctrl+Z 在 document 捕获阶段就处理掉了（并 preventDefault）。
+  // 这里不再拦一次，否则一次按键会连撤两步。
+  if (event.defaultPrevented) return;
   const cell = document.activeElement?.closest?.('.sh-cell');
   if (!cell || !host?.contains(cell)) return;
-  if (cell.querySelector('input, textarea')) return;
+  // 编辑器内部：放行给原生控件
+  if (cell.querySelector('input, textarea') || isEditingCell()) return;
+  if (!grid) return;
 
-  const field = state.fields.find(item => item.key === cell.dataset.key);
-  const row = state.rows.find(item => String(item.id) === String(cell.dataset.row));
-  if (!field || !row) return;
-
-  if (event.key === 'Enter') {
-    event.preventDefault();
-    startCellEdit(field, row, cell);
-    return;
-  }
-  if (event.key === 'Delete' || event.key === 'Backspace') {
-    event.preventDefault();
-    event.stopPropagation();
-    // 有多格选区时清空整个选区，而不是只清当前聚焦的那一格
-    if (sel.mode === 'cells' && sel.cells.size > 1) {
-      bulkWriteCells('clear');
-      return;
-    }
-    commitCell(field, row, cell, field.type === 'checkbox' ? false : '');
-    return;
-  }
-  // 方向键：四向移动（原来只有 ↑↓，左右缺失是「不习惯」的主要来源）。
-  // 坐标从 data-rowindex / data-col 取，和 selectCell 同一套。
-  const ARROW_STEPS = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] };
-  if (ARROW_STEPS[event.key]) {
-    event.preventDefault();
-    const rowIndex = Number(cell.dataset.rowindex);
-    const colIndex = Number(cell.dataset.col);
-    if (Number.isNaN(rowIndex) || Number.isNaN(colIndex)) return;
-
-    const [dr, dc] = ARROW_STEPS[event.key];
-    // Ctrl+方向：跳到空白区边界（Excel 语义）；这里简化为跳到首/末，够用且不会跳错
-    if (event.ctrlKey || event.metaKey) {
-      const rowsAll = rowsInView();
-      const colsAll = visibleOf(state.fields);
-      const nr = dr ? (dr > 0 ? rowsAll.length - 1 : 0) : rowIndex;
-      const nc = dc ? (dc > 0 ? colsAll.length - 1 : 0) : colIndex;
-      const jumpCell = host.querySelector(`.sh-cell[data-rowindex="${nr}"][data-col="${nc}"]`);
-      if (jumpCell) {
-        selectCell(jumpCell, { range: event.shiftKey });
-        jumpCell.focus?.({ preventScroll: true });
-        jumpCell.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-      }
-      return;
-    }
-
-    const nextR = rowIndex + dr;
-    const nextC = colIndex + dc;
-    const nextCell = host.querySelector(`.sh-cell[data-rowindex="${nextR}"][data-col="${nextC}"]`);
-    if (!nextCell) return;
-    selectCell(nextCell, { range: event.shiftKey });
-    nextCell.focus?.({ preventScroll: true });
-    nextCell.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-    return;
-  }
-
-  // Tab / Home / End：Excel 的三件套。
-  if (event.key === 'Tab' || event.key === 'Home' || event.key === 'End') {
-    event.preventDefault();
-    const rowIndex = Number(cell.dataset.rowindex);
-    const colIndex = Number(cell.dataset.col);
-    const rowsAll = rowsInView();
-    const colsAll = visibleOf(state.fields);
-    let nr = rowIndex;
-    let nc = colIndex;
-
-    if (event.key === 'Tab') {
-      nc = colIndex + (event.shiftKey ? -1 : 1);
-      if (nc >= colsAll.length) { nc = 0; nr = rowIndex + 1; }
-      if (nc < 0) { nc = colsAll.length - 1; nr = rowIndex - 1; }
-    } else if (event.key === 'Home') {
-      nc = 0;
-    } else {
-      nc = colsAll.length - 1;
-    }
-
-    const target = host.querySelector(`.sh-cell[data-rowindex="${nr}"][data-col="${nc}"]`);
-    if (target) {
-      selectCell(target);
-      target.focus?.({ preventScroll: true });
-      target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-    }
-    return;
-  }
+  const intent = resolveKeyIntent(event, { editing: false, pageSize: 12 });
+  // 两种不接管的情形：
+  //   type  —— 直接敲字覆盖（编辑器还不支持预填首字符，拦了等于把字吃掉）
+  //   paste —— 必须让原生 paste 事件照常触发，否则系统剪贴板粘不进来
+  if (intent.type === 'none' || intent.type === 'type' || intent.type === 'paste') return;
+  if (grid.handleKeydown(event)) event.preventDefault();
 }
 
 // ==========================================
@@ -2794,8 +2886,12 @@ export async function initSheetPage() {
     host.addEventListener('dblclick', onHostDblClick);
     host.addEventListener('contextmenu', onHostContextMenu);
     document.addEventListener('keydown', event => {
-      if (event.key === 'Escape' && (sel.cells.size > 1 || sel.fieldKeys.length)) {
-        clearSelection();
+      if (!grid || event.defaultPrevented) return;
+      if (event.key === 'Escape') {
+        if (grid.sel.size() || grid.sel.colsList().length || grid.sel.rowsList().length) {
+          event.preventDefault();
+          clearSelection();
+        }
         return;
       }
       // 正在输入时一律放行给原生控件。注意必须包含 textarea ——
@@ -2805,12 +2901,20 @@ export async function initSheetPage() {
         document.activeElement?.closest?.('input, textarea, [contenteditable="true"]') ||
         document.querySelector('.sh-dp, .ft-dropdown, .sh-bulk input');
       if (typing) return;
-      if ((event.key === 'Delete' || event.key === 'Backspace') && sel.cells.size >= 1) {
+      // 焦点在格子里时由 onHostKeydown（gridCore）处理，这里只管「没焦点」的情形 ——
+      // 比如点完行号、选区还在，但活动元素是行号按钮。
+      if (document.activeElement?.closest?.('.sh-cell')) return;
+      if (event.key === 'Delete' || event.key === 'Backspace') {
+        const coords = selectedCoords();
+        if (!coords.length) return;
         event.preventDefault();
-        bulkWriteCells('clear');
+        clearCells(coords);
       }
     });
     host.addEventListener('keydown', onHostKeydown);
+    // 选区内核 + 共用手势层只建一次；表格重绘不影响它们（节点都是惰性取的）
+    ensureGrid();
+    mountGestures(host);
 
     // Ctrl+C / Ctrl+V：都走内部剪贴板（能搬图片等复杂值）。
     // 内部剪贴板不写系统剪贴板，所以必须拦 keydown；没内容时才走系统粘贴的 paste 事件。
@@ -2828,23 +2932,25 @@ export async function initSheetPage() {
         return;
       }
 
-      // Ctrl+X：先复制再清空。只在单元格选区上生效 —— 整行剪切要连带删行，
+      // Ctrl+X：先复制再清空。整行不在此列 —— 整行剪切要连带删行，
       // 那是行菜单的语义，不该被一个快捷键顺手做掉。
       if (key === 'x') {
         if (String(window.getSelection() || '')) return;
-        if (sel.mode === 'cells' && sel.cells.size >= 1 && copySelectionToClipboard()) {
+        const snap = grid ? grid.sel.snapshot() : null;
+        if (snap && snap.size >= 1 && snap.mode !== 'rows' && copySelectionToClipboard()) {
           event.preventDefault();
-          bulkWriteCells('clear');
+          clearCells(selectedCoords());
         }
         return;
       }
 
       if (!hasInternalClipboard()) return;
 
-      if (sel.mode === 'rows' && sel.rowIds.length) {
+      const snap = grid ? grid.sel.snapshot() : null;
+      if (snap && snap.mode === 'rows' && snap.rows.length) {
         event.preventDefault();
         if (clipboard.kind !== 'row') { toast('剪贴板里是一条单元格内容，请选中单元格再粘贴', 'info'); return; }
-        const targets = sel.rowIds.map(id => state.rows.find(item => String(item.id) === String(id)));
+        const targets = pickedRowIds().map(id => state.rows.find(item => String(item.id) === String(id)));
         pasteRowFromClipboard(targets);
         return;
       }
@@ -2887,6 +2993,9 @@ export async function initSheetPage() {
 
     const applySearch = value => {
       state.search = String(value || '').trim();
+      // 选区存的是「筛选后列表里的下标」，筛完就不指原来那些行了。
+      // 不清掉的话高亮会留在屏幕上，而实际指向的行已经换了一批。
+      clearSelection();
       renderBodyRows(true);
       host.querySelector('[data-scroll]')?.scrollTo({ top: 0 });
       const status = host.querySelector('[data-status-text]');

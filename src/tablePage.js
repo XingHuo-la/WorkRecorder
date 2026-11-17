@@ -10,6 +10,7 @@
 import { escapeHtml } from './htmlUtils.js';
 import { pickAttachmentItems, storeImageFile, filesFromDataTransfer, setAttachmentNotifier, convertSrc } from './attachmentOps.js';
 import { createGrid, serializeTSV, parseTSV, fillPlan } from './gridCore.js';
+import { mountFillHandle, mountRowResizer } from './gridGestures.js';
 import { undoStack } from './undoCore.js';
 import {
   FIELD_TYPE_ORDER,
@@ -564,8 +565,7 @@ async function autofitColumn(field) {
 let colDrag = null;
 
 function onRootPointerDown(event) {
-  // 行下缘优先：这一段和单元格区域重叠，交给行高处理器先判断
-  if (onRowEdgePointerDown(event)) return;
+  // 行下缘的命中判断在 gridGestures 的捕获阶段就处理掉了，这里只管列宽
   const handle = event.target.closest('.wr-th-resize');
   if (!handle || !adapter) return;
   const key = handle.dataset.resize;
@@ -616,16 +616,10 @@ function onColResizeEnd() {
 // 改成「行下缘 5px 热区」—— 那段正好落在单元格 12px 下内边距里，压不到文字，
 // 也不用往表格骨架里插一列（插列会连带改 colgroup 权重、列宽换算、探针坐标）。
 
+// 行高的上下限与默认值；拖拽本身在 gridGestures.js，两边表格共用
 const MIN_ROW_PX = 32;
 const MAX_ROW_PX = 600;
-const ROW_EDGE_PX = 5;
 const DEFAULT_ROW_PX = 46; // 与 styles-v4 里 .wr-cell 的 min-height 对齐
-
-let rowDrag = null;
-// 拖动行高后浏览器会补发一次 click，落到行下缘那格上会把选区挪走。
-// 用**时间窗**而不是布尔量：布尔量要等那次 click 来才复位，一旦 click 没来
-// （松手在窗口外、或事件是合成的），它就会一直挂着，把后面第一次正常点击吞掉。
-let swallowClickUntil = 0;
 
 function rowIndexOf(tr) {
   const cell = tr?.querySelector?.('.wr-cell[data-rowindex]');
@@ -636,68 +630,6 @@ function rowIndexOf(tr) {
 function rowOfTr(tr) {
   const index = rowIndexOf(tr);
   return index >= 0 ? renderedRows[index] : null;
-}
-
-function isNearRowEdge(tr, clientY) {
-  const rect = tr.getBoundingClientRect();
-  const gap = rect.bottom - clientY;
-  return gap >= -1 && gap <= ROW_EDGE_PX;
-}
-
-// 光标提示：CSS 没法表达「一行的最下面 5px」，只能靠 JS 挂类。
-// 没有这个提示，用户永远发现不了行下缘可以拖。
-function onRowEdgeHover(event) {
-  const root = tableRoot();
-  if (!root || rowDrag || colDrag || fillDrag) return;
-  const tr = event.target.closest?.('.wr-table-row');
-  const onEdge = Boolean(tr) && !isEditingCell() && isNearRowEdge(tr, event.clientY);
-  root.querySelectorAll('.wr-table-row.is-row-edge').forEach(el => {
-    if (!onEdge || el !== tr) el.classList.remove('is-row-edge');
-  });
-  if (onEdge) tr.classList.add('is-row-edge');
-}
-
-function onRowEdgePointerDown(event) {
-  if (event.button !== 0) return false;
-  const tr = event.target.closest?.('.wr-table-row');
-  if (!tr || isEditingCell() || !isNearRowEdge(tr, event.clientY)) return false;
-  const row = rowOfTr(tr);
-  if (!row) return false;
-
-  // 这里**不能** preventDefault：pointerdown 被拦掉后浏览器不再补发 mousedown/click，
-  // 「双击行下缘复位」就永远收不到 dblclick。文字选中靠 .is-row-resizing 的
-  // user-select:none 挡住；真拖动过之后吞掉紧跟的那次 click，免得顺手改了选区。
-  event.stopPropagation();
-  rowDrag = { tr, row, startY: event.clientY, startPx: tr.getBoundingClientRect().height, px: 0, moved: false };
-  tableRoot()?.classList.add('is-row-resizing');
-  document.addEventListener('pointermove', onRowResizeMove);
-  document.addEventListener('pointerup', onRowResizeEnd, { once: true });
-  document.addEventListener('pointercancel', onRowResizeEnd, { once: true });
-  return true;
-}
-
-function onRowResizeMove(event) {
-  if (!rowDrag) return;
-  const dy = event.clientY - rowDrag.startY;
-  // 2px 抖动容差：手抖一下不该被记成「改过行高」
-  if (!rowDrag.moved && Math.abs(dy) < 2) return;
-  rowDrag.moved = true;
-  const px = Math.round(Math.max(MIN_ROW_PX, Math.min(MAX_ROW_PX, rowDrag.startPx + dy)));
-  rowDrag.px = px;
-  // 拖动中只改这一行的行内高度，不重绘 —— 重绘会打断正在进行的编辑
-  rowDrag.tr.style.height = `${px}px`;
-  rowDrag.tr.classList.add('is-row-sized');
-}
-
-function onRowResizeEnd() {
-  document.removeEventListener('pointermove', onRowResizeMove);
-  tableRoot()?.classList.remove('is-row-resizing');
-  const drag = rowDrag;
-  rowDrag = null;
-  if (!drag || !drag.moved) return;
-  // 指针抬起后浏览器还会补一次 click，落到行下缘那格上会把选区挪走
-  swallowClickUntil = performance.now() + 400;
-  void applyRowHeight(drag.row, drag.px);
 }
 
 // 参数会被适配器统一 String()，null 传下去会写成字符串 'null'（INTEGER 列存成 TEXT）。
@@ -896,13 +828,13 @@ function paintGridSelection() {
         if (index >= 0 && snap.cols.includes(index)) th.classList.add('is-sel');
       });
     }
-    positionFillHandle();
+    fillHandle?.reposition();
     return;
   }
 
   const active = grid.sel.active();
   if (!active) {
-    positionFillHandle();
+    fillHandle?.reposition();
     return;
   }
 
@@ -913,7 +845,7 @@ function paintGridSelection() {
     if (grid.sel.contains(r, c)) el.classList.add('is-sel');
   });
   cellElOf(active.r, active.c)?.classList.add('is-active');
-  positionFillHandle();
+  fillHandle?.reposition();
 }
 
 // ==========================================
@@ -922,127 +854,6 @@ function paintGridSelection() {
 //
 // 选区右下角一个 8px 小方块，拖出去按 Excel 规则循环复制（见 gridCore.fillPlan）。
 // 手柄用绝对定位贴在 .wr-table-scroll 里，所以横向滚动时它跟着格子走，不用监听 scroll。
-
-let fillDrag = null;
-
-function fillEl(className) {
-  return tableRoot()?.querySelector(`.${className}`) || null;
-}
-
-function positionFillHandle() {
-  const handle = fillEl('wr-fill-handle');
-  if (!handle) return;
-  const box = grid?.sel.bounds();
-  const scroll = tableRoot()?.querySelector('.wr-table-scroll');
-  const corner = box ? cellElOf(box.r2, box.c2)?.closest('td') : null;
-  // 编辑态下手柄必须让位：它会盖住格子右下角，正对着输入框的光标落点
-  if (!box || !scroll || !corner || isEditingCell() || !renderedRows.length) {
-    handle.hidden = true;
-    return;
-  }
-  const cr = scroll.getBoundingClientRect();
-  const tr = corner.getBoundingClientRect();
-  handle.hidden = false;
-  // -4 = 手柄边长的一半，让它骑在角上（Excel 也是骑在角上的）
-  handle.style.left = `${Math.round(tr.right - cr.left + scroll.scrollLeft) - 4}px`;
-  handle.style.top = `${Math.round(tr.bottom - cr.top + scroll.scrollTop) - 4}px`;
-}
-
-function fillPointAt(x, y) {
-  // 命中真实格就信它；命中不到（拖到表格外/边框上）再按方向夹到已有行列边界。
-  // Excel 不会因为你拖到末行下面就在数据里长出新行，这里也不长。
-  const direct = document.elementFromPoint(x, y)?.closest?.('.wr-cell');
-  if (direct && direct.dataset.rowindex != null && direct.dataset.col != null) {
-    return { r: Number(direct.dataset.rowindex), c: Number(direct.dataset.col) };
-  }
-  const table = tableRoot()?.querySelector('.wr-table');
-  if (!table || !fillDrag) return null;
-  const rect = table.getBoundingClientRect();
-  const r = y >= rect.bottom ? renderedRows.length - 1 : y <= rect.top ? 0 : null;
-  const c = x >= rect.right ? renderedFields.length - 1 : x <= rect.left ? 0 : null;
-  if (r === null && c === null) return null;
-  return {
-    r: r === null ? fillDrag.last.r : r,
-    c: c === null ? fillDrag.last.c : c,
-  };
-}
-
-function paintFillPreview(box) {
-  const preview = fillEl('wr-fill-preview');
-  const scroll = tableRoot()?.querySelector('.wr-table-scroll');
-  if (!preview || !scroll) return;
-  const head = box ? cellElOf(box.r1, box.c1)?.closest('td') : null;
-  const tail = box ? cellElOf(box.r2, box.c2)?.closest('td') : null;
-  if (!head || !tail) {
-    preview.hidden = true;
-    return;
-  }
-  const cr = scroll.getBoundingClientRect();
-  const hr = head.getBoundingClientRect();
-  const tr = tail.getBoundingClientRect();
-  preview.hidden = false;
-  preview.style.left = `${Math.round(hr.left - cr.left + scroll.scrollLeft)}px`;
-  preview.style.top = `${Math.round(hr.top - cr.top + scroll.scrollTop)}px`;
-  preview.style.width = `${Math.round(tr.right - hr.left)}px`;
-  preview.style.height = `${Math.round(tr.bottom - hr.top)}px`;
-}
-
-function onFillHandleDown(event) {
-  if (event.button !== 0 || !grid) return;
-  const handle = event.target.closest('.wr-fill-handle');
-  if (!handle) return;
-  const box = grid.sel.bounds();
-  if (!box) return;
-
-  // 不拦的话这一下会顺手把选区清掉、并且开始选文字
-  event.preventDefault();
-  event.stopPropagation();
-
-  fillDrag = { src: box, last: { r: box.r2, c: box.c2 }, plan: null, pointerId: event.pointerId };
-  // 捕获指针能保证拖出窗口也收得到 pointerup；但 pointerId 不活跃时（合成事件、
-  // 指针已释放）浏览器会抛 NotFoundError，不该因此中断整个拖拽。
-  try {
-    handle.setPointerCapture?.(event.pointerId);
-  } catch (error) {
-    /* 拿不到捕获也能靠 document 上的 pointermove/pointerup 走完 */
-  }
-  tableRoot()?.classList.add('is-filling');
-  document.addEventListener('pointermove', onFillMove);
-  document.addEventListener('pointerup', onFillUp);
-  document.addEventListener('pointercancel', onFillUp);
-}
-
-function onFillMove(event) {
-  if (!fillDrag || event.pointerId !== fillDrag.pointerId) return;
-  const point = fillPointAt(event.clientX, event.clientY) || fillDrag.last;
-  fillDrag.last = point;
-  const plan = fillPlan(fillDrag.src, point, renderedRows.length, renderedFields.length);
-  fillDrag.plan = plan;
-  // 没扩张时也画框：虚线框停在源矩形上，用户才知道「拖了但不够远」
-  paintFillPreview(plan ? plan.box : fillDrag.src);
-}
-
-function endFillDrag() {
-  document.removeEventListener('pointermove', onFillMove);
-  document.removeEventListener('pointerup', onFillUp);
-  document.removeEventListener('pointercancel', onFillUp);
-  tableRoot()?.classList.remove('is-filling');
-  const preview = fillEl('wr-fill-preview');
-  if (preview) preview.hidden = true;
-  const state = fillDrag;
-  fillDrag = null;
-  return state;
-}
-
-async function onFillUp(event) {
-  if (fillDrag && event && event.pointerId !== fillDrag.pointerId) return;
-  const state = endFillDrag();
-  if (!state || !state.plan) {
-    positionFillHandle();
-    return;
-  }
-  await applyFillPlan(state.plan);
-}
 
 async function applyFillPlan(plan) {
   const picked = [];
@@ -1060,7 +871,7 @@ async function applyFillPlan(plan) {
 
   if (!picked.length) {
     showTableToast('没有可填充的内容', 'info');
-    positionFillHandle();
+    fillHandle?.reposition();
     return;
   }
 
@@ -1304,13 +1115,7 @@ function onRootDblClick(event) {
     }
     return;
   }
-  // 双击行下边界 = 行高按内容自适应（先判，这一段落在单元格内边距里）
-  const rowEl = event.target.closest('.wr-table-row');
-  if (rowEl && !isEditingCell() && isNearRowEdge(rowEl, event.clientY)) {
-    event.preventDefault();
-    void autofitRow(rowEl);
-    return;
-  }
+  // 双击行下边界由 gridGestures 的捕获阶段截走，这里只处理单元格
   const cell = event.target.closest('.wr-cell');
   if (!cell) return;
   const r = Number(cell.dataset.rowindex);
@@ -1924,11 +1729,6 @@ function onRootContextMenu(event) {
 }
 
 function onRootClick(event) {
-  // 刚拖完行高：浏览器补发的那次 click 不该改变选区（只吞 400ms 内的那一次）
-  if (swallowClickUntil && performance.now() < swallowClickUntil) {
-    swallowClickUntil = 0;
-    return;
-  }
   // 左键点列头 = 选中整列，列菜单走右键 —— 这是 Excel 的手势。
   // 以前这里点一下就弹菜单，和自建表正好相反，也是「两套手感」最刺眼的一处。
   const thBtn = event.target.closest('.wr-th-btn');
@@ -1970,6 +1770,37 @@ function onRootClick(event) {
   }
 }
 
+// 填充柄与行高拖拽由 gridGestures 提供（空白表用的是同一套，别再各写一遍）
+let fillHandle = null;
+
+function mountGestures(rootEl) {
+  if (fillHandle) return;
+  fillHandle = mountFillHandle({
+    root: rootEl,
+    // 表格每次重绘都会换掉滚动容器，必须惰性取
+    getScroll: () => rootEl.querySelector('.wr-table-scroll'),
+    cellSelector: '.wr-cell',
+    tableSelector: '.wr-table',
+    getBounds: () => grid?.sel.bounds() || null,
+    getCounts: () => ({ rows: renderedRows.length, cols: renderedFields.length }),
+    isBlocked: () => isEditingCell(),
+    onFill: plan => applyFillPlan(plan),
+  });
+  mountRowResizer({
+    root: rootEl,
+    rowSelector: '.wr-table-row',
+    cellSelector: '.wr-cell',
+    min: MIN_ROW_PX,
+    max: MAX_ROW_PX,
+    isBlocked: () => isEditingCell(),
+    onResize: (rowEl, px) => {
+      const row = rowOfTr(rowEl);
+      if (row) void applyRowHeight(row, px);
+    },
+    onAutoFit: rowEl => { void autofitRow(rowEl); },
+  });
+}
+
 export function bindTableEvents(rootEl) {
   if (!rootEl || rootEl.dataset.wrTableBound === '1') return;
   rootEl.dataset.wrTableBound = '1';
@@ -1979,16 +1810,8 @@ export function bindTableEvents(rootEl) {
   rootEl.addEventListener('keydown', onRootKeydown);
   rootEl.addEventListener('paste', onRootPaste);
   rootEl.addEventListener('pointerdown', onRootPointerDown);
-  // 行下缘的 row-resize 光标提示（CSS 表达不了「一行的最下面 5px」）
-  rootEl.addEventListener('pointermove', onRowEdgeHover);
-  rootEl.addEventListener('pointerleave', () => {
-    tableRoot()?.querySelectorAll('.wr-table-row.is-row-edge')
-      .forEach(el => el.classList.remove('is-row-edge'));
-  });
-  // 填充柄单独挂：它不在 .wr-cell 里，和列宽抓手互不干扰。
-  // 用 pointerdown 而不是 click —— 拖拽必须从按下那一刻开始接管，等 click 已经晚了。
-  rootEl.addEventListener('pointerdown', onFillHandleDown);
   ensureGrid();
+  mountGestures(rootEl);
 }
 
 function bindToolbar() {
