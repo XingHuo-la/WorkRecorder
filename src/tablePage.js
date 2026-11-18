@@ -1790,6 +1790,8 @@ function mountGestures(rootEl) {
     root: rootEl,
     rowSelector: '.wr-table-row',
     cellSelector: '.wr-cell',
+    // 行高只从行号栏拖：单元格上下边缘用来「选下一格」，不再兼任行高抓手
+    edgeSelector: '.wr-rownum',
     min: MIN_ROW_PX,
     max: MAX_ROW_PX,
     isBlocked: () => isEditingCell(),

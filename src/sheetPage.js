@@ -40,6 +40,8 @@ import {
   createSheet,
   updateSheet,
   deleteSheet,
+  getDefaultTableId,
+  setDefaultTableId,
   touchSheet,
   loadFields,
   loadRows,
@@ -1847,73 +1849,107 @@ function renameSheet(target = state.sheet) {
   }, { btnText: '保存' });
 }
 
-// 表格动作菜单（重命名 / 改所属任务 / 删除）。
+// 表格动作菜单（重命名 / 设为默认 / 改所属任务 / 删除）。
 // target 默认是「正打开的表」，但表格页改成「表库 → 表内」两层之后，
 // 列表行上的 ⋯ 也要能用 —— 那时 state.sheet 是 null，必须由调用方传进来。
 function openSheetMenu(anchorEl, target = null) {
   const sheet = target || state.sheet;
   if (!sheet) return;
-  const el = openPopoverSimple(anchorEl, `
-    <button type="button" class="sh-menu-item" data-sheet-act="rename">
-      <svg class="wr-icon" aria-hidden="true"><use href="#ic-pencil"/></svg>重命名表格
-    </button>
-    <button type="button" class="sh-menu-item" data-sheet-act="task">
-      <svg class="wr-icon" aria-hidden="true"><use href="#ic-tag"/></svg>改所属任务
-    </button>
-    <div class="sh-colmenu-sep"></div>
-    <button type="button" class="sh-menu-item is-danger" data-sheet-act="delete">
-      <svg class="wr-icon" aria-hidden="true"><use href="#ic-trash"/></svg>删除表格
-    </button>`);
-  el.classList.add('sh-rowmenu');
-  el.addEventListener('click', async event => {
-    const action = event.target.closest('[data-sheet-act]')?.dataset.sheetAct;
-    if (!action) return;
-    closeAllPanels();
-    if (action === 'rename') renameSheet(sheet);
-    if (action === 'task') {
-      const taskOptions = ['<option value="">不归属任务</option>', ...state.tasks.map(task => `<option value="${escapeHtml(task.id)}" ${String(task.id) === String(sheet.task_id) ? 'selected' : ''}>${escapeHtml(task.label)}${task.done ? '（已完成）' : ''}</option>`)].join('');
-      window.showModal?.('改所属任务', `<div class="sh-modal"><label class="sh-label">所属任务</label><select class="sh-select" data-task>${taskOptions}</select></div>`, null, async modalBody => {
-        const value = modalBody.querySelector('[data-task]')?.value || null;
-        try {
-          await updateSheet(sheet.id, { task_id: value == null ? null : Number(value) });
-        } catch (error) {
-          toast(`更新归属失败：${error?.message || error}`, 'danger');
-          return false;
+
+  // 「这张是不是默认表」存在 settings 里，要 await 才能取到；
+  // 菜单因此晚一帧出现 —— 比点开一眼看不见当前状态要好。
+  void (async () => {
+    let defaultId = null;
+    try { defaultId = await getDefaultTableId(); } catch (error) { defaultId = null; }
+    const isDefault = String(defaultId) === String(sheet.id);
+
+    const el = openPopoverSimple(anchorEl, `
+      <button type="button" class="sh-menu-item" data-sheet-act="rename">
+        <svg class="wr-icon" aria-hidden="true"><use href="#ic-pencil"/></svg>重命名表格
+      </button>
+      ${isDefault
+        ? '<div class="sh-menu-note">默认表：快速记录都写进这张表</div>'
+        : `<button type="button" class="sh-menu-item" data-sheet-act="default">
+            <svg class="wr-icon" aria-hidden="true"><use href="#ic-check"/></svg>设为默认表
+          </button>`}
+      <div class="sh-colmenu-sep"></div>
+      <button type="button" class="sh-menu-item" data-sheet-act="task">
+        <svg class="wr-icon" aria-hidden="true"><use href="#ic-tag"/></svg>改所属任务
+      </button>
+      <div class="sh-colmenu-sep"></div>
+      <button type="button" class="sh-menu-item is-danger" data-sheet-act="delete">
+        <svg class="wr-icon" aria-hidden="true"><use href="#ic-trash"/></svg>删除表格
+      </button>`);
+    el.classList.add('sh-rowmenu');
+    el.addEventListener('click', async event => {
+      const action = event.target.closest('[data-sheet-act]')?.dataset.sheetAct;
+      if (!action) return;
+      closeAllPanels();
+      if (action === 'rename') renameSheet(sheet);
+      if (action === 'default') {
+        // 没有文本列的表当默认表等于「随手记没地方写」：让它当场说清楚，
+        // 而不是等用户记完一笔才发现什么都没落下。
+        if (String(sheet.kind || '') !== 'preset') {
+          let fields = [];
+          try { fields = await loadFields(sheet.id); } catch (error) { fields = []; }
+          if (!fields.some(field => field.type === 'text')) {
+            toast('这张表没有文本列：快速记录没地方写，先加一列文本', 'info');
+            return;
+          }
         }
-        sheet.task_id = value;
+        try {
+          await setDefaultTableId(sheet.id);
+        } catch (error) {
+          toast(`设为默认表失败：${error?.message || error}`, 'danger');
+          return;
+        }
         await refreshSheets();
-        if (state.sheet && String(state.sheet.id) === String(sheet.id)) renderSheet();
-        toast('已更新归属');
-        return true;
-      }, { btnText: '保存' });
-    }
-    if (action === 'delete') {
-      // 预置表是全局捕获（快速记录 / 剪贴板）的落点，删之前必须先有别的表接手，
-      // 否则随手记会写进一条不属于任何表的记录 —— 那等于数据直接蒸发。
-      // 交接入口还没做，所以这里先硬拦，而不是弹一个「确定吗」。
-      if (String(sheet.kind || '') === 'preset') {
-        toast('预置表暂时不能删：它是快速记录的落点，等「设为默认表」做完再放开', 'info');
-        return;
+        toast('已设为默认表：快速记录会写进这里');
       }
-      // 行数优先用列表摘要里的 row_count：从表库删表时这张表没被打开过，state.rows 是空的
-      const total = state.sheet && String(state.sheet.id) === String(sheet.id)
-        ? state.rows.length
-        : Number(sheet.row_count) || 0;
-      window.showModal?.('删除表格', `<p style="margin:0;">删除「${escapeHtml(sheet.name)}」${total ? `以及它的 ${total} 条记录` : ''}？此操作无法撤销。</p>`, null, async () => {
-        const wasOpen = state.sheet && String(state.sheet.id) === String(sheet.id);
-        try {
-          await deleteSheet(sheet.id);
-        } catch (error) {
-          toast(`删除失败：${error?.message || error}`, 'danger');
-          return false;
-        }
-        if (wasOpen) backToLibrary();
-        else await refreshSheets();
-        toast('表格已删除');
-        return true;
-      }, { danger: true, btnText: '删除' });
-    }
-  });
+      if (action === 'task') {
+        const taskOptions = ['<option value="">不归属任务</option>', ...state.tasks.map(task => `<option value="${escapeHtml(task.id)}" ${String(task.id) === String(sheet.task_id) ? 'selected' : ''}>${escapeHtml(task.label)}${task.done ? '（已完成）' : ''}</option>`)].join('');
+        window.showModal?.('改所属任务', `<div class="sh-modal"><label class="sh-label">所属任务</label><select class="sh-select" data-task>${taskOptions}</select></div>`, null, async modalBody => {
+          const value = modalBody.querySelector('[data-task]')?.value || null;
+          try {
+            await updateSheet(sheet.id, { task_id: value == null ? null : Number(value) });
+          } catch (error) {
+            toast(`更新归属失败：${error?.message || error}`, 'danger');
+            return false;
+          }
+          sheet.task_id = value;
+          await refreshSheets();
+          if (state.sheet && String(state.sheet.id) === String(sheet.id)) renderSheet();
+          toast('已更新归属');
+          return true;
+        }, { btnText: '保存' });
+      }
+      if (action === 'delete') {
+        // 行数优先用列表摘要里的 row_count：从表库删表时这张表没被打开过，state.rows 是空的
+        const total = state.sheet && String(state.sheet.id) === String(sheet.id)
+          ? state.rows.length
+          : Number(sheet.row_count) || 0;
+        // 预置表的行不在 sheet_field / sheet_id 体系里，删表会连它的记录一起走。
+        // 这句话必须写在按钮之前 —— 用户点的那一下，代价得让他先看见。
+        const presetHint = String(sheet.kind || '') === 'preset'
+          ? '<br>它的记录会一起清掉（标题、正文、分类、附件都在里面），无法撤销。'
+          : '此操作无法撤销。';
+        window.showModal?.('删除表格', `<p style="margin:0;">删除「${escapeHtml(sheet.name)}」${total ? `以及它的 ${total} 条记录` : ''}？${presetHint}</p>`, null, async () => {
+          const wasOpen = state.sheet && String(state.sheet.id) === String(sheet.id);
+          try {
+            await deleteSheet(sheet.id);
+          } catch (error) {
+            const message = String(error?.message || error);
+            toast(message.startsWith('这是最后一张表') ? message : `删除失败：${message}`, 'danger');
+            return false;
+          }
+          if (wasOpen) backToLibrary();
+          else await refreshSheets();
+          toast('表格已删除');
+          return true;
+        }, { danger: true, btnText: '删除' });
+      }
+    });
+  })();
 }
 
 // 表库里按 id 打开菜单：宿主只拿得到列表摘要，不持有 sheet 对象。
@@ -2359,10 +2395,22 @@ function onSelectPointerMove(event) {
     grid.sel.select(dragSel.r, dragSel.c);
   }
 
-  const under = document.elementFromPoint(event.clientX, event.clientY)?.closest('.sh-cell');
-  if (!under || under.dataset.rowindex == null) return;
-  const r = Number(under.dataset.rowindex);
-  const c = Number(under.dataset.col);
+  const el = document.elementFromPoint(event.clientX, event.clientY);
+  const under = el?.closest?.('.sh-cell');
+  let r;
+  let c;
+  if (under && under.dataset.rowindex != null) {
+    r = Number(under.dataset.rowindex);
+    c = Number(under.dataset.col);
+  } else {
+    // 拖框擦到行号栏：按 Excel 的规矩「补到第一列」，而不是原地卡住。
+    // 卡住的后果是松手时那一下 click 落到行号上，看起来就像「框选跑成了选整行」。
+    const tr = el?.closest?.('.sh-row');
+    const first = tr?.querySelector?.('.sh-cell[data-col="0"]');
+    if (!first || first.dataset.rowindex == null) return;
+    r = Number(first.dataset.rowindex);
+    c = 0;
+  }
   if (dragSel.last && dragSel.last.r === r && dragSel.last.c === c) return;
   dragSel.last = { r, c };
   if (dragSel.raf) return; // 一帧只画一次
@@ -2464,6 +2512,8 @@ function mountGestures(rootEl) {
     root: rootEl,
     rowSelector: '.sh-row',
     cellSelector: '.sh-cell',
+    // 行高只从行号栏拖：单元格上下边缘用来「选下一格」，不再兼任行高抓手
+    edgeSelector: '.sh-td-index',
     min: 28,
     max: 600,
     isBlocked: isEditingCell,

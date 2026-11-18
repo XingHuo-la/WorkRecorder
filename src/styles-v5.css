@@ -903,6 +903,14 @@ body[data-skin="v4"] .sh-menu-note {
   line-height: 1.6 !important;
 }
 
+/* 「默认」徽标：和「预置」同形、深一档。
+   预置说的是出身（它从哪来），默认说的是落点（快速记录写哪儿）——
+   后者会随用户操作变，所以给更清楚的对比度。 */
+body[data-skin="v4"] .lib-badge.is-default {
+  border-color: color-mix(in srgb, var(--color-text) 34%, transparent) !important;
+  color: var(--v4-text-2) !important;
+}
+
 /* 确认框正文：两行（标题 / 从哪到哪），行高比常规松一点，
    因为这两行是要被逐字核对的内容，不是说明文字。 */
 body[data-skin="v4"] .vp-confirm {
@@ -915,3 +923,84 @@ body[data-skin="v4"] .vp-confirm {
 
 
 
+
+/* =====================================================================
+   10. 行高自适应：单元格盒 / 行号块不再停在顶部那 46px
+   ---------------------------------------------------------------------
+   症状：行被拉高后，行号底色、单元格选中框、填充柄全都只有上半截。
+   根因一条：.sh-cell / .wr-cell 是 td 里的普通块，`height:100%` 在 td 里
+   解析不出具体高度（实测 112 的行里它仍是 46），只能保持自然高度。
+
+   办法：给 td 补一层 `height: inherit`。tr 上有内联高度时，td 的 computed
+   height 就是那个具体值，子层的 100% 才有得算。
+   实测（无头 Chrome 跑真实四层样式）：
+     112 的行 → td 112 / 单元格 111 / 行号块 111；
+     没有内联高度的普通行仍是 47 / 46，一行未变（无回归）。
+   ===================================================================== */
+
+body[data-skin="v4"] .sh-row[style] > .sh-td { height: inherit !important; }
+body[data-skin="v4"] .sh-row[style] > .sh-td > .sh-cell { height: 100% !important; }
+body[data-skin="v4"] .wr-table-row[style] > .wr-table-td { height: inherit !important; }
+body[data-skin="v4"] .wr-table-row[style] > .wr-table-td > .wr-cell { height: 100% !important; }
+
+/* 行号块铺满整行：styles-v4 给 `.sheet-pane .sh-rownum` 钉了 46px，
+   权重压过 styles.css 里「absolute + bottom:0」那条，于是拉高的行里
+   行号底色只剩顶上一条。这里用更高一档的权重掰回来（不去改 v4 那条：
+   它同时管着别的表，改它会把那边一起带偏）。 */
+body[data-skin="v4"] .sh-td-index .sh-index-cell .sh-rownum,
+body[data-skin="v4"] .sh-td-index .sh-index-cell .sh-rowmore {
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  height: auto !important;
+  width: auto !important;
+  margin: 0 !important;
+}
+
+/* 行高拖动只认行号栏，光标提示也跟着挪过去。
+   注意：.sh-rownum / .sh-rowmore 现在铺满整格（上面那条 inset 规则），
+   它们自己写的是 cursor:pointer，所以这里必须一路点到子元素上，
+   否则「能拖」这件事在光标上完全看不见。 */
+body[data-skin="v4"] .sh-row.is-row-edge .sh-td-index,
+body[data-skin="v4"] .sh-row.is-row-edge .sh-td-index .sh-index-cell,
+body[data-skin="v4"] .sh-row.is-row-edge .sh-td-index .sh-rownum,
+body[data-skin="v4"] .sh-row.is-row-edge .sh-td-index .sh-rowmore,
+body[data-skin="v4"] .wr-table-row.is-row-edge .wr-rownum {
+  cursor: row-resize !important;
+}
+
+/* =====================================================================
+   11. 默认表（.wr-*）补上自建表（.sh-*）那两处 Excel 特征
+   ---------------------------------------------------------------------
+   同一个产品里两张表长成两个产品，差别就落在「列间竖线」和「表头 #」上：
+   自建表有 WPS 式网格线，默认表只有行线，看着像卡片列表而不是表格。
+   只补这两条视觉，不动结构。行号选中块（.wr-rownum.is-sel）本来就有。
+   ===================================================================== */
+
+body[data-skin="v4"] .wr-table-td:not(.wr-table-td-add),
+body[data-skin="v4"] .wr-table-th:not(.wr-table-th-add) {
+  border-right: 1px solid var(--v4-line) !important;
+}
+
+/* 用 text-align / vertical-align 居中，不用 flex：
+   给 <th> 写 display:flex 会让它不再是 table-cell，整列宽度跟着乱。 */
+body[data-skin="v4"] .wr-th-rownum {
+  text-align: center !important;
+  vertical-align: middle !important;
+}
+body[data-skin="v4"] .wr-th-rownum::before {
+  content: '#';
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--v4-text-3);
+}
+
+/* 拉高的行里，多行文字跟着单元格居中。
+   `.sh-row[style] .sh-cell.is-wrap` 原来写的是「贴顶 + 9px」——那是行高刚好够用时
+   的写法；一旦行高到 100 多像素，贴顶就变成「内容缩在右上角、下面空一大片」。
+   `[style]` 的行同时带 is-clamped（行内已按可用高度算好截断行数），不会溢出，居中安全。 */
+body[data-skin="v4"] .sh-row[style] > .sh-td > .sh-cell.is-wrap {
+  align-items: center !important;
+  padding-top: 0 !important;
+}

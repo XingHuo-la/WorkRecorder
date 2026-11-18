@@ -23,6 +23,7 @@ import {
   readTableRows,
   saveTableRow,
   insertTableRow,
+  getDefaultTableId,
   VIEW_FORMS,
   viewFormLabel,
 } from './sheetStore.js';
@@ -677,6 +678,7 @@ function setupRecordsView() {
 
   let sheetList = [];
   let sheetReady = false;
+  let defaultTableId = null;  // 快速记录的落点，列表上用「默认」徽标标出来
   let mode = 'list';         // list | detail
   let current = '';          // table:<id>
   let currentTable = null;   // 正在看的那张表（预置表也是普通一行）
@@ -689,12 +691,24 @@ function setupRecordsView() {
 
   const isPreset = table => String(table?.kind || '') === 'preset';
 
+  // 默认表决定「快速记录写哪儿」。取它要 await，所以列表重画前先刷一次，
+  // 否则删表 / 改默认之后列表上的徽标会停在上一个状态。
+  const refreshDefaultTableId = async () => {
+    try {
+      defaultTableId = await getDefaultTableId();
+    } catch (error) {
+      defaultTableId = null;
+    }
+  };
+
   const renderLibrary = () => {
     // 基础表以前是硬编码的第一行（is-fixed，没有 ⋯ 菜单）。
     // v15 起它只是 sheet 里 kind='preset' 的一行，所以这里不再特判位置，
     // 只多一个「预置」徽标 —— 排序值 -1 让它在最上面，但那是排序，不是特权。
     const rows = sheetList.map(item => {
       const preset = isPreset(item);
+      // 默认表才是「这类表」的身份：可以没有预置表，但一定有一张默认表。
+      const isDefault = String(item.id) === String(defaultTableId);
       const key = `table:${item.id}`;
       const fieldCount = Number(item.field_count ?? item.fieldCount ?? 0);
       const rowCount = Number(item.row_count ?? item.rowCount ?? 0);
@@ -703,7 +717,7 @@ function setupRecordsView() {
       <div class="lib-row${preset ? ' is-preset' : ''}" role="listitem" tabindex="0" data-key="${escapeHtml(key)}">
         <span class="lib-icon">${icon('ic-table')}</span>
         <span class="lib-main">
-          <span class="lib-name">${escapeHtml(item.name)}${preset ? '<i class="lib-badge">预置</i>' : ''}</span>
+          <span class="lib-name">${escapeHtml(item.name)}${preset ? '<i class="lib-badge">预置</i>' : ''}${isDefault ? '<i class="lib-badge is-default">默认</i>' : ''}</span>
           <span class="lib-meta">${fieldCount} 字段 · ${rowCount} 条记录${viewCount > 1 ? ` · ${viewCount} 个视图` : ''}</span>
         </span>
         <button type="button" class="lib-more" data-more="${escapeHtml(key)}" aria-label="重命名或删除" title="重命名 / 删除">${icon('ic-dots')}</button>
@@ -930,6 +944,7 @@ function setupRecordsView() {
     try { sheetList = await refreshSheetList(); } catch (error) {
       logToFile('error', `[records-view] 刷新表格列表失败: ${error?.stack || error}`);
     }
+    await refreshDefaultTableId();
     renderLibrary();
   };
 
@@ -1133,8 +1148,11 @@ function setupRecordsView() {
   // 「自动进表」只给新建用：新建后 currentSheetId 指向一张**上一版列表里没有**的表。
   // 以前这里只看 currentSheetId 有没有值 —— 于是「打开过某张表 → 返回列表 → 改名 / 删别人」
   // 都会被拽回那张表里，用户只是想改个名字却被弹进表内。
-  onSheetListChange((list, meta) => {
+  onSheetListChange(async (list, meta) => {
     sheetList = Array.isArray(list) ? list : [];
+    // 默认表存在 settings 里：改默认 / 删掉默认表之后，徽标和菜单状态都要跟着换，
+    // 所以在重画之前先取一次（一次 settings 查询，代价可以忽略）。
+    await refreshDefaultTableId();
     if (mode === 'list') renderLibrary();
 
     // 改名后表头要跟着变：列表重画了，但详情页标题是 openDetail 时写死的那一份。
@@ -1184,6 +1202,15 @@ function setupRecordsView() {
 
   // 从别的页切回表格页：回到表库并刷新（别处可能新建/删过表）。
   window.__wrRefreshRecordTable = () => backToList();
+
+  // 快速记录写完之后的刷新口：记录可能写进了「默认表」，
+  // 而当前正看着的看板 / 画廊不会自己知道。只刷非表格形态 ——
+  // 表格形态各有自己的重载路径（重载会丢掉滚动位置和选区），别在这儿插手。
+  window.__wrRefreshOpenView = async () => {
+    if (!currentTable || !currentView || currentView.form === 'table') return;
+    viewData = { tableId: null, fields: [], rows: [] };
+    await applyView(currentView);
+  };
   // 命令面板「新建表格」：先回表格页，再拉起工作表原有的新建弹层
   window.__wrNewSheet = () => {
     window.__wrRouteTo?.('nav-table');
@@ -1201,6 +1228,7 @@ function setupRecordsView() {
       logToFile('error', `[records-view] 读取表格列表失败: ${error?.stack || error}`);
       sheetList = getSheetList();
     }
+    await refreshDefaultTableId();
     renderLibrary();
     setMode('list');
   };

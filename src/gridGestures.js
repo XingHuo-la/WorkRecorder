@@ -206,6 +206,8 @@ export function mountFillHandle(opts) {
  * @param {HTMLElement} opts.root
  * @param {string} opts.rowSelector     行元素选择器，如 '.wr-table-row'
  * @param {string} opts.cellSelector
+ * @param {string} [opts.edgeSelector]  命中区限定在哪个元素里（行号格）。
+ *   给了它，就只有「行号栏的上下交界」能拖行高；不给＝整行下缘任意位置都能拖。
  * @param {number} [opts.min] @param {number} [opts.max]
  * @param {() => boolean} [opts.isBlocked]
  * @param {(rowEl, px) => any} opts.onResize  px 为最终高度（已夹在 min..max）
@@ -214,7 +216,7 @@ export function mountFillHandle(opts) {
  */
 export function mountRowResizer(opts) {
   const {
-    root, rowSelector, cellSelector,
+    root, rowSelector, cellSelector, edgeSelector = null,
     min = 32, max = 600, isBlocked = () => false,
     onResize, onAutoFit,
   } = opts;
@@ -227,7 +229,10 @@ export function mountRowResizer(opts) {
   let drag = null;
   let swallowUntil = 0;
 
-  function nearEdge(rowEl, clientY) {
+  // 行高只在行号栏上才能拖（Excel 的规矩）：单元格上下边缘是「选下一格」的手感，
+  // 在那里也能拖行高，等于每次想选中都提心吊胆。
+  function nearEdge(rowEl, clientY, target) {
+    if (edgeSelector && !target?.closest?.(edgeSelector)) return false;
     const rect = rowEl.getBoundingClientRect();
     const gap = rect.bottom - clientY;
     return gap >= -1 && gap <= EDGE;
@@ -242,7 +247,7 @@ export function mountRowResizer(opts) {
   function onHover(event) {
     if (drag || isBlocked()) return;
     const rowEl = event.target.closest?.(rowSelector);
-    const onEdge = Boolean(rowEl) && nearEdge(rowEl, event.clientY);
+    const onEdge = Boolean(rowEl) && nearEdge(rowEl, event.clientY, event.target);
     root.querySelectorAll(`${rowSelector}.is-row-edge`).forEach(el => {
       if (!onEdge || el !== rowEl) el.classList.remove('is-row-edge');
     });
@@ -274,7 +279,7 @@ export function mountRowResizer(opts) {
   function onDown(event) {
     if (event.button !== 0) return false;
     const rowEl = event.target.closest?.(rowSelector);
-    if (!rowEl || isBlocked() || !nearEdge(rowEl, event.clientY)) return false;
+    if (!rowEl || isBlocked() || !nearEdge(rowEl, event.clientY, event.target)) return false;
     // 捕获阶段阻断：宿主自己的 pointerdown（列宽抓手等）在冒泡阶段，别让它再跑一遍
     event.stopPropagation();
     drag = { rowEl, startY: event.clientY, startPx: rowEl.getBoundingClientRect().height, px: 0, moved: false };
@@ -287,7 +292,7 @@ export function mountRowResizer(opts) {
 
   function onDblClick(event) {
     const rowEl = event.target.closest?.(rowSelector);
-    if (!rowEl || isBlocked() || !nearEdge(rowEl, event.clientY)) return false;
+    if (!rowEl || isBlocked() || !nearEdge(rowEl, event.clientY, event.target)) return false;
     // 必须阻断：否则宿主的 dblclick 会把这一下当成「双击单元格 → 进编辑」
     event.preventDefault();
     event.stopPropagation();

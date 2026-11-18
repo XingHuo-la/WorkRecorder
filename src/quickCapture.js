@@ -12,6 +12,9 @@ import {
   setupTaskRelationPicker,
   validateTaskRelation
 } from './taskRelations.js';
+// 落点由「默认表」决定（v15 起预置表不再特殊）。这里只问两句：
+// 该写哪张表、这张表怎么写一行 —— 表长什么样是 sheetStore 的事。
+import { resolveCaptureTable, insertCaptureRow } from './sheetStore.js';
 
 let quickToastTimer = null;
 let inboxVisibleLimit = 10;
@@ -67,6 +70,15 @@ async function refreshAfterQuickSave() {
   // 笔记列表现已由 notesEditor 管理
   if (typeof window.__wrRefreshNotes === 'function') window.__wrRefreshNotes();
   if (typeof window.updateWorkspaceSummary === 'function') window.updateWorkspaceSummary();
+  // 正在看的是看板 / 画廊时让它重新取一次行：记完一笔界面必须动一下，
+  // 否则用户会以为没存上，再记一遍就成了两条。表格形态各有自己的刷新机制，这里不插手。
+  if (typeof window.__wrRefreshOpenView === 'function') {
+    try {
+      await window.__wrRefreshOpenView();
+    } catch (error) {
+      /* 视图刷新失败不影响这条已经存下的记录 */
+    }
+  }
 }
 
 function showQuickToast(message, tone = 'success') {
@@ -82,18 +94,45 @@ function showQuickToast(message, tone = 'success') {
   }, 2200);
 }
 
+// 最近一次保存落到了哪张表（普通表才记名字，预置表保持原来的提示文案）。
+// 用模块级变量而不是改一长串返回值：调用方只关心 Boolean(saved)。
+let quickSaveTarget = '';
+
+// 写一条「记录」类内容（未整理 / 已整理都用它，只差 status 与 record_type）。
+//
+// 预置表继续走 logs 视图那套 SQL：它写的是标题/正文/分类/时间/状态一整套真实列，
+// 换成直接插 record 会丢掉 remark / record_type 这些视图映射的字段。
+// 只有「默认表被换成普通表」时才走 custom JSON 那条路，且只写文本列。
+async function insertQuickLog(content, title, meta, { status, recordType }) {
+  let table = null;
+  try {
+    table = await resolveCaptureTable();
+  } catch (error) {
+    table = null; // 读不到就按老路子写预置表，别因为配置坏了把这一句丢了
+  }
+
+  // 没有能落笔的表：宁可报「保存失败（草稿已保留）」，也不要往 logs 视图里插一条
+  // 没有任何表能读到的记录 —— 那才是真正的数据蒸发。
+  if (!table) return null;
+
+  if (table.kind === 'preset') {
+    quickSaveTarget = '';
+    return dbExecute(
+      "INSERT INTO logs (date, time, text, tag, sub_tag, detail, remark, linked_todo, deadline, is_overdue, status, record_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [meta.dateStr, meta.timeStr, title, meta.tag, meta.subTag, content, "", "", meta.deadline, meta.isOverdue, status, recordType]
+    );
+  }
+
+  quickSaveTarget = table.name || '';
+  return insertCaptureRow(table, { title, body: content });
+}
+
 async function saveAsQuickLog(content, title, meta) {
-  return dbExecute(
-    "INSERT INTO logs (date, time, text, tag, sub_tag, detail, remark, linked_todo, deadline, is_overdue, status, record_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    [meta.dateStr, meta.timeStr, title, meta.tag, meta.subTag, content, "", "", meta.deadline, meta.isOverdue, "unprocessed", "quick"]
-  );
+  return insertQuickLog(content, title, meta, { status: 'unprocessed', recordType: 'quick' });
 }
 
 async function saveAsProcessedLog(content, title, meta) {
-  return dbExecute(
-    "INSERT INTO logs (date, time, text, tag, sub_tag, detail, remark, linked_todo, deadline, is_overdue, status, record_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    [meta.dateStr, meta.timeStr, title, meta.tag, meta.subTag, content, "", "", meta.deadline, meta.isOverdue, "processed", "log"]
-  );
+  return insertQuickLog(content, title, meta, { status: 'processed', recordType: 'log' });
 }
 
 async function saveAsTodo(content, title, meta) {
@@ -1264,6 +1303,7 @@ export async function saveQuickRecord(inputEl) {
     const meta = resolveQuickMeta();
     const title = deriveRecordTitle(content);
     let saved = false;
+    quickSaveTarget = '';
 
     if (meta.recordType === 'todo') {
       const createdTodoId = await saveAsTodo(content, title, meta);
@@ -1287,7 +1327,13 @@ export async function saveQuickRecord(inputEl) {
     await createFollowUpTodo(content, meta);
     clearQuickInputs(input);
     await refreshAfterQuickSave();
-    showQuickToast(meta.recordType === 'quick' ? '已保存到待整理' : '已保存');
+    // 落点是普通表时要说清去了哪儿：那条路不进「待整理」，
+    // 提示里还写「已保存到待整理」就是骗人（待整理列表里根本找不到它）。
+    showQuickToast(
+      quickSaveTarget
+        ? `已记到「${quickSaveTarget}」`
+        : meta.recordType === 'quick' ? '已保存到待整理' : '已保存'
+    );
   } catch (error) {
     console.error('快速记录保存失败', error);
     showQuickToast('保存失败，草稿已保留', 'warning');

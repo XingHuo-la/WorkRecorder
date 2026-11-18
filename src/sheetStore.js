@@ -325,6 +325,15 @@ export async function touchSheet(sheetId) {
 }
 
 export async function deleteSheet(sheetId) {
+  // 最后一张表不给删：快速记录总要有个落点。删空之后「新建记录」会写进虚无，
+  // 而用户看到的只是「表没了」—— 数据并没有消失，只是再没有任何地方能读到它。
+  const counted = await db().dbQuery('SELECT COUNT(*) AS n FROM sheet');
+  if (Number(counted?.[0]?.n || 0) <= 1) {
+    throw new Error('这是最后一张表：删掉之后，新建的记录没有地方可落');
+  }
+  const sheetRows = await db().dbQuery('SELECT kind FROM sheet WHERE id = ?', [sheetId]);
+  const sheetKind = String(sheetRows?.[0]?.kind || 'table');
+
   await db().dbExecute('DELETE FROM sheet_field WHERE sheet_id = ?', [sheetId]);
 
   // kind 是「出生地」，删表的语义按它分两类，顺序不能反：
@@ -339,11 +348,30 @@ export async function deleteSheet(sheetId) {
   //    而 'null' 既不满足 IS NULL 也不等于任何 sheet_id，那批行会永远查不到、也删不掉。
   await db().dbExecute('UPDATE record SET sheet_id = NULL WHERE sheet_id = ?', [sheetId]);
 
+  // 3) 预置表是例外：它的行不挂 sheet_id（kind='log'，出处算「记录页」），
+  //    上面两条 sheet_id 规则一条都命中不了。不单独处理的话就会「表没了、记录还在
+  //    历史/待整理里飘」，再也删不干净 —— 这比连数据一起删更糟。
+  if (sheetKind === TABLE_KIND_PRESET) {
+    await db().dbExecute(
+      "UPDATE record SET deleted_at = ?, kind = 'log#deleted' WHERE kind = 'log' AND deleted_at = ''",
+      [nowStamp()],
+    );
+  }
+
   // 视图随表一起消失。视图只存配置，删掉不丢一条数据；
   // 留着会变成孤儿（table_id 指向不存在的表），下张表复用 id 时会串味。
   await db().dbExecute('DELETE FROM view_def WHERE table_id = ?', [sheetId]);
 
   await db().dbExecute('DELETE FROM sheet WHERE id = ?', [sheetId]);
+
+  // 默认表被删了就顺位给剩下第一张 —— settings 里指向一个不存在的 id，
+  // 下次快速记录会静默找不到落点。
+  const currentDefault = await getDefaultTableId();
+  if (String(currentDefault) === String(sheetId)) {
+    const next = await db().dbQuery('SELECT id FROM sheet ORDER BY sort, id LIMIT 1');
+    if (next?.[0]) await setDefaultTableId(next[0].id);
+    else await db().dbExecute("DELETE FROM settings WHERE key = 'default_table_id'");
+  }
 }
 
 // ==========================================
@@ -813,5 +841,66 @@ export async function getDefaultTableId() {
 export async function setDefaultTableId(tableId) {
   if (tableId == null) return;
   await db().dbExecute("INSERT OR REPLACE INTO settings (key, value) VALUES ('default_table_id', ?)", [String(tableId)]);
+}
+
+// ==========================================
+// 快速记录的落点
+// ==========================================
+
+/**
+ * 随手记该写进哪张表。
+ *
+ * 规则：先认 settings.default_table_id；它指向的表被删了、或者一列文本都没有
+ * （内容无处可写），就退到第一张能用的表。**绝不能因为配置坏了就把内容丢掉** ——
+ * 用户写下来的那一句话，比「配置正确」重要得多。
+ */
+export async function resolveCaptureTable() {
+  const tables = await listTables();
+  if (!tables.length) return null;
+
+  const usable = async table => {
+    const fields = await readTableFields(table);
+    return fields.some(field => field.type === 'text');
+  };
+
+  const wanted = await getDefaultTableId();
+  const picked = tables.find(item => String(item.id) === String(wanted));
+  if (picked && (await usable(picked))) return picked;
+
+  for (const table of tables) {
+    if (await usable(table)) return table;
+  }
+  return null;
+}
+
+/**
+ * 把一次快速记录写进「普通表」（预置表仍走原来的 logs 视图 SQL，字段语义齐全）。
+ *
+ * 只写文本列，其余列留空。不做字段猜测映射 —— 把正文塞进单选、把时间猜成日期，
+ * 迟早写出一堆错数据，而且错得比「留空」更难发现。
+ * 只有一列文本时不丢信息：整段写进那一列，而不是只写被截断的标题。
+ */
+export async function insertCaptureRow(table, { title = '', body = '' } = {}) {
+  if (!table) return null;
+  const fields = await readTableFields(table);
+  const texts = fields.filter(field => field.type === 'text');
+  if (!texts.length) return null;
+
+  const titleField =
+    texts.find(field => /标题|题目|名称|title|name|事项/i.test(`${field.key} ${field.label}`)) || texts[0];
+  const bodyField =
+    texts.find(field => field.key !== titleField.key && /正文|内容|描述|备注|body|detail|note|desc/i.test(`${field.key} ${field.label}`)) ||
+    texts.find(field => field.key !== titleField.key) ||
+    null;
+
+  const full = String(body || title || '').trim();
+  const values = {};
+  if (bodyField) {
+    values[titleField.key] = String(title || '').trim() || full;
+    values[bodyField.key] = full;
+  } else {
+    values[titleField.key] = full;
+  }
+  return insertRow(table.id, values);
 }
 
