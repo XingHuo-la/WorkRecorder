@@ -28,3 +28,6 @@ src-tauri/_debug/
 *.njsproj
 *.sln
 *.sw?
+
+# 项目记忆（.workbuddy/memory 等）不入库
+.workbuddy/

@@ -217,19 +217,13 @@ export const SHEET_TEMPLATES = [
 // ==========================================
 
 export async function listSheets() {
+  // 列表只有一个真相：listTables。
+  // 以前这里自己拼一套 COUNT，v15 之后预置表的行不在 sheet_id 上（是 kind='log'），
+  // 两套 SQL 立刻会给出两个不同的行数 —— 列表写 12 条、点进去 0 条。
   // anchor_record_id 是 task_id 的**只读别名**，语义是「这张表挂在哪一行上」。
   // 刻意不叫 parent_record_id：那会被读成「父表」，而表和行不是父子从属。
   // 新代码一律读别名，旧代码继续读 task_id；将来真要改名只改这一处 + 一条迁移。
-  const rows = await db().dbQuery(
-    `SELECT s.id, s.name, s.task_id, s.task_id AS anchor_record_id,
-            s.created_at, s.updated_at, s.sort,
-            (SELECT COUNT(*) FROM sheet_field f WHERE f.sheet_id = s.id) AS field_count,
-            (SELECT COUNT(*) FROM record r WHERE r.sheet_id = s.id AND r.deleted_at = '') AS row_count,
-            (SELECT r2.updated_at FROM record r2 WHERE r2.sheet_id = s.id AND r2.deleted_at = '' ORDER BY r2.updated_at DESC LIMIT 1) AS last_at
-     FROM sheet s
-     ORDER BY s.sort, s.id`
-  );
-  return Array.isArray(rows) ? rows : [];
+  return listTables();
 }
 
 // 库视图卡片上要展示「这张表有哪些列」，所以一次把所有字段取回来按表分组。
@@ -310,6 +304,10 @@ export async function createSheet({ name, taskId = null, templateKey = 'blank' }
     sort += 1;
   }
 
+  // 每张新表自带一个「表格」视图。没有它，表在视图页签里就是空白的，
+  // 用户会以为表建失败了 —— 视图是表的默认读法，不是可选装饰。
+  await createView(sheetId, { name: '表格', form: 'table' });
+
   return sheetId;
 }
 
@@ -340,6 +338,10 @@ export async function deleteSheet(sheetId) {
   //    ⚠️ NULL 只能写成 SQL 字面量：dbExecute 会 params.map(String)，传 null 落库是字符串 'null'，
   //    而 'null' 既不满足 IS NULL 也不等于任何 sheet_id，那批行会永远查不到、也删不掉。
   await db().dbExecute('UPDATE record SET sheet_id = NULL WHERE sheet_id = ?', [sheetId]);
+
+  // 视图随表一起消失。视图只存配置，删掉不丢一条数据；
+  // 留着会变成孤儿（table_id 指向不存在的表），下张表复用 id 时会串味。
+  await db().dbExecute('DELETE FROM view_def WHERE table_id = ?', [sheetId]);
 
   await db().dbExecute('DELETE FROM sheet WHERE id = ?', [sheetId]);
 }
@@ -530,3 +532,286 @@ export function describeField(field) {
   }
   return label;
 }
+
+// ==========================================
+// 表 / 视图分层（v15）
+//
+// 一句话：**表存数据，视图只存看法**。
+//   sheet.kind='preset' 的那一行是预置表（原来的「基础表」），其余是自建表。
+//   视图 = view_def 里的一行：绑哪张表 + 用什么形态 + 分组/标题/封面等配置。
+//   视图里改值照样落到 record，但视图不能加字段、不能改类型 —— 那是表的职责。
+//
+// 预置表的字段仍读 field_def、行仍读 kind='log' 的 record。
+// 刻意不复制进 sheet_field：一旦复制就有两份真相，改一处忘一处立刻漂移。
+// ==========================================
+
+export const TABLE_KIND_PRESET = 'preset';
+
+// ready=false 的形态还在路上：菜单里不出现，避免点了没反应。
+export const VIEW_FORMS = [
+  { form: 'table', label: '表格', desc: '一行一条，横向看字段', ready: true },
+  { form: 'board', label: '看板', desc: '按单选列分栏，拖卡片换状态', ready: true },
+  { form: 'gallery', label: '画廊', desc: '大卡片带封面，适合图多的表', ready: true },
+  { form: 'calendar', label: '日历', desc: '按日期铺到月历上', ready: false },
+];
+
+export function viewFormLabel(form) {
+  return VIEW_FORMS.find(item => item.form === form)?.label || form || '视图';
+}
+
+// 视图配置的默认值集中在这里。任何读配置的地方都必须过一遍这个函数，
+// 否则老视图（config='{}'）会让渲染层拿到 undefined 再炸在某个 .map 上。
+export function parseViewConfig(view) {
+  const raw = view?.config;
+  let parsed = {};
+  if (raw && typeof raw === 'object') parsed = raw;
+  else if (typeof raw === 'string' && raw.trim()) {
+    try {
+      parsed = JSON.parse(raw) || {};
+    } catch (error) {
+      parsed = {};
+    }
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) parsed = {};
+  const str = value => (typeof value === 'string' ? value : '');
+  return {
+    groupBy: str(parsed.groupBy),
+    dateField: str(parsed.dateField),
+    titleField: str(parsed.titleField),
+    coverField: str(parsed.coverField),
+    filter: Array.isArray(parsed.filter) ? parsed.filter : [],
+    sorts: Array.isArray(parsed.sorts) ? parsed.sorts : [],
+    fields: Array.isArray(parsed.fields) ? parsed.fields : [],
+    // 拖拽锁：这张看板的卡片要不要「拖一下就改数据」。只对看板有意义，
+    // 但存在视图配置里 —— 哪张看板要紧是逐个视图的判断，不是全局开关。
+    lockDrag: parsed.lockDrag === true,
+  };
+}
+
+export async function listTables() {
+  // field_count / row_count 对两种表各算各的：
+  // 预置表的字段在 field_def、行是 kind='log'；自建表反过来。
+  // 行数按 sheet_id 数（不按 kind），这样「移入表格的记录」也算进来，
+  // 与 loadRows 的口径一致 —— 卡片上写 12 条，点进去必须真有 12 条。
+  const rows = await db().dbQuery(
+    `SELECT s.id, s.name, s.kind, s.task_id, s.task_id AS anchor_record_id,
+            s.created_at, s.updated_at, s.sort,
+            CASE WHEN s.kind = 'preset'
+                 THEN (SELECT COUNT(*) FROM field_def WHERE entity = 'log')
+                 ELSE (SELECT COUNT(*) FROM sheet_field f WHERE f.sheet_id = s.id) END AS field_count,
+            CASE WHEN s.kind = 'preset'
+                 THEN (SELECT COUNT(*) FROM record r WHERE r.kind = 'log' AND r.deleted_at = '')
+                 ELSE (SELECT COUNT(*) FROM record r WHERE r.sheet_id = s.id AND r.deleted_at = '') END AS row_count,
+            (SELECT COUNT(*) FROM view_def v WHERE v.table_id = s.id) AS view_count
+       FROM sheet s
+      ORDER BY s.sort, s.id`
+  );
+  return (Array.isArray(rows) ? rows : []).map(item => ({
+    ...item,
+    kind: item.kind || 'table',
+    fieldCount: Number(item.field_count) || 0,
+    rowCount: Number(item.row_count) || 0,
+    viewCount: Number(item.view_count) || 0,
+    isPreset: (item.kind || 'table') === TABLE_KIND_PRESET,
+  }));
+}
+
+export async function loadTable(tableId) {
+  const list = await listTables();
+  return list.find(item => String(item.id) === String(tableId)) || null;
+}
+
+export async function readTableFields(table) {
+  if (!table) return [];
+  if (table.kind === TABLE_KIND_PRESET) {
+    const rows = await db().dbQuery(
+      'SELECT id, key, label, type, options, width, sort, visible FROM field_def WHERE entity = ? ORDER BY sort, id',
+      ['log']
+    );
+    return (Array.isArray(rows) ? rows : []).map(item => ({
+      ...item,
+      sheet_id: table.id,
+      visible: Number(item.visible) === 0 ? 0 : 1,
+      width: Number(item.width) || defaultWidthFor(item.type),
+    }));
+  }
+  return loadFields(table.id);
+}
+
+// 预置表的行 → 统一 values 对象。
+// 这一层是「两种物理形态、一种读法」的接缝：上面所有视图只认 values，
+// 不再关心这个值原来躺在一个真列里还是 custom JSON 里。
+// status 把 'inbox' 归一到 'unprocessed' —— 与 logs 视图、field_def 的选项三者对齐；
+// 不归一的话，「待整理」那 12 条会在看板上掉进「未分组」。
+function presetValues(row) {
+  const custom = parseRowData({ data: row.custom });
+  const subTag = String(row.sub_tag ?? '').trim();
+  const date = String(row.happened_date ?? '');
+  const time = String(row.happened_time ?? '');
+  return {
+    text: String(row.title ?? ''),
+    tag: String(row.tag ?? ''),
+    sub_tag: subTag ? subTag.split(/[、,，]/).filter(Boolean) : [],
+    date: time && time !== '00:00' ? `${date} ${time}` : date,
+    attachments: Array.isArray(custom.attachments) ? custom.attachments : [],
+    status: row.status === 'inbox' ? 'unprocessed' : String(row.status ?? ''),
+    detail: String(row.body ?? ''),
+  };
+}
+
+export async function readTableRows(table) {
+  if (!table) return [];
+  if (table.kind === TABLE_KIND_PRESET) {
+    // 只读 sheet_id 为空的行：被「移入」某张表的记录已经属于那张表，
+    // 再在预置表里出现一次就是一条记录两个家。
+    const rows = await db().dbQuery(
+      `SELECT id, custom, CAST(sort AS INTEGER) AS sort, height,
+              created_at, updated_at, kind, title, body, parent_id, status,
+              tag, sub_tag, happened_date, happened_time
+         FROM record
+        WHERE kind = 'log' AND deleted_at = '' AND (sheet_id IS NULL OR sheet_id = 0)
+        ORDER BY happened_date DESC, happened_time DESC, id DESC`
+    );
+    return (Array.isArray(rows) ? rows : []).map(item => ({
+      ...item,
+      sheet_id: table.id,
+      values: presetValues(item),
+    }));
+  }
+  return loadRows(table.id);
+}
+
+// values → record 的真列。只给预置表用。
+// ⚠️ 视图里改一格必须落到真列，不能只写 custom：
+// 预置表的界面读的是 title / body / status 这些列，只写 custom 等于改了个没人看的地方，
+// 用户会看到「改了、刷新又变回去」。
+function presetColumnsOf(values) {
+  const raw = values || {};
+  const dateText = String(raw.date ?? '').trim();
+  const [datePart, timePart] = dateText.split(/\s+/);
+  return {
+    title: String(raw.text ?? ''),
+    body: String(raw.detail ?? ''),
+    tag: String(raw.tag ?? ''),
+    sub_tag: Array.isArray(raw.sub_tag) ? raw.sub_tag.join('、') : String(raw.sub_tag ?? ''),
+    happened_date: datePart || '',
+    happened_time: timePart || '',
+    // 反向归一：界面上叫 unprocessed（待整理），record 里历史值是 inbox。
+    // 两处不一致是 v10 合并时留下的，logs 视图在出口做了同样一趟翻译。
+    status: raw.status === 'unprocessed' ? 'inbox' : String(raw.status ?? ''),
+  };
+}
+
+export async function saveTableRow(table, row, values) {
+  if (!table || !row) return;
+  if (table.kind !== TABLE_KIND_PRESET) {
+    await saveRowValues(row.id, values);
+    return;
+  }
+  const columns = presetColumnsOf(values);
+  // custom 要合并写：里面除了 attachments 还躺着白板坐标 _bd 之类的键，
+  // 整列覆写会把它们抹掉（白板上的便签会集体跳回原点）。
+  const custom = parseRowData({ data: row.custom });
+  custom.attachments = Array.isArray(values?.attachments) ? values.attachments : [];
+  await db().dbExecute(
+    `UPDATE record SET title = ?, body = ?, tag = ?, sub_tag = ?,
+            happened_date = ?, happened_time = ?, status = ?, custom = ?, updated_at = ?
+      WHERE id = ?`,
+    [
+      columns.title,
+      columns.body,
+      columns.tag,
+      columns.sub_tag,
+      columns.happened_date,
+      columns.happened_time,
+      columns.status,
+      JSON.stringify(custom),
+      nowStamp(),
+      row.id,
+    ]
+  );
+}
+
+export async function insertTableRow(table, values = {}) {
+  if (!table) return null;
+  if (table.kind !== TABLE_KIND_PRESET) return insertRow(table.id, values);
+
+  const stamp = nowStamp();
+  const columns = presetColumnsOf(values);
+  const custom = {};
+  if (Array.isArray(values?.attachments) && values.attachments.length) custom.attachments = values.attachments;
+  await db().dbExecute(
+    `INSERT INTO record (kind, title, body, tag, sub_tag, happened_date, happened_time,
+                         status, custom, sort, created_at, updated_at, deleted_at)
+     VALUES ('log', ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, '')`,
+    [
+      columns.title,
+      columns.body,
+      columns.tag,
+      columns.sub_tag,
+      columns.happened_date,
+      columns.happened_time,
+      columns.status,
+      JSON.stringify(custom),
+      stamp,
+      stamp,
+    ]
+  );
+  const created = await db().dbQuery('SELECT id FROM record ORDER BY id DESC LIMIT 1');
+  return created?.[0]?.id ?? null;
+}
+
+export async function listViews(tableId) {  const rows = await db().dbQuery(
+    'SELECT id, table_id, name, form, config, sort FROM view_def WHERE table_id = ? ORDER BY sort, id',
+    [tableId]
+  );
+  return (Array.isArray(rows) ? rows : []).map(item => ({
+    ...item,
+    config: parseViewConfig(item),
+  }));
+}
+
+export async function createView(tableId, { name, form = 'table', config = {} } = {}) {
+  const stamp = nowStamp();
+  const maxRows = await db().dbQuery(
+    'SELECT COALESCE(MAX(sort), -1) AS max_sort FROM view_def WHERE table_id = ?',
+    [tableId]
+  );
+  const nextSort = Number(maxRows?.[0]?.max_sort ?? -1) + 1;
+  await db().dbExecute(
+    'INSERT INTO view_def (table_id, name, form, config, sort, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    [tableId, String(name || viewFormLabel(form)), form, JSON.stringify(config || {}), nextSort, stamp, stamp]
+  );
+  // dbExecute 只回影响行数，拿不到自增 id。单用户本地库，取最大 id 是安全的。
+  const created = await db().dbQuery('SELECT id FROM view_def ORDER BY id DESC LIMIT 1');
+  return created?.[0]?.id ?? null;
+}
+
+export async function patchView(viewId, patch = {}) {
+  const entries = Object.entries(patch).filter(([key]) => ['name', 'form', 'config', 'sort'].includes(key));
+  if (!entries.length) return;
+  const sets = entries.map(([key]) => `${key} = ?`).join(', ');
+  const values = entries.map(([key, value]) => (key === 'config' ? JSON.stringify(value || {}) : value));
+  await db().dbExecute(`UPDATE view_def SET ${sets}, updated_at = ? WHERE id = ?`, [...values, nowStamp(), viewId]);
+}
+
+export async function deleteView(viewId) {
+  // 默认视图（每张表 sort 最小的那个「表格」）不给删：删掉表就失去了默认读法。
+  // 判断放在调用方（UI 不渲染删除入口），这里只做一次兜底。
+  const rows = await db().dbQuery('SELECT id FROM view_def WHERE table_id = (SELECT table_id FROM view_def WHERE id = ?) ORDER BY sort, id LIMIT 1', [viewId]);
+  if (rows?.[0] && String(rows[0].id) === String(viewId)) return false;
+  await db().dbExecute('DELETE FROM view_def WHERE id = ?', [viewId]);
+  return true;
+}
+
+export async function getDefaultTableId() {
+  const rows = await db().dbQuery("SELECT value FROM settings WHERE key = 'default_table_id'");
+  const value = rows?.[0]?.value;
+  return value == null || value === '' ? null : Number(value);
+}
+
+export async function setDefaultTableId(tableId) {
+  if (tableId == null) return;
+  await db().dbExecute("INSERT OR REPLACE INTO settings (key, value) VALUES ('default_table_id', ?)", [String(tableId)]);
+}
+

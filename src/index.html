@@ -79,6 +79,9 @@
       <symbol id="ic-close" viewBox="0 0 24 24"><path d="m6.4 6.4 11.2 11.2"/><path d="M17.6 6.4 6.4 17.6"/></symbol>
       <symbol id="ic-dots" viewBox="0 0 24 24"><circle cx="5.4" cy="12" r="1.5" style="fill:currentColor;stroke:none"/><circle cx="12" cy="12" r="1.5" style="fill:currentColor;stroke:none"/><circle cx="18.6" cy="12" r="1.5" style="fill:currentColor;stroke:none"/></symbol>
       <symbol id="ic-image" viewBox="0 0 24 24"><rect x="3.6" y="4.6" width="16.8" height="14.8" rx="2.4"/><circle cx="9" cy="9.8" r="1.5"/><path d="m4.6 17.4 4.3-4.1 3.3 3.1 3-2.7 4.2 3.9"/></symbol>
+      <!-- 锁定拖拽：锁体 + 闭合/开口的锁梁 -->
+      <symbol id="ic-lock" viewBox="0 0 24 24"><rect x="4.8" y="10.4" width="14.4" height="9.6" rx="2.2"/><path d="M8.4 10.4V7.8a3.6 3.6 0 0 1 7.2 0v2.6"/></symbol>
+      <symbol id="ic-unlock" viewBox="0 0 24 24"><rect x="4.8" y="10.4" width="14.4" height="9.6" rx="2.2"/><path d="M8.4 10.4V7.8a3.6 3.6 0 0 1 7.02-1.2"/></symbol>
       <symbol id="ic-chevron-right" viewBox="0 0 24 24"><path d="m9.6 5.6 6.4 6.4-6.4 6.4"/></symbol>
       <!-- 白板视图：导航 + 工具组图标。同一套 24 网格 / 1.6px 描边语言。 -->
       <symbol id="ic-board" viewBox="0 0 24 24"><rect x="3.4" y="4.4" width="17.2" height="12.6" rx="2.2"/><path d="M12 17v3.2"/><path d="M8.4 20.4h7.2"/><path d="M7.2 8.6h4.4"/><path d="M7.2 12h6.6"/></symbol>
@@ -660,6 +663,26 @@
               </button>
             </header>
 
+            <!-- 视图页签：表存数据，视图只存看法。
+                 切换页签不搬家任何一条记录，只换一种排布方式。
+                 单独一行而不是塞进 52px 的表头 —— 表头已经有筛选/字段/新建，
+                 再挤进来会把「表名」压成省略号（见 v4 的媒体查询降级）。 -->
+            <div id="view-bar" class="view-bar" style="display: none;">
+              <div id="view-tabs" class="view-tabs" role="tablist" aria-label="视图"></div>
+              <!-- 锁定拖拽：解锁时拖动立刻生效；锁上后每次拖动都要确认。
+                   状态存在视图配置里（lockDrag），不是全局开关 —— 「这张看板很要紧」是逐视图的判断。 -->
+              <button type="button" id="view-lock" class="view-lock" aria-pressed="false" title="锁定拖拽" style="display: none;">
+                <svg class="wr-icon" aria-hidden="true"><use href="#ic-unlock"/></svg>
+                <span>可拖动</span>
+              </button>
+              <!-- 当前视图的 ⋯：只作用于「正在看的那一个视图」，不放大到整张表。
+                   重命名和删除放这里，而不是页签的右键菜单 —— 右键没人会发现。 -->
+              <button type="button" id="view-more" class="view-more" aria-haspopup="menu" aria-label="视图操作" title="重命名 / 删除这个视图">
+                <svg class="wr-icon" aria-hidden="true"><use href="#ic-dots"/></svg>
+              </button>
+              <button type="button" id="view-add-btn" class="view-add" aria-haspopup="menu" title="新建视图">＋ 视图</button>
+            </div>
+
             <!-- 时间流已下线，容器留着：timeline.js 在模块顶层取了这个 id，
                  删掉会让它拿到 null。 -->
             <div id="timeline-container" style="display: none;"></div>
@@ -674,6 +697,12 @@
             <!-- 自建表：src/sheetPage.js 的挂载点。 -->
             <div id="sheet-pane" class="sheet-pane" style="display: none;">
               <div id="sheet-app" class="sheet-app"></div>
+            </div>
+
+            <!-- 看板 / 画廊 / 日历：src/viewPage.js 的挂载点。
+                 表格形态不走这里 —— 那条路回上面两个 pane，复用已经调好的表格。 -->
+            <div id="view-pane" class="view-pane" style="display: none;">
+              <div id="view-app" class="view-app"></div>
             </div>
           </div>
         </div>

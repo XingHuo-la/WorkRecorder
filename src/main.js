@@ -11,12 +11,27 @@ import { initFreeCellModule } from './freecell.js';
 import { initNotesEditor, flushBeforeLeave, refreshNotesCache, getNotesCache, openNote } from './notesEditor.js';
 import { initNotesModule } from './notes.js';
 import { setNotesDataPathProvider } from './notesStore.js';
-import { initSheetPage, openSheetTab, getSheetList, onSheetListChange, openNewSheet, currentSheetId, openCurrentSheetMenu, openSheetMenuFor, refreshSheetList } from './sheetPage.js';
+import { initSheetPage, openSheetTab, getSheetList, onSheetListChange, openNewSheet, currentSheetId, openCurrentSheetMenu, openSheetMenuFor, refreshSheetList, toast, openPopoverSimple, closeAllPanels } from './sheetPage.js';
+// 表 / 视图分层：列表与视图页签都在这一层拼装。
+// sheetPage 只管「表格形态怎么画」，不负责「这张表有几种看法」。
+import {
+  listViews,
+  createView,
+  patchView,
+  deleteView,
+  readTableFields,
+  readTableRows,
+  saveTableRow,
+  insertTableRow,
+  VIEW_FORMS,
+  viewFormLabel,
+} from './sheetStore.js';
+import { renderView } from './viewPage.js';
 import { setSheetAdapter } from './sheetStore.js';
 import { setTableAdapter, initTablePage, setTableFilter } from './tablePage.js';
 import { setRecordAdapter } from './recordStore.js';
 import { initCommandPalette } from './commandPalette.js';
-import { flushDrawerBody } from './rowDrawer.js';
+import { flushDrawerBody, openRowDrawer } from './rowDrawer.js';
 import { escapeHtml } from './htmlUtils.js';
 import { initBoardPage, flushBoard, setBoardAdapter } from './board.js';
 import { bindUndoShortcuts } from './undoCore.js';
@@ -514,6 +529,28 @@ window.showModal = function(title, htmlContent, onReady, onConfirm, options = {}
   };
 };
 
+// 回调式的 showModal 包成 Promise。
+// 拖拽确认要的不是「弹个框」，而是「等一个答案再决定要不要写库」——
+// 回调式拿不到那个答案，只能把 resolve 挂到确认/取消两个出口上。
+function confirmAction({ title = '确认操作', message = '', btnText = '确认', danger = false } = {}) {
+  return new Promise(resolve => {
+    if (typeof window.showModal !== 'function') { resolve(false); return; }
+    let settled = false;
+    const done = value => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    window.showModal(
+      escapeHtml(title),
+      `<div class="vp-confirm">${escapeHtml(message).replace(/\n/g, '<br>')}</div>`,
+      null,
+      async () => { done(true); return true; },
+      { btnText, danger, onCancel: () => done(false) }
+    );
+  });
+}
+
 function setupRouting() {
   const landingView = document.getElementById('landing-view'); const workspaceView = document.getElementById('workspace-view');
   if (!landingView || !workspaceView) return;
@@ -627,41 +664,55 @@ function setupRecordsView() {
   const sheetPane = document.getElementById('sheet-pane');
   const toolsEl = document.getElementById('base-table-tools');
   const moreBtn = document.getElementById('sheet-more-btn');
+  const viewBar = document.getElementById('view-bar');
+  const viewTabsEl = document.getElementById('view-tabs');
+  const viewAddBtn = document.getElementById('view-add-btn');
+  const viewLock = document.getElementById('view-lock');
+  const viewMore = document.getElementById('view-more');
+  const viewPane = document.getElementById('view-pane');
+  const viewApp = document.getElementById('view-app');
   if (!library || !detail || !listEl) return;
 
   const icon = id => `<svg class="wr-icon" aria-hidden="true"><use href="#${id}"/></svg>`;
 
   let sheetList = [];
   let sheetReady = false;
-  let mode = 'list';      // list | detail
-  let current = 'base';   // base | sheet:<id>
+  let mode = 'list';         // list | detail
+  let current = '';          // table:<id>
+  let currentTable = null;   // 正在看的那张表（预置表也是普通一行）
+  let currentViews = [];     // 这张表的视图（第一个是默认「表格」，删不掉）
+  let currentViewId = null;  // 当前激活的视图
+  let currentView = null;    // 激活的视图对象（改配置时直接改它，避免多处各存一份）
+  // 非表格形态要一次性拿全字段+行（看板要按列分组、画廊要挑封面）。
+  // 切表就作废，避免把 A 表的行画进 B 表。
+  let viewData = { tableId: null, fields: [], rows: [] };
+
+  const isPreset = table => String(table?.kind || '') === 'preset';
 
   const renderLibrary = () => {
-    const rows = [`
-      <div class="lib-row is-fixed" role="listitem" data-key="base" tabindex="0">
+    // 基础表以前是硬编码的第一行（is-fixed，没有 ⋯ 菜单）。
+    // v15 起它只是 sheet 里 kind='preset' 的一行，所以这里不再特判位置，
+    // 只多一个「预置」徽标 —— 排序值 -1 让它在最上面，但那是排序，不是特权。
+    const rows = sheetList.map(item => {
+      const preset = isPreset(item);
+      const key = `table:${item.id}`;
+      const fieldCount = Number(item.field_count ?? item.fieldCount ?? 0);
+      const rowCount = Number(item.row_count ?? item.rowCount ?? 0);
+      const viewCount = Number(item.view_count ?? item.viewCount ?? 0);
+      return `
+      <div class="lib-row${preset ? ' is-preset' : ''}" role="listitem" tabindex="0" data-key="${escapeHtml(key)}">
         <span class="lib-icon">${icon('ic-table')}</span>
         <span class="lib-main">
-          <span class="lib-name">基础表<i class="lib-badge">基础</i></span>
-          <span class="lib-meta">全部工作记录 · 固定保留</span>
+          <span class="lib-name">${escapeHtml(item.name)}${preset ? '<i class="lib-badge">预置</i>' : ''}</span>
+          <span class="lib-meta">${fieldCount} 字段 · ${rowCount} 条记录${viewCount > 1 ? ` · ${viewCount} 个视图` : ''}</span>
         </span>
+        <button type="button" class="lib-more" data-more="${escapeHtml(key)}" aria-label="重命名或删除" title="重命名 / 删除">${icon('ic-dots')}</button>
         <span class="lib-chevron">${icon('ic-chevron-right')}</span>
-      </div>`];
-
-    sheetList.forEach(item => {
-      rows.push(`
-      <div class="lib-row" role="listitem" tabindex="0" data-key="sheet:${escapeHtml(String(item.id))}">
-        <span class="lib-icon">${icon('ic-table')}</span>
-        <span class="lib-main">
-          <span class="lib-name">${escapeHtml(item.name)}</span>
-          <span class="lib-meta">${item.fieldCount} 字段 · ${item.rowCount} 条记录</span>
-        </span>
-        <button type="button" class="lib-more" data-more="sheet:${escapeHtml(String(item.id))}" aria-label="重命名或删除" title="重命名 / 删除">${icon('ic-dots')}</button>
-        <span class="lib-chevron">${icon('ic-chevron-right')}</span>
-      </div>`);
+      </div>`;
     });
 
     listEl.innerHTML = rows.join('');
-    if (listCount) listCount.textContent = `${sheetList.length + 1} 个表`;
+    if (listCount) listCount.textContent = `${sheetList.length} 张表`;
     if (listEmpty) listEmpty.style.display = sheetList.length ? 'none' : '';
   };
 
@@ -673,31 +724,209 @@ function setupRecordsView() {
   };
 
   const openDetail = async key => {
-    const isSheet = String(key).startsWith('sheet:');
-    current = key;
-    const hit = isSheet ? sheetList.find(item => `sheet:${item.id}` === key) : null;
-    if (titleEl) titleEl.textContent = isSheet ? (hit?.name || '表格') : '基础表';
+    const table = sheetList.find(item => `table:${item.id}` === String(key)) || null;
+    if (!table) return;
+    current = `table:${table.id}`;
+    currentTable = table;
+    const preset = isPreset(table);
+
+    if (titleEl) titleEl.textContent = table.name;
     // 空字符串 = 回到样式表默认值，不写死 display（早期层有 !important，硬写会被压）
-    basePane.style.display = isSheet ? 'none' : '';
-    sheetPane.style.display = isSheet ? '' : 'none';
-    if (toolsEl) toolsEl.style.display = isSheet ? 'none' : 'flex';
-    if (moreBtn) moreBtn.style.display = isSheet ? 'inline-flex' : 'none';
+    basePane.style.display = preset ? '' : 'none';
+    sheetPane.style.display = preset ? 'none' : '';
+    if (toolsEl) toolsEl.style.display = preset ? 'flex' : 'none';
+    if (moreBtn) moreBtn.style.display = 'inline-flex';
     const countBadge = document.getElementById('rec-count');
-    if (countBadge) countBadge.style.display = isSheet ? 'none' : '';
+    if (countBadge) countBadge.style.display = preset ? '' : 'none';
+    if (viewBar) viewBar.style.display = '';
+    if (viewPane) viewPane.style.display = 'none';
     setMode('detail');
 
     try {
-      if (!isSheet) { await initTablePage(); return; }
-      if (!sheetReady) { await initSheetPage(); sheetReady = true; }
-      await openSheetTab(String(key).slice('sheet:'.length));
+      // 表格形态仍然交给原来那两个渲染器：它们各自调了很久，
+      // 视图层只决定「显示哪一个」，不去重写一遍表格。
+      if (preset) await initTablePage();
+      else {
+        if (!sheetReady) { await initSheetPage(); sheetReady = true; }
+        await openSheetTab(String(table.id));
+      }
+      await openTableView(table);
     } catch (error) {
       logToFile('error', `[records-view] 打开表格失败: ${error?.stack || error}`);
     }
   };
 
+  // ==========================================
+  // 视图：表存数据，视图只存看法
+  // ==========================================
+
+  const formIcon = form =>
+    form === 'board' ? 'ic-board' : form === 'gallery' ? 'ic-image' : form === 'calendar' ? 'ic-clock' : 'ic-table';
+
+  // 页签 + 锁定按钮一起重画：锁只对「有拖拽行为的形态」有意义，
+  // 表格视图里显示一个锁只会让人以为表格能锁。
+  const renderViewChrome = () => {
+    if (viewTabsEl) {
+      viewTabsEl.innerHTML = currentViews
+        .map(view => {
+          const on = String(view.id) === String(currentViewId);
+          return `<button type="button" class="view-tab${on ? ' is-on' : ''}"
+            role="tab" aria-selected="${on ? 'true' : 'false'}"
+            title="${escapeHtml(view.name)} · ${escapeHtml(viewFormLabel(view.form))}"
+            data-view="${escapeHtml(String(view.id))}" data-form="${escapeHtml(view.form)}">
+            <span class="view-tab-icon">${icon(formIcon(view.form))}</span>
+            <span class="view-tab-name">${escapeHtml(view.name)}</span>
+          </button>`;
+        })
+        .join('');
+    }
+
+    if (!viewLock) return;
+    const draggable = currentView && currentView.form === 'board';
+    viewLock.style.display = draggable ? 'inline-flex' : 'none';
+    const locked = !!currentView?.config?.lockDrag;
+    viewLock.classList.toggle('is-locked', locked);
+    viewLock.setAttribute('aria-pressed', locked ? 'true' : 'false');
+    viewLock.title = locked ? '拖拽已锁定：每次拖动都要确认' : '拖拽未锁定：拖动立刻生效';
+    viewLock.querySelector('use')?.setAttribute('href', locked ? '#ic-lock' : '#ic-unlock');
+    const label = viewLock.querySelector('span');
+    if (label) label.textContent = locked ? '已锁定' : '可拖动';
+  };
+
+  // 非表格形态要全量字段 + 全量行：看板要先知道有哪些分组列，画廊要挑封面列。
+  // 按表缓存，切视图不重复查；切表或写完数据就把缓存作废。
+  const loadViewData = async table => {
+    if (viewData.tableId === String(table.id)) return viewData;
+    const fields = await readTableFields(table);
+    const rows = await readTableRows(table);
+    viewData = { tableId: String(table.id), fields, rows };
+    return viewData;
+  };
+
+  const openRowDrawerFor = (table, row) => {
+    openRowDrawer({ row, fields: viewData.fields, subtitle: table?.name || '' });
+  };
+
+  const applyView = async view => {
+    if (!currentTable || !view) return;
+    // 这一帧认死一张表：下面交给视图层的回调绑定它，而不是「当前表」这个还会变的状态。
+    // 不这么做，一次跨表之后的撤销会把旧行的值写进新表。
+    const table = currentTable;
+    currentViewId = view.id;
+    currentView = view;
+    try {
+      localStorage.setItem(`workRecorder:view:${table.id}`, String(view.id));
+    } catch (error) {
+      /* 隐私模式写不进去，不影响功能 */
+    }
+
+    const preset = isPreset(table);
+    const tableForm = view.form === 'table';
+
+    if (viewPane) viewPane.style.display = tableForm ? 'none' : '';
+    if (tableForm) {
+      basePane.style.display = preset ? '' : 'none';
+      sheetPane.style.display = preset ? 'none' : '';
+    } else {
+      basePane.style.display = 'none';
+      sheetPane.style.display = 'none';
+    }
+    // 表头那排「全部 / 今天 / 字段 / 筛选 / 排序 / 主分类」只喂表格形态：
+    // 看板、画廊走另一套读取路径，留着它们等于让人点一堆没反应的按钮。
+    // 「＋ 新建」也一起收：它唤起的是全局录入浮层，写完只刷新表格，视图这边不会变。
+    // 看板每栏自带「＋ 新建」（还能顺手带上分组值），顶栏不需要再来一个。
+    if (toolsEl) toolsEl.style.display = preset && tableForm ? 'flex' : 'none';
+
+    if (!tableForm) {
+      const data = await loadViewData(table);
+      renderView(viewApp, {
+        table,
+        view,
+        fields: data.fields,
+        rows: data.rows,
+        // 写回：预置表落真列、自建表落 custom JSON。这一层只在 sheetStore 里分叉，
+        // 视图自己永远不知道 record 长什么样。
+        saveRow: (row, values) => saveTableRow(table, row, values),
+        // 锁定看板落卡片前的确认框：视图层只管「问一句」，怎么问由宿主决定。
+        confirm: confirmAction,
+        // 撤销 / 重做写完库要重画：重新取一遍行（行对象会换新），
+        // 但只在用户还停在这张表这个视图上时才动界面 —— 否则会把界面拽回旧视图。
+        refresh: async () => {
+          if (currentTable !== table || String(currentViewId) !== String(view.id)) return;
+          viewData = { tableId: null, fields: [], rows: [] };
+          await applyView(view);
+        },
+        onConfig: async patch => {
+          const nextConfig = { ...view.config, ...patch };
+          await patchView(view.id, { config: nextConfig });
+          view.config = nextConfig;
+          await applyView(view);
+        },
+        onAddRow: async (field, value) => {
+          const values = {};
+          if (field && value !== '' && value != null) {
+            values[field.key] = field.type === 'multi_select' ? [value] : value;
+          }
+          const id = await insertTableRow(table, values);
+          viewData = { tableId: null, fields: [], rows: [] };
+          await applyView(view);
+          const fresh = (await readTableRows(table)).find(item => String(item.id) === String(id));
+          if (fresh) openRowDrawerFor(table, fresh);
+        },
+        onChanged: () => {
+          viewData = { tableId: null, fields: [], rows: [] };
+        },
+      });
+    }
+
+    renderViewChrome();
+  };
+
+  const openTableView = async table => {
+    currentViews = await listViews(table.id);
+    // 兜底：理论上迁移和 createSheet 都会建默认视图，但历史库可能被手工改过。
+    // 没有视图 = 这张表没有默认读法，宁可当场补一个，也不要让页签是空的。
+    if (!currentViews.length) {
+      await createView(table.id, { name: '表格', form: 'table' });
+      currentViews = await listViews(table.id);
+    }
+    let remembered = null;
+    try {
+      remembered = localStorage.getItem(`workRecorder:view:${table.id}`);
+    } catch (error) {
+      remembered = null;
+    }
+    const target = currentViews.find(view => String(view.id) === String(remembered)) || currentViews[0];
+    viewData = { tableId: null, fields: [], rows: [] };
+    await applyView(target);
+  };
+
+  const defaultViewConfig = (table, fields, form) => {
+    if (form === 'board') {
+      // 默认分组优先「状态 / 阶段 / 进度」这类有终点的列，而不是「主分类」——
+      // 分类可以有很多值（看板会横向铺满），状态通常只有 3~5 个，才是看板该有的样子。
+      // 命名不符合也无所谓：视图页签上随时能换分组列，这里只是第一眼的合理猜测。
+      const groupable = fields.filter(field => ['select', 'multi_select'].includes(field.type));
+      const preferred = groupable.find(field => /状态|阶段|进度|status|stage|state|phase/i.test(`${field.key} ${field.label}`));
+      const group = preferred || groupable[0];
+      return group ? { groupBy: group.key } : {};
+    }
+    if (form === 'gallery') {
+      const cover = fields.find(field => field.type === 'attachment');
+      return cover ? { coverField: cover.key } : {};
+    }
+    return {};
+  };
+
   const backToList = async () => {
     setMode('list');
-    current = 'base';
+    current = '';
+    currentTable = null;
+    currentViews = [];
+    currentViewId = null;
+    viewData = { tableId: null, fields: [], rows: [] };
+    if (viewBar) viewBar.style.display = 'none';
+    if (viewPane) viewPane.style.display = 'none';
     try { sheetList = await refreshSheetList(); } catch (error) {
       logToFile('error', `[records-view] 刷新表格列表失败: ${error?.stack || error}`);
     }
@@ -712,11 +941,175 @@ function setupRecordsView() {
     if (more) {
       event.stopPropagation();
       // 列表层没有「正打开的表」，按 id 取菜单目标
-      openSheetMenuFor(String(more.dataset.more || '').replace(/^sheet:/, ''), more);
+      openSheetMenuFor(String(more.dataset.more || '').replace(/^table:/, ''), more);
       return;
     }
     const row = event.target.closest('.lib-row');
     if (row) openDetail(row.dataset.key);
+  });
+
+  // 视图页签：只换看法，不搬家数据。
+  viewTabsEl?.addEventListener('click', event => {
+    const tab = event.target.closest('[data-view]');
+    if (!tab) return;
+    const view = currentViews.find(item => String(item.id) === String(tab.dataset.view));
+    if (view) applyView(view);
+  });
+
+  viewAddBtn?.addEventListener('click', async () => {
+    if (!currentTable) return;
+    let fields = viewData.fields;
+    if (!fields.length) fields = await readTableFields(currentTable);
+
+    const ready = VIEW_FORMS.filter(item => item.ready);
+    // 没有单选列时先说明白，别让用户建完一个空看板再来问为什么是空的。
+    const grouped = fields.some(field => ['select', 'multi_select', 'checkbox'].includes(field.type));
+    window.showModal?.(
+      '新建视图',
+      `<div class="sh-modal">
+        <label class="sh-label">形态</label>
+        <select class="sh-select" data-view-form>
+          ${ready
+            .map(item => `<option value="${item.form}"${item.form === 'board' ? (grouped ? '' : ' disabled') : ''}>${escapeHtml(item.label)} · ${escapeHtml(item.desc)}${item.form === 'board' && !grouped ? '（缺单选列）' : ''}</option>`)
+            .join('')}
+        </select>
+        <label class="sh-label" style="margin-top:12px;">名称</label>
+        <input class="sh-input" data-view-name placeholder="留空就用形态名" />
+      </div>`,
+      null,
+      async body => {
+        const form = body.querySelector('[data-view-form]')?.value || 'table';
+        const name = String(body.querySelector('[data-view-name]')?.value || '').trim() || viewFormLabel(form);
+        const config = defaultViewConfig(currentTable, fields, form);
+        const id = await createView(currentTable.id, { name, form, config });
+        currentViews = await listViews(currentTable.id);
+        const created = currentViews.find(item => String(item.id) === String(id)) || currentViews[currentViews.length - 1];
+        if (created) await applyView(created);
+        return true;
+      },
+      { btnText: '创建' }
+    );
+  });
+
+  // 锁定拖拽：状态存进视图配置（lockDrag），不是全局开关 ——
+  // 「这张看板很要紧」是逐个视图的判断。锁上之后每次拖动都要确认，
+  // 防的是「手一滑把卡片拖到别的栏、还没意识到自己改了数据」。
+  viewLock?.addEventListener('click', async () => {
+    const view = currentView;
+    const table = currentTable;
+    if (!view || !table) return;
+    const nextConfig = { ...view.config, lockDrag: !view.config.lockDrag };
+    try {
+      await patchView(view.id, { config: nextConfig });
+    } catch (error) {
+      logToFile('error', `[records-view] 切换拖拽锁失败: ${error?.stack || error}`);
+      return;
+    }
+    view.config = nextConfig;
+    // 写库是异步的，这中间用户可能已经换了表：换了就只记住状态，不拿旧视图去重画新表。
+    if (currentTable !== table) {
+      renderViewChrome();
+      return;
+    }
+    // 锁是有外观的状态（看板顶部会多一行「已锁定」提示），所以连板子一起重画，
+    // 只重画页签条会让人怀疑「我到底锁上了没有」。loadViewData 有缓存，不重查库。
+    try {
+      await applyView(view);
+    } catch (error) {
+      logToFile('error', `[records-view] 锁状态重画失败: ${error?.stack || error}`);
+      renderViewChrome();
+    }
+  });
+
+  // 视图自己的 ⋯：重命名 / 删除。
+  // 作用对象是「正在看的那一个视图」，不是整张表 —— 表级的重命名/删除在表库的 ⋯ 里。
+  // 不放页签右键菜单：右键没人会发现，还会和页签的点击手势打架。
+  const renameView = view => {
+    window.showModal?.(
+      '重命名视图',
+      `<div class="sh-modal">
+        <label class="sh-label">视图名称</label>
+        <input type="text" class="sh-input" data-view-name value="${escapeHtml(view.name)}" />
+      </div>`,
+      body => {
+        const input = body.querySelector('[data-view-name]');
+        input?.focus();
+        input?.select();
+      },
+      async body => {
+        const name = String(body.querySelector('[data-view-name]')?.value || '').trim();
+        if (!name) return false;
+        if (name === view.name) return true;
+        try {
+          await patchView(view.id, { name });
+        } catch (error) {
+          toast(`重命名失败：${error?.message || error}`, 'danger');
+          return false;
+        }
+        view.name = name;
+        renderViewChrome();
+        return true;
+      },
+      { btnText: '保存' }
+    );
+  };
+
+  const removeView = async view => {
+    const table = currentTable;
+    if (!table) return;
+    // 说清楚「删的是看法不是数据」：视图很容易被当成表，不写明白没人敢点。
+    const ok = await confirmAction({
+      title: '删除视图',
+      message: `删除视图「${view.name}」？\n只删这一种看法，表里的记录一条都不会少。`,
+      btnText: '删除',
+      danger: true,
+    });
+    // 确认框开着的时候可能已经换了表：换了就别拿旧表去删视图、重画界面
+    if (!ok || currentTable !== table) return;
+
+    let removed = true;
+    try {
+      removed = await deleteView(view.id);
+    } catch (error) {
+      toast(`删除失败：${error?.message || error}`, 'danger');
+      return;
+    }
+    if (removed === false) {
+      toast('默认视图不能删：每张表都要留一个「表格」读法', 'info');
+      return;
+    }
+
+    currentViews = await listViews(table.id);
+    // 删的可能正是正在看的那个：认 id 找下一个，找不到就回默认视图
+    const next = currentViews.find(item => String(item.id) === String(currentViewId)) || currentViews[0];
+    if (next) await applyView(next);
+    toast('视图已删除');
+  };
+
+  viewMore?.addEventListener('click', event => {
+    event.stopPropagation();
+    const view = currentView;
+    if (!view || !currentTable) return;
+    const isDefault = String(currentViews[0]?.id) === String(view.id);
+    const menu = openPopoverSimple(viewMore, `
+      <button type="button" class="sh-menu-item" data-view-act="rename">
+        <svg class="wr-icon" aria-hidden="true"><use href="#ic-pencil"/></svg>重命名视图
+      </button>
+      ${isDefault
+        ? '<div class="sh-menu-note">默认视图不能删：每张表都要留一个「表格」读法</div>'
+        : `<button type="button" class="sh-menu-item is-danger" data-view-act="delete">
+            <svg class="wr-icon" aria-hidden="true"><use href="#ic-trash"/></svg>删除视图
+          </button>`}
+    `);
+    menu.classList.add('sh-rowmenu');
+    menu.addEventListener('click', async clickEvent => {
+      const action = clickEvent.target.closest('[data-view-act]')?.dataset.viewAct;
+      if (!action) return;
+      // 先收菜单再动手：重命名会弹 modal，两层浮层叠在一起既挡视线也关不干净
+      closeAllPanels();
+      if (action === 'rename') renameView(view);
+      if (action === 'delete') await removeView(view);
+    });
   });
 
   listEl.addEventListener('keydown', event => {
@@ -729,7 +1122,10 @@ function setupRecordsView() {
 
   moreBtn?.addEventListener('click', event => {
     event.stopPropagation();
-    openCurrentSheetMenu(moreBtn);
+    // 预置表没有走 sheetPage 的 openSheetTab，state.sheet 是空的，
+    // 用 id 打开菜单才不会「点了没反应」。
+    if (currentTable && isPreset(currentTable)) openSheetMenuFor(String(currentTable.id), moreBtn);
+    else openCurrentSheetMenu(moreBtn);
   });
 
   // 表列表变了（新建 / 重命名 / 删除）就重画列表。
@@ -741,15 +1137,24 @@ function setupRecordsView() {
     sheetList = Array.isArray(list) ? list : [];
     if (mode === 'list') renderLibrary();
 
+    // 改名后表头要跟着变：列表重画了，但详情页标题是 openDetail 时写死的那一份。
+    if (mode === 'detail' && currentTable) {
+      const fresh = sheetList.find(item => String(item.id) === String(currentTable.id));
+      if (fresh) {
+        currentTable = fresh;
+        if (titleEl) titleEl.textContent = fresh.name;
+      }
+    }
+
     const currentId = currentSheetId();
     // 只有「刚建好」才自动进表：靠 sheetPage 显式给的 meta，而不是猜 currentSheetId
     // 变化 —— 猜的话，「返回列表后改名 / 删表」也会把人拽进上次看的那张表。
-    if (meta && meta.autoOpen && currentId != null && current !== `sheet:${currentId}`) {
-      openDetail(`sheet:${currentId}`);
+    if (meta && meta.autoOpen && currentId != null && current !== `table:${currentId}`) {
+      openDetail(`table:${currentId}`);
       return;
     }
-    if (mode === 'detail' && String(current).startsWith('sheet:') &&
-        !sheetList.some(item => `sheet:${item.id}` === current)) {
+    if (mode === 'detail' && String(current).startsWith('table:') &&
+        !sheetList.some(item => `table:${item.id}` === current)) {
       // 正在看的表被删了 → 回列表，别停在一片空白
       backToList();
     }

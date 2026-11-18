@@ -118,7 +118,9 @@ function convertSrc(path) {
   return path || '';
 }
 
-function toast(message, tone = 'success') {
+// 轻提示。导出给宿主复用：全应用只该有一个提示条，
+// 各模块自己造一个就会出现「两个 toast 同时挂在右下角」。
+export function toast(message, tone = 'success') {
   let el = document.getElementById('sh-toast');
   if (!el) {
     el = document.createElement('div');
@@ -553,11 +555,17 @@ export function onSheetListChange(listener) {
 }
 
 export function getSheetList() {
+  // kind / viewCount 一起带出去：宿主（main.js）要用 kind 区分预置表、
+  // 用 viewCount 决定列表上写不写「N 个视图」。以前这里只给四个字段，
+  // 宿主拿不到身份就只能靠 key 前缀特判，正是「基础表不像普通表」的来源之一。
   return (state.sheets || []).map(item => ({
     id: item.id,
     name: item.name,
+    kind: item.kind || 'table',
+    task_id: item.task_id ?? null,
     fieldCount: Number(item.field_count) || 0,
     rowCount: Number(item.row_count) || 0,
+    viewCount: Number(item.view_count) || 0,
   }));
 }
 
@@ -939,7 +947,9 @@ function openAttachmentEditor(cellEl, field, row) {
 }
 
 // 简化版浮层：不依赖 sheetPanels 的 anchor 逻辑（锚点是单元格，带滚动偏移）
-function openPopoverSimple(anchorEl, html) {
+// 导出给宿主用（视图页签的 ⋯ 菜单）：全局只有一套浮层状态，
+// 各自再造一个会互相压不住、关不掉。
+export function openPopoverSimple(anchorEl, html) {
   closeAllPanels();
   const el = document.createElement('div');
   el.className = 'sh-pop sh-imgpanel';
@@ -967,6 +977,10 @@ function openPopoverSimple(anchorEl, html) {
   registerActivePanel({ el, onOutside, onKey, onClose: () => el._cleanup?.() });
   return el;
 }
+
+// 浮层是全局单例状态（同一时刻只该有一个），关闭入口也要跟着导出，
+// 否则宿主开了菜单没有办法在动作执行前把它收掉。
+export { closeAllPanels };
 
 // ==========================================
 // 行操作
@@ -1874,6 +1888,13 @@ function openSheetMenu(anchorEl, target = null) {
       }, { btnText: '保存' });
     }
     if (action === 'delete') {
+      // 预置表是全局捕获（快速记录 / 剪贴板）的落点，删之前必须先有别的表接手，
+      // 否则随手记会写进一条不属于任何表的记录 —— 那等于数据直接蒸发。
+      // 交接入口还没做，所以这里先硬拦，而不是弹一个「确定吗」。
+      if (String(sheet.kind || '') === 'preset') {
+        toast('预置表暂时不能删：它是快速记录的落点，等「设为默认表」做完再放开', 'info');
+        return;
+      }
       // 行数优先用列表摘要里的 row_count：从表库删表时这张表没被打开过，state.rows 是空的
       const total = state.sheet && String(state.sheet.id) === String(sheet.id)
         ? state.rows.length

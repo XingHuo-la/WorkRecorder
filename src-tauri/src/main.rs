@@ -662,6 +662,74 @@ fn init_and_migrate_db_at(db_path: &str, json_path: &str) -> Result<(), String> 
             .map_err(|e| format!("数据库升级到 v14 失败: {}", e))?;
     }
 
+    // v15：表 / 视图分层 —— 让「基础表」成为一张普通的预置表。
+    //
+    // 之前基础表是硬编码的固定项（field_def.entity='log' + kind='log' 的行），
+    // 自建表是 sheet 里的行。两套身份带来的直接后果：基础表不能改名、删不掉、
+    // 不出现在 sheet 列表里，看板/日历这类「绑一张表来展示」的视图也就无从绑定它。
+    //
+    // 这一步只加身份，不动数据：
+    //   sheet.kind='preset' 的那一行 = 基础表；其余 = 自建表
+    //   它的字段仍读 field_def，行仍读 kind='log' 的 record（都不复制、不搬家，
+    //   否则立刻多出第二份真相，改一处忘一处就漂移）
+    // 纯增量：删掉 view_def 与 kind 列即可回滚，record 一行不动。
+    if schema_version < 15 {
+        add_column_if_missing(&conn, "sheet", "kind", "kind TEXT NOT NULL DEFAULT 'table'")?;
+
+        // 预置表只建一次。task_id 留空 —— 它不属于任何任务，这是它和自建表的唯一差别。
+        let preset_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sheet WHERE kind = 'preset'", [], |row| row.get(0))
+            .unwrap_or(0);
+        if preset_count == 0 {
+            // sort = -1：列表里排最前，但仍然是普通排序位，不靠前端特判。
+            conn.execute(
+                "INSERT INTO sheet (name, created_at, updated_at, sort, kind)
+                 VALUES ('工作记录', datetime('now','localtime'), datetime('now','localtime'), -1, 'preset')",
+                [],
+            )
+            .map_err(|e| format!("创建预置表失败: {}", e))?;
+        }
+
+        // 视图：只存配置，不存数据。form = table | board | calendar | gallery
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS view_def (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                table_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                form TEXT NOT NULL DEFAULT 'table',
+                config TEXT NOT NULL DEFAULT '{}',
+                sort INTEGER DEFAULT 0,
+                created_at TEXT,
+                updated_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_view_table ON view_def(table_id, sort, id);
+            CREATE INDEX IF NOT EXISTS idx_sheet_kind ON sheet(kind, sort, id);",
+        )
+        .map_err(|e| format!("创建 view_def 失败: {}", e))?;
+
+        // 每张表至少一个「表格」视图。它是默认视图：删不掉，页签上不出现关闭入口。
+        conn.execute(
+            "INSERT INTO view_def (table_id, name, form, config, sort, created_at, updated_at)
+             SELECT s.id, '表格', 'table', '{}', 0,
+                    datetime('now','localtime'), datetime('now','localtime')
+               FROM sheet s
+              WHERE NOT EXISTS (SELECT 1 FROM view_def v WHERE v.table_id = s.id)",
+            [],
+        )
+        .map_err(|e| format!("为已有表补默认视图失败: {}", e))?;
+
+        // 全局捕获（快速记录 / 剪贴板）的落点。删表时靠它兜底，不允许为空。
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value)
+             SELECT 'default_table_id', CAST(id AS TEXT) FROM sheet WHERE kind = 'preset' LIMIT 1",
+            [],
+        )
+        .map_err(|e| format!("记录默认表失败: {}", e))?;
+
+        conn.execute_batch("PRAGMA user_version = 15;")
+            .map_err(|e| format!("数据库升级到 v15 失败: {}", e))?;
+    }
+
     let json_exists = Path::new(json_path).exists();
     // ✅ 修复了之前的借用检查器报错，一步到位！
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM tags", [], |row| row.get(0)).unwrap_or(0);
@@ -1892,6 +1960,97 @@ mod tests {
             )
             .unwrap();
         assert_eq!(kept, 400, "二次迁移覆盖了用户调过的列宽");
+
+        drop(conn);
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    // v15 = 表 / 视图分层的地基。守四件事：
+    //   ① 预置表恰好一张（kind='preset'），它是「基础表」的新身份
+    //   ② 每张表都有一个默认「表格」视图，历史表由迁移补齐
+    //   ③ settings.default_table_id 指向预置表，供删表时兜底
+    //   ④ 迁移可重跑：不会多出第二张预置表、也不会重复补视图
+    #[test]
+    fn v15_seeds_preset_table_and_default_views() {
+        let tmp = std::env::temp_dir().join("wr-v15-table-views");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).expect("创建临时目录失败");
+        let db = tmp.join("t.db");
+        let json = tmp.join("t.json");
+        init_and_migrate_db_at(&db.to_string_lossy(), &json.to_string_lossy())
+            .expect("全新库迁移失败");
+
+        let conn = Connection::open(&db).unwrap();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert!(version >= 15, "全新库版本号应至少为 15，实际 {}", version);
+
+        // ① 预置表恰好一张
+        let presets: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sheet WHERE kind = 'preset'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(presets, 1, "预置表应恰好一张，实际 {}", presets);
+
+        // ② 没有「裸表」——每张表都挂了默认视图，且预置表的是表格形态
+        let missing: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sheet s \
+                 WHERE NOT EXISTS (SELECT 1 FROM view_def v WHERE v.table_id = s.id)",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(missing, 0, "有 {} 张表没有默认视图", missing);
+
+        let form: String = conn
+            .query_row(
+                "SELECT v.form FROM view_def v JOIN sheet s ON s.id = v.table_id \
+                 WHERE s.kind = 'preset' LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(form, "table", "预置表的默认视图不是表格形态");
+
+        // ③ 全局捕获落点指向预置表
+        let preset_id: i64 = conn
+            .query_row("SELECT id FROM sheet WHERE kind = 'preset' LIMIT 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let default_id: String = conn
+            .query_row("SELECT value FROM settings WHERE key = 'default_table_id'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            default_id,
+            preset_id.to_string(),
+            "default_table_id 没指向预置表"
+        );
+
+        let views_before: i64 = conn
+            .query_row("SELECT COUNT(*) FROM view_def", [], |r| r.get(0))
+            .unwrap();
+
+        // ④ 幂等：重跑不新增预置表、不重复补视图
+        drop(conn);
+        init_and_migrate_db_at(&db.to_string_lossy(), &json.to_string_lossy())
+            .expect("二次迁移失败");
+        let conn = Connection::open(&db).unwrap();
+        let presets_after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sheet WHERE kind = 'preset'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let views_after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM view_def", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(presets_after, 1, "二次迁移多建了预置表");
+        assert_eq!(views_after, views_before, "二次迁移重复补了视图");
 
         drop(conn);
         let _ = fs::remove_dir_all(&tmp);

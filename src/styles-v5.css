@@ -441,3 +441,477 @@ body[data-skin="v4"] .sh-row.is-row-edge .sh-cell {
   cursor: row-resize !important;
 }
 
+/* =====================================================================
+   9. 视图页签 + 看板 + 画廊（v15：表存数据，视图只存看法）
+   ---------------------------------------------------------------------
+   页签刻意做成「文字 + 下划线」，不是胶囊按钮：
+   胶囊会把每个视图画成一个独立物件，而下划线表达的是「同一张表的几种读法」。
+   ===================================================================== */
+
+body[data-skin="v4"] .view-bar {
+  flex: 0 0 38px !important;
+  display: flex;
+  align-items: center !important;
+  gap: 4px !important;
+  height: 38px !important;
+  padding: 0 34px !important;
+  border-bottom: 1px solid var(--v4-line) !important;
+  background: var(--v4-bg) !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+}
+
+body[data-skin="v4"] .view-tabs {
+  display: flex;
+  align-items: stretch !important;
+  gap: 2px !important;
+  height: 100% !important;
+  min-width: 0 !important;
+}
+
+body[data-skin="v4"] .view-tab {
+  display: inline-flex;
+  align-items: center !important;
+  gap: 6px !important;
+  height: 100% !important;
+  padding: 0 10px !important;
+  border: 0 !important;
+  border-bottom: 2px solid transparent !important;
+  background: transparent !important;
+  color: var(--v4-text-3) !important;
+  font-family: var(--v4-sans) !important;
+  font-size: 12.5px !important;
+  white-space: nowrap !important;
+  cursor: pointer !important;
+  transition: color 120ms ease, border-color 120ms ease !important;
+}
+
+body[data-skin="v4"] .view-tab:hover {
+  color: var(--v4-text-2) !important;
+}
+
+body[data-skin="v4"] .view-tab.is-on {
+  color: var(--v4-text) !important;
+  border-bottom-color: var(--v4-text) !important;
+}
+
+body[data-skin="v4"] .view-tab-icon {
+  display: inline-flex;
+  width: 14px !important;
+  height: 14px !important;
+  opacity: .85 !important;
+}
+
+body[data-skin="v4"] .view-tab-icon .wr-icon {
+  width: 14px !important;
+  height: 14px !important;
+}
+
+body[data-skin="v4"] .view-add {
+  height: 26px !important;
+  /* 右端锚点：视图操作（锁 / ⋯）都挂在「新建视图」左边，
+     这样表格形态里没有锁的时候，这一簇也不会跑到页签后面去。 */
+  margin-left: auto !important;
+  padding: 0 9px !important;
+  border: 1px solid var(--v4-line) !important;
+  border-radius: 7px !important;
+  background: transparent !important;
+  color: var(--v4-text-3) !important;
+  font-family: var(--v4-sans) !important;
+  font-size: 12px !important;
+  white-space: nowrap !important;
+  cursor: pointer !important;
+}
+
+body[data-skin="v4"] .view-add:hover {
+  color: var(--v4-text) !important;
+  border-color: var(--v4-line-2) !important;
+}
+
+/* 看板 / 画廊的 pane：和 sheet-pane 同一套「吃掉剩余高度」 */
+body[data-skin="v4"] .rec-detail .view-pane {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  display: flex;
+  flex-direction: column !important;
+}
+
+body[data-skin="v4"] .view-app {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  overflow: auto !important;
+  padding: 14px 34px 28px !important;
+}
+
+/* ---- 看板 ---- */
+body[data-skin="v4"] .vp-board-bar,
+body[data-skin="v4"] .vp-gallery-bar {
+  display: flex;
+  align-items: center !important;
+  gap: 12px !important;
+  margin: 0 0 12px !important;
+}
+
+body[data-skin="v4"] .vp-board-pick {
+  display: inline-flex;
+  align-items: center !important;
+  gap: 6px !important;
+  color: var(--v4-text-3) !important;
+  font-size: 11.5px !important;
+}
+
+body[data-skin="v4"] .vp-board-pick select {
+  height: 26px !important;
+  padding: 0 6px !important;
+  border: 1px solid var(--v4-line) !important;
+  border-radius: 6px !important;
+  background: var(--v4-surface) !important;
+  color: var(--v4-text) !important;
+  font-family: var(--v4-sans) !important;
+  font-size: 12px !important;
+}
+
+body[data-skin="v4"] .vp-board-count,
+body[data-skin="v4"] .vp-gallery-hint {
+  color: var(--v4-text-3) !important;
+  font-size: 11.5px !important;
+}
+
+body[data-skin="v4"] .vp-board-cols {
+  display: flex;
+  align-items: flex-start !important;
+  gap: 10px !important;
+  min-height: 120px !important;
+  padding-bottom: 8px !important;
+}
+
+body[data-skin="v4"] .vp-col {
+  flex: 0 0 268px !important;
+  width: 268px !important;
+  padding: 8px !important;
+  border: 1px solid var(--v4-line) !important;
+  border-radius: 10px !important;
+  background: color-mix(in srgb, var(--color-text) 3%, transparent) !important;
+}
+
+body[data-skin="v4"] .vp-col-head {
+  display: flex;
+  align-items: center !important;
+  gap: 7px !important;
+  padding: 2px 4px 8px !important;
+}
+
+body[data-skin="v4"] .vp-col-dot {
+  width: 7px !important;
+  height: 7px !important;
+  border-radius: 50% !important;
+  background: color-mix(in srgb, var(--color-text) 26%, transparent) !important;
+}
+
+body[data-skin="v4"] .vp-col-name {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  color: var(--v4-text-2) !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+}
+
+body[data-skin="v4"] .vp-col-count {
+  color: var(--v4-text-3) !important;
+  font-size: 11px !important;
+  font-variant-numeric: tabular-nums !important;
+}
+
+body[data-skin="v4"] .vp-col-body {
+  display: flex;
+  flex-direction: column !important;
+  gap: 6px !important;
+  min-height: 44px !important;
+  border-radius: 8px !important;
+  transition: background 120ms ease !important;
+}
+
+body[data-skin="v4"] .vp-col-body.is-over {
+  background: color-mix(in srgb, var(--color-text) 6%, transparent) !important;
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--color-text) 28%, transparent) !important;
+}
+
+body[data-skin="v4"] .vp-card {
+  padding: 8px 10px !important;
+  border: 1px solid var(--v4-line) !important;
+  border-radius: 8px !important;
+  background: var(--v4-surface) !important;
+  cursor: grab !important;
+  transition: border-color 120ms ease, transform 120ms ease !important;
+}
+
+body[data-skin="v4"] .vp-card:hover {
+  border-color: var(--v4-line-2) !important;
+  transform: translateY(-1px) !important;
+}
+
+body[data-skin="v4"] .vp-card.is-dragging {
+  opacity: .45 !important;
+}
+
+/* 拖拽时跟着鼠标走的那张卡。position: fixed 是为了不被任何滚动容器裁剪，
+   translate 由 JS 写。pointer-events:none 必须给 —— 否则 elementFromPoint
+   永远命中它自己，算不出「鼠标下面是哪一栏」。 */
+body[data-skin="v4"] .vp-drag-ghost {
+  position: fixed !important;
+  z-index: 999 !important;
+  margin: 0 !important;
+  pointer-events: none !important;
+  opacity: .94 !important;
+  transform-origin: top left !important;
+  box-shadow: 0 10px 28px color-mix(in srgb, #000 18%, transparent) !important;
+  will-change: transform !important;
+}
+
+/* 拖拽期间整窗换成抓取光标：卡片以外的区域也应该是「我正拿着东西」 */
+body.is-vp-dragging,
+body.is-vp-dragging * {
+  cursor: grabbing !important;
+  user-select: none !important;
+}
+
+body[data-skin="v4"] .vp-card-cover {
+  margin: -8px -10px 8px !important;
+  overflow: hidden !important;
+  border-radius: 7px 7px 0 0 !important;
+  background: color-mix(in srgb, var(--color-text) 5%, transparent) !important;
+}
+
+body[data-skin="v4"] .vp-card-cover img {
+  display: block;
+  width: 100% !important;
+  height: 96px !important;
+  object-fit: cover !important;
+}
+
+body[data-skin="v4"] .vp-card-title {
+  color: var(--v4-text) !important;
+  font-size: 12.5px !important;
+  line-height: 1.45 !important;
+  word-break: break-word !important;
+}
+
+body[data-skin="v4"] .vp-card-chips {
+  display: flex;
+  flex-wrap: wrap !important;
+  gap: 4px 8px !important;
+  margin-top: 5px !important;
+}
+
+body[data-skin="v4"] .vp-chip {
+  display: inline-flex;
+  align-items: baseline !important;
+  gap: 4px !important;
+  max-width: 100% !important;
+  overflow: hidden !important;
+  color: var(--v4-text-2) !important;
+  font-size: 11px !important;
+  white-space: nowrap !important;
+  text-overflow: ellipsis !important;
+}
+
+body[data-skin="v4"] .vp-chip i {
+  color: var(--v4-text-3) !important;
+  font-style: normal !important;
+  font-size: 10.5px !important;
+}
+
+body[data-skin="v4"] .vp-col-add {
+  height: 28px !important;
+  border: 1px dashed var(--v4-line) !important;
+  border-radius: 7px !important;
+  background: transparent !important;
+  color: var(--v4-text-3) !important;
+  font-family: var(--v4-sans) !important;
+  font-size: 11.5px !important;
+  cursor: pointer !important;
+}
+
+body[data-skin="v4"] .vp-col-add:hover {
+  color: var(--v4-text) !important;
+  border-color: var(--v4-line-2) !important;
+}
+
+/* ---- 画廊 ---- */
+body[data-skin="v4"] .vp-gallery-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(196px, 1fr)) !important;
+  gap: 12px !important;
+}
+
+body[data-skin="v4"] .vp-tile {
+  display: flex;
+  flex-direction: column !important;
+  overflow: hidden !important;
+  border: 1px solid var(--v4-line) !important;
+  border-radius: 10px !important;
+  background: var(--v4-surface) !important;
+  cursor: pointer !important;
+  transition: border-color 120ms ease, transform 120ms ease !important;
+}
+
+body[data-skin="v4"] .vp-tile:hover {
+  border-color: var(--v4-line-2) !important;
+  transform: translateY(-1px) !important;
+}
+
+body[data-skin="v4"] .vp-tile-cover {
+  display: flex;
+  align-items: center !important;
+  justify-content: center !important;
+  aspect-ratio: 4 / 3 !important;
+  background: color-mix(in srgb, var(--color-text) 4%, transparent) !important;
+}
+
+body[data-skin="v4"] .vp-tile-cover img {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: cover !important;
+}
+
+body[data-skin="v4"] .vp-tile-empty {
+  color: var(--v4-text-3) !important;
+  font-size: 11px !important;
+}
+
+body[data-skin="v4"] .vp-tile-body {
+  padding: 8px 10px 10px !important;
+}
+
+body[data-skin="v4"] .vp-tile-desc {
+  margin-top: 3px !important;
+  color: var(--v4-text-3) !important;
+  font-size: 11px !important;
+  line-height: 1.5 !important;
+  display: -webkit-box;
+  -webkit-line-clamp: 2 !important;
+  -webkit-box-orient: vertical !important;
+  overflow: hidden !important;
+}
+
+/* ---- 空态：一句话说清缺什么，不用「暂无数据」这种没信息量的词 ---- */
+body[data-skin="v4"] .vp-blank {
+  max-width: 420px !important;
+  margin: 48px auto !important;
+  padding: 0 20px !important;
+  text-align: center !important;
+}
+
+body[data-skin="v4"] .vp-blank-title {
+  color: var(--v4-text) !important;
+  font-size: 13.5px !important;
+  font-weight: 500 !important;
+}
+
+body[data-skin="v4"] .vp-blank-desc {
+  margin-top: 6px !important;
+  color: var(--v4-text-3) !important;
+  font-size: 12px !important;
+  line-height: 1.65 !important;
+}
+
+/* ---- 拖拽锁：页签条右端的那个开关 ----
+   放在右端而不是跟在一排视图后面，是因为它管的不是「看哪个视图」，
+   而是「这个视图能不能被改」—— 两类不同的东西不该挤在一起。
+   margin-left:auto 把「新建视图」留在左边原位，锁单独靠右，视觉上才像一把锁。 */
+body[data-skin="v4"] .view-lock {
+  display: inline-flex;
+  align-items: center !important;
+  gap: 5px !important;
+  height: 26px !important;
+  padding: 0 9px !important;
+  border: 1px solid var(--v4-line) !important;
+  border-radius: 7px !important;
+  background: transparent !important;
+  color: var(--v4-text-3) !important;
+  font-family: var(--v4-sans) !important;
+  font-size: 11.5px !important;
+  white-space: nowrap !important;
+  cursor: pointer !important;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease !important;
+}
+
+body[data-skin="v4"] .view-lock .wr-icon {
+  width: 13px !important;
+  height: 13px !important;
+}
+
+body[data-skin="v4"] .view-lock:hover {
+  color: var(--v4-text) !important;
+  border-color: var(--v4-line-2) !important;
+}
+
+/* 锁上之后必须一眼看出来：它现在是「每次拖动都要确认」的拦路状态。
+   只靠图标形状（开锁/闭锁）区分太细，加底色和正文色才够。 */
+body[data-skin="v4"] .view-lock.is-locked {
+  border-color: color-mix(in srgb, var(--color-text) 30%, transparent) !important;
+  background: color-mix(in srgb, var(--color-text) 7%, transparent) !important;
+  color: var(--v4-text) !important;
+}
+
+body[data-skin="v4"] .vp-lock-hint {
+  margin-left: auto !important;
+  padding-left: 10px !important;
+  border-left: 1px solid var(--v4-line) !important;
+  color: var(--v4-text-3) !important;
+  font-size: 11.5px !important;
+  white-space: nowrap !important;
+}
+
+/* 视图的 ⋯：只放图标，尺寸和锁按钮同高，三者（⋯ / 锁 / 新建）读成一簇工具。
+   表格形态里锁不出现，⋯ 自己站在这儿，位置由「新建视图」的 margin-left:auto 定住。 */
+body[data-skin="v4"] .view-more {
+  display: inline-flex;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 26px !important;
+  height: 26px !important;
+  padding: 0 !important;
+  border: 1px solid transparent !important;
+  border-radius: 7px !important;
+  background: transparent !important;
+  color: var(--v4-text-3) !important;
+  cursor: pointer !important;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease !important;
+}
+
+body[data-skin="v4"] .view-more .wr-icon {
+  width: 14px !important;
+  height: 14px !important;
+}
+
+body[data-skin="v4"] .view-more:hover {
+  border-color: var(--v4-line) !important;
+  background: color-mix(in srgb, var(--color-text) 5%, transparent) !important;
+  color: var(--v4-text) !important;
+}
+
+/* 菜单里的一句解释：不是可点项，所以不抢菜单项的样式，也不给 hover */
+body[data-skin="v4"] .sh-menu-note {
+  max-width: 200px !important;
+  padding: 8px 10px 4px !important;
+  color: var(--v4-text-3) !important;
+  font-size: 11px !important;
+  line-height: 1.6 !important;
+}
+
+/* 确认框正文：两行（标题 / 从哪到哪），行高比常规松一点，
+   因为这两行是要被逐字核对的内容，不是说明文字。 */
+body[data-skin="v4"] .vp-confirm {
+  color: var(--text-main) !important;
+  font-size: 13px !important;
+  line-height: 1.85 !important;
+  word-break: break-word !important;
+}
+
+
+
+
