@@ -332,8 +332,11 @@ function openTextEditor(cellEl, field, value, actions) {
     const supportsFieldSizing = window.CSS?.supports?.('field-sizing', 'content');
     if (!supportsFieldSizing) {
       const grow = () => {
-        input.style.height = 'auto';
-        input.style.height = `${input.scrollHeight}px`;
+        // 必须带 important：styles-v5 里换行列的编辑器统一写的是 height:auto !important
+        //（为了「文字原地不动」，不能让输入框拉满整格），普通 inline 高度压不过它，
+        // 结果就是多行文字永远只显示第一行。
+        input.style.setProperty('height', 'auto', 'important');
+        input.style.setProperty('height', `${input.scrollHeight}px`, 'important');
       };
       input.addEventListener('input', grow);
       requestAnimationFrame(grow);
@@ -362,8 +365,26 @@ function openTextEditor(cellEl, field, value, actions) {
   });
   input.addEventListener('blur', () => finish(true));
   input.focus();
-  if (multiline) input.setSelectionRange(original.length, original.length);
-  else input.select();
+  // 进编辑态一律「光标落在文字末尾」，不 select()。
+  // 以前单行走 input.select()、换行列走 setSelectionRange(len,len)，于是同一张网格里
+  // 出现了两种表现：基础表双击 → 整格文字反白；自建表双击 → 光标在末尾。
+  // 用户看到的就是「两套表格」。而且全选反白配上格子的 2px 描边，很像又冒出一个小框。
+  // Excel 双击进编辑也不反白，它只把光标放到点上。
+  placeCaretAtEnd(input, original);
+}
+
+// 光标落到末尾：text/textarea 都吃 setSelectionRange；多行编辑器内容比可视高度高时，
+// 光标在末尾而视图还停在第 1 屏，得手动滚到底才能看见自己正在改哪一句。
+function placeCaretAtEnd(input, text) {
+  const end = String(text ?? '').length;
+  try {
+    input.setSelectionRange(end, end);
+  } catch (error) {
+    // number 等不支持选区操作的控件：退化成不选中，只保证有焦点
+  }
+  if (input.tagName === 'TEXTAREA' && input.scrollHeight > input.clientHeight) {
+    input.scrollTop = input.scrollHeight;
+  }
 }
 
 // ---- 数字：内嵌输入，只接受数字 ----
@@ -414,7 +435,8 @@ function openNumberEditor(cellEl, field, value, actions) {
   });
   input.addEventListener('blur', () => finish(true));
   input.focus();
-  input.select();
+  // 与文本格一致：光标在末尾，不整段选中（数字格全选会被误以为「又要重输」）
+  placeCaretAtEnd(input, original);
 }
 
 // ---- 日期：统一选择器（调用方注入），没注入时退回 flatpickr ----
@@ -492,17 +514,36 @@ function openSelectPanel(cellEl, field, value, actions, { multiple = false } = {
   const listEl = panel.querySelector('.ft-dropdown-list');
   const createBtn = panel.querySelector('.ft-dropdown-create');
 
-  // 定位：优先贴在单元格下方，空间不足时上翻
-  const rect = cellEl.getBoundingClientRect();
-  const panelWidth = Math.max(rect.width, 200);
-  panel.style.width = `${panelWidth}px`;
-  const estimatedHeight = Math.min(280, 96 + options.length * 32);
-  let top = rect.bottom + 4;
-  if (top + estimatedHeight > window.innerHeight - 8) {
-    top = Math.max(8, rect.top - estimatedHeight - 4);
+  // 定位：先量真实高度，再决定朝下还是朝上。
+  // 以前是「96 + 选项数 × 32」估的 —— 估得比实际高就无缘无故上翻：
+  // 选项被搜索过滤掉一半、标签很短、下面明明还有一整屏空间，它也会翻到单元格上方。
+  // 现在按 offsetHeight 量（.ft-dropdown-list 自带 max-height，超出的内部滚动，量出来就是最终高度）。
+  panel.style.top = '0px';
+  panel.style.visibility = 'hidden';
+
+  function placePanel() {
+    const GAP = 4;   // 与单元格留 4px，鼠标不用横跳
+    const PAD = 8;   // 离窗口边缘至少 8px
+    const anchor = cellEl.getBoundingClientRect();  // 每次现取：面板开着时窗口可能被拉大
+    const panelWidth = Math.min(Math.max(anchor.width, 200), window.innerWidth - 16);
+    panel.style.width = `${panelWidth}px`;
+    panel.style.left = `${Math.max(PAD, Math.min(anchor.left, window.innerWidth - panelWidth - PAD))}px`;
+    const below = window.innerHeight - PAD - (anchor.bottom + GAP);
+    const above = anchor.top - GAP - PAD;
+    // 量之前先放开限高，否则上一次算出的 maxHeight 会把这次的结果算小
+    panel.style.maxHeight = '';
+    const natural = panel.offsetHeight;
+    // 下面放得下就永远朝下；只有下面真放不下、上面更宽裕时才上翻
+    const openUp = natural > below && above > below;
+    const room = Math.max(120, openUp ? above : below);
+    if (natural > room) panel.style.maxHeight = `${room}px`;
+    const height = Math.min(natural, room);
+    const top = openUp
+      ? Math.max(PAD, anchor.top - GAP - height)
+      : Math.min(anchor.bottom + GAP, window.innerHeight - PAD - height);
+    panel.style.top = `${Math.round(top)}px`;
+    panel.style.visibility = '';
   }
-  panel.style.left = `${Math.min(rect.left, window.innerWidth - panelWidth - 8)}px`;
-  panel.style.top = `${top}px`;
 
   let selectedValues = multiple ? normalizeMulti(value) : [];
   let singleValue = multiple ? '' : String(value ?? '');
@@ -516,6 +557,7 @@ function openSelectPanel(cellEl, field, value, actions, { multiple = false } = {
     unmarkEditing(cellEl);
     document.removeEventListener('mousedown', onOutside, true);
     document.removeEventListener('keydown', onKey, true);
+    window.removeEventListener('resize', placePanel);
     actions.onSettled?.();
   };
 
@@ -567,6 +609,9 @@ function openSelectPanel(cellEl, field, value, actions, { multiple = false } = {
       createBtn.hidden = true;
       createBtn.textContent = '＋ 新建选项';
     }
+    // 内容变了高度就变了（搜索过滤 / 新建按钮出现）——每次都重新量一次再贴回单元格，
+    // 否则面板会在打字过程中慢慢盖住单元格，或者朝上的方向算错。
+    placePanel();
   };
 
   listEl.addEventListener('click', event => {
@@ -636,6 +681,8 @@ function openSelectPanel(cellEl, field, value, actions, { multiple = false } = {
   };
   document.addEventListener('mousedown', onOutside, true);
   document.addEventListener('keydown', onKey, true);
+  // 窗口拉大/缩小后，单元格的视口坐标就变了，面板得跟着贴回去
+  window.addEventListener('resize', placePanel);
 
   renderList();
   searchInput?.focus();

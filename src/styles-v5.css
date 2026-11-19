@@ -228,13 +228,25 @@ body[data-skin="v4"] .sh-cell .ft-inline-input {
 }
 
 /* 换行的列：.sh-cell.is-wrap 的内边距是 9px 12px、且垂直方向顶对齐，
-   负 margin / padding 必须按这一组数来，否则文字会上下跳 9px。 */
+   负 margin / padding 必须按这一组数来，否则文字会上下跳 9px。
+
+   align-self 不能写 stretch：那等于「不管格子多高，文字都从顶上第一行开始写」。
+   行被拖高到 200px 时，静态文字是垂直居中的（见本文件第 1047 行那条规则），
+   一进编辑 textarea 被拉满整格，文字立刻跳到顶部 —— 用户看到的就是
+   「换个表格双击，文字跑到格子顶端去了」。
+   改成 auto：跟随单元格自己的 align-items（普通行顶对齐 / 拖高过的行居中 /
+   格式面板设的 is-v-top|middle|bottom 也一样），编辑器就永远是「文字原地不动」。
+   height:auto 让 textarea 按内容撑开（field-sizing:content 可用时最准；
+   不可用时 rows=1 也够用，JS 那边会用 important 的 inline 高度兜底）。 */
 body[data-skin="v4"] .sh-cell.is-wrap .ft-inline-input,
 body[data-skin="v4"] .sh-cell.is-wrap .ft-inline-input.is-multiline {
   margin: -9px -12px !important;
   padding: 9px 12px !important;
   width: auto !important;
-  align-self: stretch !important;
+  align-self: auto !important;
+  height: auto !important;
+  max-height: 100% !important;
+  overflow: auto !important;
 }
 
 /* 编辑器必须「看起来不存在」——这一条以前漏了，于是单行输入框带着

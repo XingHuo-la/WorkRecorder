@@ -883,7 +883,7 @@ function registerCellUndo(changes, label, sheetId) {
   });
 }
 
-function startCellEdit(field, row, cellEl) {
+function startCellEdit(field, row, cellEl, opts = {}) {
   if (!cellEl || cellEl.classList.contains('ft-cell-editing')) return;
   if (field.type === 'attachment') {
     openAttachmentEditor(cellEl, field, row);
@@ -921,6 +921,19 @@ function startCellEdit(field, row, cellEl) {
     placeholder: cellCtx(field).placeholder,
     onSettled: () => focusIfIdle(cellEl),
   });
+
+  // Excel 的「直接敲字覆盖」：选中一格后打第一个字符，编辑器起来时里面只有这个字符，
+  // 光标跟在它后面。旧表（tablePage.js）认 opts.char，合流到 sheetPage 时漏接了 ——
+  // 结果在基础表里选中一格直接打字，字会凭空消失，只剩原来的内容。
+  const typed = opts.char;
+  if (typed != null && typed !== '') {
+    const input = cellEl.querySelector('.ft-inline-input');
+    if (input && (input.tagName === 'INPUT' || input.tagName === 'TEXTAREA')) {
+      input.value = String(typed);
+      const end = input.value.length;
+      try { input.setSelectionRange(end, end); } catch (error) { /* 忽略 */ }
+    }
+  }
 }
 
 // ---- 图片单元格：粘贴 / 选择 / 删除 ----
@@ -2231,7 +2244,7 @@ function ensureGrid() {
       el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     },
     onSelection: paintSelection,
-    onEditStart: (r, c) => startEditAt(r, c),
+    onEditStart: (r, c, opts) => startEditAt(r, c, opts),
     onClear: coords => { clearCells(coords); },
     onCopy: () => { copySelectionToClipboard(); },
     onPasteRequest: () => pasteAtActiveCell(),
@@ -2240,12 +2253,12 @@ function ensureGrid() {
   return grid;
 }
 
-function startEditAt(r, c) {
+function startEditAt(r, c, opts = {}) {
   const cellEl = cellElAt(r, c);
   const row = rowAt(r);
   const field = fieldAt(c);
   if (!cellEl || !row || !field) return;
-  startCellEdit(field, row, cellEl);
+  startCellEdit(field, row, cellEl, opts);
 }
 
 function pasteAtActiveCell() {
@@ -3079,10 +3092,11 @@ function onHostKeydown(event) {
   if (!grid) return;
 
   const intent = resolveKeyIntent(event, { editing: false, pageSize: 12 });
-  // 两种不接管的情形：
-  //   type  —— 直接敲字覆盖（编辑器还不支持预填首字符，拦了等于把字吃掉）
-  //   paste —— 必须让原生 paste 事件照常触发，否则系统剪贴板粘不进来
-  if (intent.type === 'none' || intent.type === 'type' || intent.type === 'paste') return;
+  // 只有 paste 必须让路：系统剪贴板要靠原生 paste 事件才拿得到。
+  // type（「直接敲字覆盖」）以前也在这条里让路，理由是「编辑器不认首字符」——
+  // 但格子的 div 不是可编辑元素，让路的结果是那个字符凭空消失。
+  // startCellEdit 现在接 opts.char 了，于是交回给网格：开编辑、预填这个字符。
+  if (intent.type === 'none' || intent.type === 'paste') return;
   if (grid.handleKeydown(event)) event.preventDefault();
 }
 

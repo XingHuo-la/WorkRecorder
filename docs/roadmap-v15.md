@@ -44,12 +44,22 @@
 - 切换表 / 重进表：`resetPresetQuick()` 归零，避免「切到另一张表还挂着今天，看着像空表」。
 - 「＋新建记录」在预置表下补默认值（今天 / 未分类 / 待开始），与老基础表一致。
 
-同时定了两件合流必须先解决的事：
+同时定了三件合流必须先解决的事：
 
 1. **详情页收起 `sheetPage` 自带的占位 tab**（`.sheet-pane .sh-views` 隐藏）。
    `#view-bar` 已经有真视图页签、同样以「表格」打头；两排并排、一排能切一排点了弹「还没做」，只会让人以为界面坏了。
 2. **快捷栏 chip 高度写死 27**（`.sh-quick .v4-chip`）。逐层关样式表实测：`styles-v4` 那条 27 在这条 DOM 路径上算成 32，
    拿掉 `styles-v3` 反而变 38 —— 有别层在抬它。不改 `.v4-chip` 本身，免得页面表头那排跟着变。
+3. **进编辑的行为只能有一套**（合流后暴露的真实差异，与「哪张表」无关，只与列设置有关）：
+   - 光标一律落在文字末尾、不整段选中（`placeCaretAtEnd`）。以前单行走 `input.select()`、换行列走
+     `setSelectionRange(len,len)`，于是基础表双击反白、自建表双击不反白 —— 用户读成「还是两套表格」。
+   - 编辑器不许拉满格子：换行列的 `align-self` 从 `stretch` 改成 `auto`，跟随单元格自己的 `align-items`
+     （普通行顶对齐 / 拖高过的行居中 / 格式面板的 `is-v-top|middle|bottom`），并把 `height` 交回内容
+     （`field-sizing:content`，老内核用 important 的 inline 高度兜底）。原来 `stretch` 在 200px 的行里
+     等于「文字从顶上第一行开始写」，一进编辑文字就跳到顶端。
+   - 顺带补回合流时漏接的 `opts.char`（`startCellEdit`）：选中一格直接打字，旧表会用它覆盖原值，
+     新网格没接 —— 那个字符会被吃掉，什么也不会发生。
+   三条都由 `_debug/editstate-probe.html` 用像素断言钉住（同一格的「静态文字 y」与「编辑态第一行 y」差 ≤3px）。
 
 **现在的默认**：`presetGridIsSheet()` 返回 true（走 sheetPage）。
 回退老基础表：`localStorage.setItem('wrPresetGrid', 'legacy')` 然后刷新；恢复 `removeItem`。
