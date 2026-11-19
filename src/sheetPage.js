@@ -53,6 +53,7 @@ import {
   duplicateTableRow,
   createTableField,
   patchTableField,
+  saveFieldDrawer,
   deleteTableField,
   setRowHeight,
   deleteRow,
@@ -1816,6 +1817,8 @@ function openDetail(row) {
     onDelete: target => removeRow(target),
     // 抽屉里改标题走的是 patchRecord（没经过 writeRow / commitCell），
     // 网格上那一格不会自己变 —— 关掉抽屉还写着旧字，看起来就是「没保存」。
+    // 「字段」区的滑杆面板：隐藏 / 顺序 / 大小都存在这个字段自己的 options 里
+    onFieldLayoutChange: (field, drawer) => saveFieldDrawer(state.sheet, field, drawer),
     onTitleSaved: (field, value) => {
       if (!field || !host) return;
       const cellEl = host.querySelector(

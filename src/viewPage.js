@@ -12,7 +12,7 @@ import { openRowDrawer } from './rowDrawer.js';
 import { escapeHtml } from './htmlUtils.js';
 import { showUndoToast } from './undoToast.js';
 import { undoStack } from './undoCore.js';
-import { saveRowValues, rowTitle, fieldOptionsList } from './sheetStore.js';
+import { saveRowValues, rowTitle, fieldOptionsList, saveFieldDrawer } from './sheetStore.js';
 import { isDateOnly, openCellEditor, renderCell } from './fieldTypes.js';
 import { openDatePicker } from './datePicker.js';
 
@@ -192,6 +192,8 @@ function openCard(row, ctx) {
     onCellClick: (field, cellEl, liveRow) => editCellInDrawer(field, cellEl, liveRow, ctx),
     // 抽屉里「换标题列」→ 写回这张视图的配置（只影响这一个视图，不动表结构）
     onTitleFieldPick: ctx.onConfig ? key => ctx.onConfig({ titleField: key }) : undefined,
+    // 字段显示参数（隐藏 / 顺序 / 大小）跟着字段自己走，和视图无关
+    onFieldLayoutChange: (field, drawer) => saveFieldDrawer(ctx.table, field, drawer),
     // 抽屉里改标题走的是 patchRecord（不经 ctx.saveRow），视图侧的数据不会自己变。
     // 关抽屉时统一重取一遍行：宁可多查一次，也不要留一个「改了看起来没保存」的界面。
     onClose: () => {

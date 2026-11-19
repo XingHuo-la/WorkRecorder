@@ -1679,3 +1679,260 @@ body[data-skin="v4"] .rd-title-menu-flag {
   font-size: 11px;
   font-weight: 400 !important;
 }
+
+/* =====================================================================
+   抽屉「字段」区：显示设置（哪些 / 顺序 / 多大）
+   ---------------------------------------------------------------------
+   为什么要有这块：字段网格原来是「表里有什么就按表里顺序全摆出来」，
+   7 个字段两列一摆，重要的和边角料一样大。现在每个字段自己带三件事 ——
+   显不显示、排第几、大/中/小 —— 存在 field.options.drawer 里，跟着表走。
+
+   权重说明：层 9 的 .rd-fields .sh-detail-cell 把 font-size / min-height 写成了
+   !important（0,2,0），所以下面每条都带 body[data-skin="v4"] 前缀 + !important（0,5,0）。
+   ===================================================================== */
+body[data-skin="v4"] .rd-fields-head {
+  display: flex !important;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 3px;
+}
+
+body[data-skin="v4"] .rd-fields-cfg {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  min-height: 0 !important;
+  margin: 0 -2px 0 0;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 5px !important;
+  background: transparent !important;
+  color: var(--v4-text-3) !important;
+  box-shadow: none !important;
+  line-height: 1 !important;
+  opacity: 0.55;
+  cursor: pointer;
+  transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+
+body[data-skin="v4"] .rd-fields-cfg:hover,
+body[data-skin="v4"] .rd-fields-cfg.is-on {
+  opacity: 1;
+  background: var(--v4-surface-2) !important;
+  color: var(--v4-text) !important;
+}
+
+body[data-skin="v4"] .rd-fields-cfg .wr-icon {
+  width: 14px;
+  height: 14px;
+}
+
+/* hidden 必须显式关掉：这一层不缺 display 规则，但 .rd-fields 是 flex，
+   万一以后有人给 .rd-fields-grid 补了 display，hidden 会悄无声息失效。 */
+body[data-skin="v4"] .rd-fields-grid[hidden] {
+  display: none !important;
+}
+
+body[data-skin="v4"] .rd-fields-empty {
+  padding: 2px 0 4px;
+  color: var(--v4-text-3) !important;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* ---- 三种大小 -------------------------------------------------------
+   lg：独占一行、值放大加重 —— 给「结论级」字段（状态 / 主分类 / 关键数字）；
+   md：两列、常规（默认）；
+   sm：两列但更小更淡 —— 给「有就行」的元数据（附件数、来源、创建人）。
+
+   ★ 字号必须**统一听格子的**，不能让各类型各说各话：
+     styles.css:11898 给 .ft-text 13.5px、.ft-date 13px、.ft-pill 12px、.ft-status 13px，
+     还都带 !important。不接管的话「大」只有长文字变大、单选胶囊纹丝不动，
+     而「小」设成 11px 反而比 md 的胶囊（实际算下来 10.5px）还大 —— 层级全反。
+     所以先把子层一律改成 1em（= 格子自己的字号），再由 data-size 定格子字号。 */
+body[data-skin="v4"] .rd-fields .sh-detail-cell [class*="ft-"] {
+  font-size: 1em !important;
+}
+
+body[data-skin="v4"] .rd-fields .sh-detail-field[data-size="lg"] {
+  grid-column: 1 / -1;   /* 独占整行：网格是两列，跨到底 */
+  padding: 3px 0 !important;
+}
+
+body[data-skin="v4"] .rd-fields .sh-detail-field[data-size="lg"] .sh-detail-cell {
+  min-height: 32px !important;
+  font-size: 16px !important;
+  line-height: 1.45 !important;
+}
+
+body[data-skin="v4"] .rd-fields .sh-detail-field[data-size="lg"] .sh-detail-cell [class*="ft-"] {
+  color: var(--v4-text) !important;
+  font-weight: 500 !important;
+}
+
+body[data-skin="v4"] .rd-fields .sh-detail-field[data-size="md"] .sh-detail-cell {
+  font-size: 13px !important;
+}
+
+body[data-skin="v4"] .rd-fields .sh-detail-field[data-size="sm"] .sh-detail-cell {
+  min-height: 22px !important;
+  padding: 0 6px !important;
+  font-size: 11.5px !important;
+}
+
+body[data-skin="v4"] .rd-fields .sh-detail-field[data-size="sm"] .sh-detail-cell [class*="ft-"] {
+  color: var(--v4-text-2) !important;
+  font-weight: 400 !important;
+}
+
+body[data-skin="v4"] .rd-fields .sh-detail-field[data-size="sm"] .sh-detail-label {
+  font-size: 10.5px !important;
+}
+
+/* ---- 设置面板 ------------------------------------------------------- */
+body[data-skin="v4"] .rd-fieldcfg-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 2px 0 4px;
+}
+
+body[data-skin="v4"] .rd-fieldcfg-row {
+  display: flex !important;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px;
+  border-radius: 6px;
+}
+
+body[data-skin="v4"] .rd-fieldcfg-row:hover {
+  background: var(--v4-surface-2);
+}
+
+/* 两个箭头必须**横着放**：竖着排每个 20px，行高就被撑到 44px，
+   7 个字段的面板会占掉半屏；横排时行高维持 26px，和外面字段网格一个节奏。 */
+body[data-skin="v4"] .rd-fieldcfg-move {
+  display: inline-flex;
+  flex: none;
+  gap: 1px;
+}
+
+body[data-skin="v4"] .rd-fieldcfg-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--v4-text) !important;
+  font-size: 12.5px;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body[data-skin="v4"] .rd-fieldcfg-row.is-off .rd-fieldcfg-name {
+  color: var(--v4-text-3) !important;
+}
+
+body[data-skin="v4"] .rd-fieldcfg-tag {
+  margin-left: 4px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--color-primary) 14%, transparent);
+  color: var(--color-primary) !important;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 500;
+  line-height: 14px;
+  vertical-align: 1px;
+}
+
+body[data-skin="v4"] .rd-fieldcfg-size {
+  display: inline-flex;
+  flex: none;
+  gap: 1px;
+  padding: 1px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--v4-text) 6%, transparent);
+}
+
+body[data-skin="v4"] .rd-fieldcfg-size .rd-mini-btn {
+  width: 22px;
+  height: 18px;
+  border-radius: 4px !important;
+  color: var(--v4-text-3) !important;
+}
+
+body[data-skin="v4"] .rd-fieldcfg-size .rd-mini-btn.is-on {
+  background: var(--v4-surface) !important;
+  color: var(--v4-text) !important;
+  font-weight: 600 !important;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12) !important;
+}
+
+body[data-skin="v4"] .rd-fieldcfg-foot {
+  padding: 2px 0 4px;
+  color: var(--v4-text-3) !important;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+/* 通用小图标按钮（面板里那些 18–22px 的方块）。
+   必须压过 styles.css:5608 那条全局 button（min-height 40 / 左右 16 padding / 边框 / 底色）。 */
+body[data-skin="v4"] .rd-fields .rd-mini-btn {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  min-height: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 4px !important;
+  background: transparent !important;
+  color: var(--v4-text-3) !important;
+  box-shadow: none !important;
+  font-size: 11px !important;
+  font-weight: 500 !important;
+  line-height: 1 !important;
+  cursor: pointer;
+  transform: none !important;
+}
+
+/* 箭头比其它小按钮再亮一档：它是这个面板唯一的「顺序」表达，太淡就没人发现能调 */
+body[data-skin="v4"] .rd-fieldcfg-move .rd-mini-btn {
+  color: var(--v4-text-2) !important;
+}
+
+body[data-skin="v4"] .rd-fields .rd-mini-btn:hover:not(:disabled) {
+  background: var(--v4-surface-3) !important;
+  color: var(--v4-text) !important;
+}
+
+body[data-skin="v4"] .rd-fields .rd-mini-btn:disabled {
+  opacity: 0.28;
+  cursor: default;
+}
+
+body[data-skin="v4"] .rd-fields .rd-mini-btn .wr-icon {
+  width: 12px;
+  height: 12px;
+}
+
+body[data-skin="v4"] .rd-cfg-arrow-up {
+  transform: rotate(-90deg);
+}
+
+body[data-skin="v4"] .rd-cfg-arrow-down {
+  transform: rotate(90deg);
+}
+
+body[data-skin="v4"] .rd-fieldcfg-eye.is-off {
+  color: var(--v4-text-3) !important;
+  opacity: 0.75;
+}
+
+body[data-skin="v4"] .rd-fieldcfg-eye:not(.is-off) {
+  color: var(--v4-text-2) !important;
+}

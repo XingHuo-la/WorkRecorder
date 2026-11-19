@@ -17,7 +17,7 @@
 //   record 是唯一真相表，kind 只是「出生地」，「在不在表里」由 record.sheet_id 决定。
 
 import { escapeHtml } from './htmlUtils.js';
-import { renderCell } from './fieldTypes.js';
+import { renderCell, parseFieldConfig } from './fieldTypes.js';
 import { openDrawer, closeAllPanels, openImagePreview } from './sheetPanels.js';
 import { toId } from './recordTree.js';
 import {
@@ -66,6 +66,11 @@ const KIND_LABELS = {
   todo: '待办',
   sheet_row: '表格行',
 };
+
+// 抽屉字段的三种大小：lg 独占一行（结论级）、md 两列（默认）、sm 两列但更小更淡（元数据）。
+// 顺序即面板里「大 / 中 / 小」的排列顺序，别随手改。
+const DRAWER_SIZES = ['lg', 'md', 'sm'];
+const DRAWER_SIZE_LABELS = { lg: '大', md: '中', sm: '小' };
 
 // 库里 status 的取值混着两套语义：record 表的（inbox / pending / done）
 // 和旧视图换算出来的（unprocessed / processed）。两套都认，认不出就原样显示。
@@ -206,11 +211,19 @@ export function openRowDrawer(opts = {}) {
     // 成功类提示条的自动收起定时器（关抽屉时必须清掉）
     hintTimer: null,
     // ---- 字段网格（v1.2）----
-    // gridFields = 真正渲染成网格的那批字段。与 visibleFields 的差别只有一条：
-    // 值与大标题**逐字相同**的字段不渲染（截图里「设备名称 = 2 号机组前置泵驱动端轴承」
-    // 白占一整行）。ctx.fields 仍保留全量 —— onCellClick 按 data-key 找字段、
-    // startTitleEdit 找 titleField 的格子都靠它。
+    // gridFields = 真正渲染成网格的那批字段，顺序即渲染顺序。与 visibleFields 的差别：
+    // ① 用户在「字段」设置里藏起来的不画；② 值与大标题**逐字相同**的不画
+    //   （截图里「设备名称 = 2 号机组前置泵驱动端轴承」白占一整行）；
+    // ③ 按 field.options.drawer.order 重排。ctx.fields 仍保留全量 ——
+    //   onCellClick 按 data-key 找字段、找 titleField 的格子都靠它。
     gridFields: [],
+    // 每个字段在抽屉里的显示参数（隐藏 / 大小 / 顺序），key → {hidden, size, order}。
+    // 与 field.options.drawer 一一对应；打开时从字段上读，改完立即回写。
+    fieldLayout: new Map(),
+    // 字段设置有面板是否展开
+    fieldPanelOpen: false,
+    // 字段设置的写库串行链：连点「上移」时后一次不能拿旧快照覆盖前一次
+    layoutChain: null,
     // ---- 结构块（v1.2：子项 + 挂载的表合并，默认收起）----
     // 两个异步分区各自到达，计数要等两边都可能有值才画，所以存下来而不是直接写 DOM。
     structChildren: [],
@@ -226,8 +239,10 @@ export function openRowDrawer(opts = {}) {
   const initialTitle = resolveTitle(ctx);
   const initialKicker = String(options.subtitle ?? '') || defaultKicker(preload);
 
-  // 字段网格的「显示层过滤」：只删与大标题逐字相同的那些格子，不删字段本身。
-  ctx.gridFields = filterGridFields(visibleFields, row, initialTitle);
+  // 字段网格的「显示层」编排：先按 field.options.drawer 排顺序 / 藏起来，
+  // 再删与大标题逐字相同的那些格子（只删格子，不删字段）。
+  for (const field of visibleFields) ctx.fieldLayout.set(field.key, drawerConfigOf(field));
+  ctx.gridFields = arrangeGridFields(visibleFields, row, initialTitle, ctx.fieldLayout);
 
   const bodyHtml = `
     <div class="rd">
@@ -245,9 +260,28 @@ export function openRowDrawer(opts = {}) {
         <div class="rd-body markdown-body" data-body></div>
       </section>
 
-      <!-- ③ 字段：.sh-detail 在层 9 变成两列网格，DOM 结构不变 -->
-      <div class="rd-block rd-fields" data-section="fields"${ctx.gridFields.length ? '' : ' hidden'}>
-        ${fieldsHtml(ctx.gridFields, row)}
+      <!-- ③ 字段：.sh-detail 在层 9 变成两列网格，DOM 结构不变。
+           右上角那个滑杆按钮是「显示哪些 / 什么顺序 / 多大」的入口 ——
+           配置存在 field.options.drawer 里（跟着表走，不跟着视图走）。 -->
+      <div class="rd-block rd-fields" data-section="fields"${ctx.visibleFields.length ? '' : ' hidden'}>
+        <div class="rd-fields-head">
+          <h3 class="rd-h">字段</h3>
+          <button type="button" class="rd-fields-cfg" data-fields-config
+                  title="配置字段：显示 / 顺序 / 大小" aria-label="配置字段显示"
+                  aria-expanded="false">
+            <svg class="wr-icon" aria-hidden="true"><use href="#ic-sliders"/></svg>
+          </button>
+        </div>
+        <div class="rd-fields-grid" data-fields-grid>
+          ${fieldsHtml(
+            ctx.gridFields,
+            row,
+            ctx.fieldLayout,
+            ctx.visibleFields.length > 0 &&
+              ctx.visibleFields.every(field => ctx.fieldLayout.get(field.key)?.hidden)
+          )}
+        </div>
+        <div class="rd-fieldcfg" data-fieldcfg hidden></div>
       </div>
 
       <!-- ④ 笔记：标题带计数，空态是一行「＋挂一篇笔记」 -->
@@ -416,6 +450,8 @@ function normalizeHandlers(options) {
     onTitleFieldPick: pick('onTitleFieldPick'),
     // 标题存进库之后通知宿主（预置表要拿它把网格里那一格重画一遍）
     onTitleSaved: pick('onTitleSaved'),
+    // 字段显示参数变了（隐藏 / 顺序 / 大小），宿主负责落库
+    onFieldLayoutChange: pick('onFieldLayoutChange'),
     onClose: pick('onClose'),
     actions,
   };
@@ -452,39 +488,257 @@ function defaultKicker(record) {
 }
 
 /**
- * 字段网格的「显示层」过滤：值与大标题**逐字相同**的字段不渲染那一格。
+ * 一个字段在抽屉里的显示参数：藏在 field.options.drawer 里（跟着表走，不跟视图走）。
  *
- * 只删「逐字相同」，不删「标题字段本身」—— 值不同时它是有信息的。
+ * 为什么存在字段自己的 options 而不是新开一张表：
+ *   · options 已经是「这个字段自己的杂项设置」的家（wrap / dateOnly / source）；
+ *   · 预置表落 field_def、自建表落 sheet_field，两边都有这一列，**零迁移**；
+ *   · 换表、换视图、换皮肤都读同一份，不会出现「卡片上一套、抽屉里另一套」。
+ *
+ * @param {object} field 字段
+ * @returns {{hidden:boolean, size:'lg'|'md'|'sm', order:number|null}}
+ */
+function drawerConfigOf(field) {
+  const config = parseFieldConfig(field) || {};
+  const raw = config.drawer && typeof config.drawer === 'object' ? config.drawer : {};
+  const order = Number(raw.order);
+  return {
+    hidden: raw.hidden === true,
+    size: DRAWER_SIZES.includes(raw.size) ? raw.size : 'md',
+    order: Number.isFinite(order) ? order : null,
+  };
+}
+
+/**
+ * 字段网格的「显示层」编排：藏起来的不画、按 order 排、值与大标题逐字相同的也不画。
+ *
+ * 只删「逐字相同」的那一格，不删字段本身（值不同时它是有信息的）。
  * 也不做任何「多于 N 个就折叠」的处理：字段就是这条记录的结论，藏起来等于让用户
  * 多点一次才知道结论是什么（设计 §3.1 末段已明确否决折叠）。
  *
- * @param {object[]} fields 可见字段
+ * 排序规则：显式设过 order 的按 order 升序排在前面，没设过的按字段原顺序跟在后面。
+ * 这样「没配置过」的表保持原样；一旦用户调过顺序，我们会把所有字段都写成显式 order
+ * （见 normalizeLayout），之后的行为就完全可预测，新加的字段排在末尾。
+ *
+ * @param {object[]} fields 可见字段（已按 field.sort 排好）
  * @param {object|null} row 行（含 values）
  * @param {string} titleText 大标题（已 trim）
- * @returns {object[]} 要渲染的字段
+ * @param {Map<string, {hidden:boolean, order:number|null}>} layout 字段显示参数
+ * @returns {object[]} 要渲染的字段（原对象，顺序即渲染顺序）
  */
-function filterGridFields(fields, row, titleText) {
+function arrangeGridFields(fields, row, titleText, layout) {
   const title = String(titleText ?? '').trim();
-  if (!fields.length) return [];
-  if (!title) return fields.slice();
-  return fields.filter(field => String(row?.values?.[field.key] ?? '').trim() !== title);
+  return layoutItems(fields, layout)
+    .filter(item => !item.layout.hidden)
+    .filter(item => !title || String(row?.values?.[item.field.key] ?? '').trim() !== title)
+    .map(item => item.field);
 }
 
-function fieldsHtml(gridFields, row) {
-  if (!gridFields.length) return '';
+/** 按「显式 order 升序 → 其余按字段原顺序」排；面板和网格共用这一条，两边不会对不上。 */
+function compareLayoutItems(a, b) {
+  if (a.layout.order == null && b.layout.order == null) return a.index - b.index;
+  if (a.layout.order == null) return 1;
+  if (b.layout.order == null) return -1;
+  return a.layout.order - b.layout.order || a.index - b.index;
+}
+
+/** 全部字段（含已隐藏的）按当前显示参数排好 —— 面板要能看到藏起来的那些。 */
+function layoutItems(fields, layout) {
+  return fields
+    .map((field, index) => ({
+      field,
+      index,
+      layout: { hidden: false, size: 'md', order: null, ...(layout?.get(field.key) || {}) },
+    }))
+    .sort(compareLayoutItems);
+}
+
+function fieldsHtml(gridFields, row, layout, allHidden = false) {
+  if (!gridFields.length) {
+    // 两种空：用户自己收起来了（要告诉他怎么捞回来），或者这个表只有一列而它的值
+    // 已经写在大标题上了（没什么可补的，给一句实话，别留一片空白让「字段」这个标题悬着）。
+    return `<div class="rd-fields-empty">${
+      allHidden ? '字段都收起来了 · 点右上角滑杆挑回来' : '没有可显示的字段'
+    }</div>`;
+  }
   const cells = gridFields
-    .map(
-      field => `<div class="sh-detail-field">
+    .map(field => {
+      const size = layout?.get(field.key)?.size || 'md';
+      return `<div class="sh-detail-field" data-size="${escapeHtml(size)}">
         <div class="sh-detail-label">${escapeHtml(field.label || field.key)}</div>
         <div class="sh-detail-cell sh-cell" data-key="${escapeHtml(field.key)}" data-row="${escapeHtml(row?.id ?? '')}" tabindex="-1">${renderCell(
           field,
           row?.values?.[field.key],
           { placeholder: field.type === 'attachment' ? '点击添加附件' : '点击填写' }
         )}</div>
-      </div>`
-    )
+      </div>`;
+    })
     .join('');
   return `<div class="sh-detail">${cells}</div>`;
+}
+
+// ---- 字段显示设置（显示哪些 / 什么顺序 / 多大）------------------------------
+//
+// 交互刻意只有三件：上下箭头调顺序、大/中/小选大小、睁眼/闭眼切换显示。
+// 不做拖拽 —— 抽屉里拖一行会顺带触发上面正文的选区，而且移动端没有 hover 提示；
+// 也不做「一次改完点保存」的弹窗：这里每一下都是即时生效，改坏了再点回来即可。
+
+function toggleFieldPanel(ctx, force) {
+  const next = typeof force === 'boolean' ? force : !ctx.fieldPanelOpen;
+  ctx.fieldPanelOpen = next;
+  const block = section(ctx, 'fields');
+  const btn = block?.querySelector('[data-fields-config]');
+  btn?.classList.toggle('is-on', next);
+  btn?.setAttribute('aria-expanded', next ? 'true' : 'false');
+  const grid = block?.querySelector('[data-fields-grid]');
+  if (grid) grid.hidden = next;
+  renderFieldPanel(ctx);
+}
+
+function renderFieldPanel(ctx) {
+  const panel = section(ctx, 'fields')?.querySelector('[data-fieldcfg]');
+  if (!panel) return;
+  if (!ctx.fieldPanelOpen) {
+    panel.hidden = true;
+    panel.innerHTML = '';
+    return;
+  }
+
+  const items = layoutItems(ctx.visibleFields, ctx.fieldLayout);
+  const canMove = items.length > 1;
+  panel.hidden = false;
+  panel.innerHTML = `
+    <div class="rd-fieldcfg-list">
+      ${items
+        .map((item, at) => {
+          const field = item.field;
+          const isTitle = ctx.titleField && field.key === ctx.titleField.key;
+          const label = escapeHtml(field.label || field.key);
+          return `<div class="rd-fieldcfg-row${item.layout.hidden ? ' is-off' : ''}"
+                       data-field-row="${escapeHtml(field.key)}">
+            <span class="rd-fieldcfg-move">
+              <button type="button" class="rd-mini-btn" data-move="-1"
+                      aria-label="把「${label}」上移"${!canMove || at === 0 ? ' disabled' : ''}>
+                <svg class="wr-icon rd-cfg-arrow-up" aria-hidden="true"><use href="#ic-chevron-right"/></svg>
+              </button>
+              <button type="button" class="rd-mini-btn" data-move="1"
+                      aria-label="把「${label}」下移"${!canMove || at === items.length - 1 ? ' disabled' : ''}>
+                <svg class="wr-icon rd-cfg-arrow-down" aria-hidden="true"><use href="#ic-chevron-right"/></svg>
+              </button>
+            </span>
+            <span class="rd-fieldcfg-name">${label}${
+              isTitle ? '<em class="rd-fieldcfg-tag">标题</em>' : ''
+            }</span>
+            <span class="rd-fieldcfg-size" role="group" aria-label="「${label}」显示大小">
+              ${DRAWER_SIZES.map(
+                size => `<button type="button" class="rd-mini-btn${
+                  item.layout.size === size ? ' is-on' : ''
+                }" data-size="${size}" aria-pressed="${item.layout.size === size}"
+                   title="${label} · ${DRAWER_SIZE_LABELS[size]}">${DRAWER_SIZE_LABELS[size]}</button>`
+              ).join('')}
+            </span>
+            <button type="button" class="rd-mini-btn rd-fieldcfg-eye${
+              item.layout.hidden ? ' is-off' : ''
+            }" data-hide="${item.layout.hidden ? '0' : '1'}"
+               aria-pressed="${item.layout.hidden}"
+               title="${item.layout.hidden ? '在抽屉里显示' : '在抽屉里隐藏'}"
+               aria-label="${item.layout.hidden ? `显示「${label}」` : `隐藏「${label}」`}">
+              <svg class="wr-icon" aria-hidden="true"><use href="#${
+                item.layout.hidden ? 'ic-eye-off' : 'ic-check'
+              }"/></svg>
+            </button>
+          </div>`;
+        })
+        .join('')}
+    </div>
+    <div class="rd-fieldcfg-foot">隐藏只影响这个抽屉，表格里的列不变。</div>`;
+}
+
+function onFieldPanelClick(ctx, event) {
+  const rowEl = event.target.closest('[data-field-row]');
+  if (!rowEl) return;
+  const key = rowEl.dataset.fieldRow;
+  const items = layoutItems(ctx.visibleFields, ctx.fieldLayout);
+  const at = items.findIndex(item => item.field.key === key);
+  if (at < 0) return;
+
+  const next = new Map(ctx.fieldLayout);
+
+  const move = event.target.closest('[data-move]');
+  if (move) {
+    const to = at + Number(move.dataset.move);
+    if (!Number.isFinite(to) || to < 0 || to >= items.length) return;
+    const [moved] = items.splice(at, 1);
+    items.splice(to, 0, moved);
+    // 一挪就把所有字段写成显式 order：此后顺序完全由用户决定，
+    // 新加的字段因为没 order 自然排在最后（见 compareLayoutItems）。
+    items.forEach((item, index) => next.set(item.field.key, { ...item.layout, order: index }));
+    commitFieldLayout(ctx, next);
+    return;
+  }
+
+  const sizeBtn = event.target.closest('[data-size]');
+  if (sizeBtn) {
+    const size = sizeBtn.dataset.size;
+    if (!DRAWER_SIZES.includes(size) || !ctx.fieldLayout.has(key)) return;
+    if (ctx.fieldLayout.get(key).size === size) return;
+    next.set(key, { ...ctx.fieldLayout.get(key), size });
+    commitFieldLayout(ctx, next);
+    return;
+  }
+
+  const eye = event.target.closest('[data-hide]');
+  if (eye) {
+    const hidden = eye.dataset.hide === '1';
+    if (!ctx.fieldLayout.has(key)) return;
+    next.set(key, { ...ctx.fieldLayout.get(key), hidden });
+    commitFieldLayout(ctx, next);
+  }
+}
+
+/**
+ * 落一套新的字段显示参数：先重画（用户立刻看到结果），再按差异串行写库。
+ *
+ * 只写**真的变了**的字段 —— 改大小不该顺手把 7 条 order 都重写一遍。
+ * 写库串行：连点「上移」两次，第二次不能拿着旧快照覆盖第一次的结果。
+ */
+function commitFieldLayout(ctx, nextMap) {
+  const prevMap = ctx.fieldLayout;
+  ctx.fieldLayout = nextMap;
+  renderFieldGrid(ctx);
+  renderFieldPanel(ctx);
+
+  const changes = [];
+  for (const [key, cfg] of nextMap) {
+    const prev = prevMap.get(key) || { hidden: false, size: 'md', order: null };
+    if (prev.hidden === cfg.hidden && prev.size === cfg.size && prev.order === cfg.order) continue;
+    const field = ctx.visibleFields.find(item => item.key === key);
+    if (field) changes.push({ field, drawer: { hidden: cfg.hidden, size: cfg.size, order: cfg.order } });
+  }
+
+  const save = ctx.handlers.onFieldLayoutChange;
+  if (!changes.length || typeof save !== 'function') return;
+  ctx.layoutChain = (ctx.layoutChain || Promise.resolve()).then(async () => {
+    for (const item of changes) {
+      try {
+        await save(item.field, item.drawer);
+      } catch (error) {
+        console.warn('[rowDrawer] 字段设置保存失败', error);
+        showHint(ctx, `字段设置没存上：${error?.message || error}`);
+      }
+    }
+  });
+}
+
+/** 重画字段网格（面板里改一下，背后那张表要跟着动）。 */
+function renderFieldGrid(ctx) {
+  const block = section(ctx, 'fields');
+  const host = block?.querySelector('[data-fields-grid]');
+  if (!host) return;
+  const title = String(ctx.el?.querySelector('.sh-drawer-title')?.textContent ?? '').trim();
+  ctx.gridFields = arrangeGridFields(ctx.visibleFields, ctx.row, title, ctx.fieldLayout);
+  const anyShown = ctx.visibleFields.some(field => !ctx.fieldLayout.get(field.key)?.hidden);
+  host.innerHTML = fieldsHtml(ctx.gridFields, ctx.row, ctx.fieldLayout, !anyShown);
 }
 
 /**
@@ -954,28 +1208,38 @@ function onBodyClick(ctx, event) {
     return;
   }
 
-  // ② 结构块折叠头（子项 + 挂载的表）。必须在「单元格」之前判：
+  // ② 字段显示设置：入口按钮 + 面板里的 上/下移 · 大/中/小 · 显隐
+  if (event.target.closest('[data-fields-config]')) {
+    toggleFieldPanel(ctx);
+    return;
+  }
+  if (event.target.closest('[data-fieldcfg]')) {
+    onFieldPanelClick(ctx, event);
+    return;
+  }
+
+  // ③ 结构块折叠头（子项 + 挂载的表）。必须在「单元格」之前判：
   //    折叠头里没有 .sh-cell，但排在后面的分支越少越不容易被误伤。
   if (event.target.closest('[data-struct-toggle]')) {
     toggleStructure(ctx);
     return;
   }
 
-  // ③ 面包屑跳转：T09 才接，现在只打点（不做假动作，免得看起来能点却没反应）
+  // ④ 面包屑跳转：T09 才接，现在只打点（不做假动作，免得看起来能点却没反应）
   const crumb = event.target.closest('[data-crumb-id]');
   if (crumb) {
     console.debug('[rowDrawer] 面包屑跳转待接入（T09）', toId(crumb.dataset.crumbId));
     return;
   }
 
-  // ④ 子项 → 打开该子项的抽屉
+  // ⑤ 子项 → 打开该子项的抽屉
   const child = event.target.closest('[data-child-id]');
   if (child) {
     openChildDrawer(ctx, toId(child.dataset.childId));
     return;
   }
 
-  // ⑤ 子表卡片：sheetPage 还没导出 __wrOpenSheet（T09 才有），先只留入口判断
+  // ⑥ 子表卡片：sheetPage 还没导出 __wrOpenSheet（T09 才有），先只留入口判断
   const sheetCard = event.target.closest('[data-sheet-id]');
   if (sheetCard) {
     const sheetId = toId(sheetCard.dataset.sheetId);
@@ -984,7 +1248,7 @@ function onBodyClick(ctx, event) {
     return;
   }
 
-  // ⑥ 关联笔记：打开 / 解除关联 / 新建 / 关联已有 / 改挂确认
+  // ⑦ 关联笔记：打开 / 解除关联 / 新建 / 关联已有 / 改挂确认
   const noteOpen = event.target.closest('[data-note-open]');
   if (noteOpen) {
     void openLinkedNote(ctx, noteOpen.dataset.noteOpen);
@@ -1031,7 +1295,7 @@ function onBodyClick(ctx, event) {
     return;
   }
 
-  // ⑦ 字段单元格 → 交给 sheetPage 挂上单元格编辑器
+  // ⑧ 字段单元格 → 交给 sheetPage 挂上单元格编辑器
   const cell = event.target.closest('.sh-cell');
   if (!cell) return;
   const field = ctx.fields.find(item => item.key === cell.dataset.key);

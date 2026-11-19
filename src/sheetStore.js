@@ -853,6 +853,43 @@ export async function patchTableField(table, fieldId, patch) {
   await db().dbExecute(`UPDATE field_def SET ${sets} WHERE id = ?`, [...values, fieldId]);
 }
 
+/**
+ * 把「这个字段在抽屉里怎么显示」写回 field.options.drawer。
+ *
+ * 存 options 而不是新开一张表：预置表落 field_def、自建表落 sheet_field，两边都有
+ * 这一列，零迁移；而且它天然跟着**表**走 —— 同一个字段在表格、看板、日历里点开，
+ * 抽屉长得一样，不会出现「卡片一套、抽屉另一套」。
+ *
+ * options 是整列覆盖写，必须先读出来合并：直接写 {drawer} 会把 wrap / dateOnly /
+ * source 这些别的设置一起抹掉。
+ *
+ * @param {object} table 表（决定写 field_def 还是 sheet_field）
+ * @param {object} field 字段（写完就地更新 field.options，宿主缓存不用重查）
+ * @param {{hidden?:boolean, size?:string, order?:number|null}|null} drawer
+ *        传 null / 空 = 清掉这套参数，回到默认（显示 / 中等 / 按字段顺序）
+ * @returns {Promise<string|null>} 写进去的 options 字符串
+ */
+export async function saveFieldDrawer(table, field, drawer) {
+  if (!table || !field || field.id == null) return null;
+  const raw = typeof field.options === 'string' ? field.options : '';
+  let config = {};
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) config = parsed;
+    } catch (error) {
+      config = {};
+    }
+  }
+  const next = { ...config };
+  if (drawer && typeof drawer === 'object') next.drawer = drawer;
+  else delete next.drawer;
+  const options = JSON.stringify(next);
+  await patchTableField(table, field.id, { options });
+  field.options = options;
+  return options;
+}
+
 export async function deleteTableField(table, fieldId) {
   if (!table || !fieldId) return;
   if (table.kind !== TABLE_KIND_PRESET) return deleteField(fieldId);
