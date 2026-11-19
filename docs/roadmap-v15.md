@@ -44,7 +44,7 @@
 - 切换表 / 重进表：`resetPresetQuick()` 归零，避免「切到另一张表还挂着今天，看着像空表」。
 - 「＋新建记录」在预置表下补默认值（今天 / 未分类 / 待开始），与老基础表一致。
 
-同时定了三件合流必须先解决的事：
+同时定了四件合流必须先解决的事：
 
 1. **详情页收起 `sheetPage` 自带的占位 tab**（`.sheet-pane .sh-views` 隐藏）。
    `#view-bar` 已经有真视图页签、同样以「表格」打头；两排并排、一排能切一排点了弹「还没做」，只会让人以为界面坏了。
@@ -60,6 +60,13 @@
    - 顺带补回合流时漏接的 `opts.char`（`startCellEdit`）：选中一格直接打字，旧表会用它覆盖原值，
      新网格没接 —— 那个字符会被吃掉，什么也不会发生。
    三条都由 `_debug/editstate-probe.html` 用像素断言钉住（同一格的「静态文字 y」与「编辑态第一行 y」差 ≤3px）。
+4. **编辑中点同一格 = 挪光标，不是退出**（Excel 语义）。`grid.select()` 最后会调 `adapter.focus()` 把焦点
+   交给格子，输入框一 blur 就提交，表现就是「想点一下改字，结果编辑态没了」。两条闸：
+   `onHostClick` 遇到 `.ft-cell-editing` 直接返回（不重选、不抢焦点）；
+   `onHostMouseDown`（捕获阶段）拦住格子空白处的按下、把焦点还给编辑器 —— 点在输入框上则放行，
+   光标落点交给浏览器。双击同一格继续交给浏览器「选一个词」。
+   这条只有真鼠标事件测得出（合成 `click` 不执行默认聚焦），办法是 CDP `Input.dispatchMouseEvent`：
+   `_debug/cdp_click.py`（12 条断言）。
 
 **现在的默认**：`presetGridIsSheet()` 返回 true（走 sheetPage）。
 回退老基础表：`localStorage.setItem('wrPresetGrid', 'legacy')` 然后刷新；恢复 `removeItem`。

@@ -2705,6 +2705,9 @@ function onHostPointerDown(event) {
   // pointerup 落在表格外时，click 不会经过 host，标记会一直留着，
   // 下一轮第一次点按钮就被吃掉。
   suppressClick = false;
+  // 正在编辑的格子里按下：不开始框选、不挪选区 —— 那一下是「放光标」的意思。
+  // 拖动选区在这里起手的话，指针一移就把编辑态甩掉了。
+  if (event.target.closest('.sh-cell.ft-cell-editing')) return;
   const handle = event.target.closest('.sh-col-resizer');
   if (!handle) {
     // 单元格拖选：记下起点，移动超过 5px 才算框选（否则仍然是单击编辑）
@@ -2810,6 +2813,8 @@ function onHostDblClick(event) {
   const field = state.fields.find(item => item.key === cell.dataset.key);
   const row = state.rows.find(item => String(item.id) === String(cell.dataset.row));
   if (field && row) {
+    // 已经在编辑的那一格：双击是「选一个词」，交给浏览器去选，不拦、也不重开编辑器
+    if (cell.classList.contains('ft-cell-editing')) return;
     event.preventDefault();
     if (field.type === 'attachment') {
       const items = Array.isArray(row.values[field.key]) ? row.values[field.key].filter(item => item && item.path) : [];
@@ -2863,6 +2868,18 @@ function onHostContextMenu(event) {
   if (!row) return;
   event.preventDefault();
   openRowMenuFor(rowEl, row);
+}
+
+// 编辑中的格子：点格子里的空白处（换行列的文字块外面那一片）不能把焦点抢到格子上。
+// 格子是 tabindex=-1 的可聚焦元素，浏览器默认会把焦点交给它 → 输入框 blur → 提交并收掉编辑态，
+// 也就是「想点一下挪光标，结果编辑没了」。这里拦下这一下并把焦点还给编辑器；
+// 点在输入框本身上就放行，光标落点交给浏览器（Excel 也是这个手感）。
+function onHostMouseDown(event) {
+  const editingCell = event.target.closest?.('.sh-cell.ft-cell-editing');
+  if (!editingCell) return;
+  if (event.target.closest('.ft-inline-input, .ft-dropdown')) return;
+  event.preventDefault();
+  editingCell.querySelector('.ft-inline-input')?.focus({ preventScroll: true });
 }
 
 function onHostClick(event) {
@@ -2944,6 +2961,10 @@ function onHostClick(event) {
 
   const cell = event.target.closest('.sh-cell');
   if (cell) {
+    // 正在编辑的这一格：点它只是挪光标（Excel 语义），不重新选中。
+    // 选中会走 grid.select() → adapter.focus() → 把焦点从输入框挪到格子上，
+    // 输入框 blur 立刻提交，表现就是「想点一下改字，结果编辑态没了」。
+    if (cell.classList.contains('ft-cell-editing')) return;
     // 单击只选中；Ctrl=加减单个格，Shift=从锚点扩展矩形，双击才编辑
     selectFromCell(cell, event);
     return;
@@ -3116,6 +3137,8 @@ export async function initSheetPage() {
     host.addEventListener('click', onHostClick);
     host.addEventListener('change', onHostChange);
     host.addEventListener('pointerdown', onHostPointerDown);
+    // 捕获阶段：编辑态下格子空白处的按下要**先**被拦下来，浏览器才不会把焦点交给格子
+    host.addEventListener('mousedown', onHostMouseDown, true);
     // 浏览器默认会把 <img> 拖成 ghost 图，打断拖框选择（图片单元格尤其明显）
     host.addEventListener('dragstart', event => {
       if (event.target.closest('.sh-cell')) event.preventDefault();
