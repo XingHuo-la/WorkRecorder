@@ -13,7 +13,8 @@ import { escapeHtml } from './htmlUtils.js';
 import { showUndoToast } from './undoToast.js';
 import { undoStack } from './undoCore.js';
 import { saveRowValues, rowTitle, fieldOptionsList } from './sheetStore.js';
-import { isDateOnly } from './fieldTypes.js';
+import { isDateOnly, openCellEditor, renderCell } from './fieldTypes.js';
+import { openDatePicker } from './datePicker.js';
 
 const UNGROUPED = '__ungrouped__';
 
@@ -133,12 +134,63 @@ function cardChips(row, fields, { skipKeys = [], limit = 3 } = {}) {
   return chips.join('');
 }
 
-function openCard(row, fields, table) {
-  const list = fields.filter(field => field.key);
+// 抽屉里的字段格：视图层没有网格控制器（gridCore），拿不到表格那套
+// select/mousedown 闸，所以这里只用 fieldTypes 的通用编辑器 + 一条最简提交路径。
+//
+// 必须先有这条：viewPage 打开抽屉时原来什么也没传，抽屉的字段格是纯展示 ——
+// 点上去毫无反应，给人的结论是「日历里改不了内容」。
+function editCellInDrawer(field, cellEl, row, ctx) {
+  if (!cellEl || !ctx?.saveRow || cellEl.classList.contains('ft-cell-editing')) return;
+
+  const commit = async value => {
+    const values = { ...row.values, [field.key]: value };
+    try {
+      await ctx.saveRow(row, values);
+    } catch (error) {
+      return;
+    }
+    row.values = values;
+    cellEl.classList.remove('ft-cell-editing');
+    cellEl.innerHTML = renderCell(field, value, { placeholder: '点击填写' });
+    ctx.onChanged?.();
+  };
+
+  openCellEditor(cellEl, field, row.values[field.key], {
+    getOptions: () => fieldOptionsList(field),
+    openDatePicker: (targetCell, targetField, currentValue, opts = {}) => {
+      openDatePicker(targetCell, {
+        value: currentValue,
+        dateOnly: opts.dateOnly === true,
+        onPick: pick => Promise.resolve(opts.commit ? opts.commit(pick) : commit(pick)).catch(() => {}),
+        onClear: () => Promise.resolve(opts.commit ? opts.commit('') : commit('')).catch(() => {}),
+        onClose: () => opts.done?.(),
+      });
+    },
+    // 视图层不加字段定义（那属于表结构）：在原地造一个临时选项，本次可选，
+    // 下次重画就没了。要在库里留下，得回表格视图的列菜单里加。
+    ensureOption: async (targetField, label) => {
+      const text = String(label || '').trim();
+      if (!text) return null;
+      return { value: text, label: text };
+    },
+    commit,
+    toast: () => {},
+    onSettled: () => {},
+  });
+}
+
+function openCard(row, ctx) {
+  const list = ctx.fields.filter(field => field.key);
   openRowDrawer({
     row,
     fields: list,
-    subtitle: table?.name || '',
+    subtitle: ctx.table?.name || '',
+    onCellClick: (field, cellEl, liveRow) => editCellInDrawer(field, cellEl, liveRow, ctx),
+    // 抽屉里改标题走的是 patchRecord（不经 ctx.saveRow），视图侧的数据不会自己变。
+    // 关抽屉时统一重取一遍行：宁可多查一次，也不要留一个「改了看起来没保存」的界面。
+    onClose: () => {
+      void ctx.refresh?.();
+    },
   });
 }
 
@@ -225,7 +277,7 @@ function bindBoardOnce(root) {
     root._vpCtx?.onConfig?.({ groupBy: event.target.value });
   });
 
-  root.addEventListener('click', event => {
+  root.addEventListener('click', async event => {
     // 刚拖完的那一下会顺手触发 click，不拦就会「放下卡片 = 打开抽屉」。
     if (Date.now() < (root._vpSuppressClick || 0)) return;
     const ctx = root._vpCtx;
@@ -233,13 +285,15 @@ function bindBoardOnce(root) {
     const add = event.target.closest('[data-vp-add]');
     if (add) {
       event.preventDefault();
-      ctx.onAddRow?.(root._vpGroupField, add.dataset.vpAdd === UNGROUPED ? '' : add.dataset.vpAdd);
+      // 新建后由视图层自己开抽屉：它知道要挂 onCellClick / onClose 两个回调
+      const fresh = await ctx.onAddRow?.(root._vpGroupField, add.dataset.vpAdd === UNGROUPED ? '' : add.dataset.vpAdd);
+      if (fresh) openCard(fresh, ctx);
       return;
     }
     const card = event.target.closest('[data-vp-card]');
     if (!card) return;
     const row = ctx.rows.find(item => String(item.id) === String(card.dataset.vpCard));
-    if (row) openCard(row, ctx.fields, ctx.table);
+    if (row) openCard(row, ctx);
   });
 
   // ---- 拖拽：用 pointer 事件，不用 HTML5 draggable ----
@@ -524,7 +578,7 @@ function renderGallery(root, ctx) {
     const card = event.target.closest('[data-vp-card]');
     if (!card) return;
     const row = rows.find(item => String(item.id) === String(card.dataset.vpCard));
-    if (row) openCard(row, fields, table);
+    if (row) openCard(row, ctx);
   });
 }
 
@@ -641,7 +695,7 @@ function renderCalendar(root, ctx) {
             )}">${escapeHtml(title)}</button>`;
           })
           .join('')}
-        ${rest > 0 ? `<span class="vp-cal-rest">还有 ${rest} 条</span>` : ''}
+        ${rest > 0 ? `<button type="button" class="vp-cal-rest" data-vp-more="${key}">还有 ${rest} 条</button>` : ''}
       </div>
     </div>`;
   }
@@ -696,17 +750,98 @@ function renderCalendar(root, ctx) {
     ctx.onConfig?.({ dateField: event.target.value });
   });
 
-  root.querySelector('.vp-cal-grid')?.addEventListener('click', event => {
+  root.querySelector('.vp-cal-grid')?.addEventListener('click', async event => {
     const add = event.target.closest('[data-vp-add]');
     if (add) {
-      ctx.onAddRow?.(dateField, dayValueFor(dateField, add.dataset.vpAdd));
+      const fresh = await ctx.onAddRow?.(dateField, dayValueFor(dateField, add.dataset.vpAdd));
+      if (fresh) openCard(fresh, ctx);
+      return;
+    }
+    // 「还有 N 条」是唯一的溢出出口：一格固定三条，多的必须在某个地方看得见，
+    // 否则「这天有 8 件事」和「这天有 3 件事」在月视图里长得一模一样。
+    const more = event.target.closest('[data-vp-more]');
+    if (more) {
+      openDayPopover(more, more.dataset.vpMore, byDay.get(more.dataset.vpMore) || [], ctx);
       return;
     }
     const card = event.target.closest('[data-vp-card]');
     if (!card) return;
     const row = rows.find(item => String(item.id) === String(card.dataset.vpCard));
-    if (row) openCard(row, fields, table);
+    if (row) openCard(row, ctx);
   });
+}
+
+// 某天的全部条目：小浮层，不是日视图 —— 目标只是「看全这一天」，
+// 不该为它再起一个新页面层级。
+let calPopover = null;
+
+function closeDayPopover() {
+  if (!calPopover) return;
+  calPopover.remove();
+  calPopover = null;
+  document.removeEventListener('mousedown', onPopoverOutside, true);
+  document.removeEventListener('keydown', onPopoverKey, true);
+  window.removeEventListener('resize', closeDayPopover);
+}
+
+function onPopoverOutside(event) {
+  if (calPopover && !calPopover.contains(event.target)) closeDayPopover();
+}
+
+function onPopoverKey(event) {
+  if (event.key === 'Escape') closeDayPopover();
+}
+
+function openDayPopover(anchor, dayKey, dayRows, ctx) {
+  closeDayPopover();
+  if (!dayRows.length) return;
+
+  const { fields } = ctx;
+  const titleField =
+    fieldByKey(fields, ctx.view?.config?.titleField) || fields.find(field => field.type === 'text') || null;
+
+  const pop = document.createElement('div');
+  pop.className = 'vp-cal-pop';
+  pop.innerHTML = `<div class="vp-cal-pop-head"><span>${escapeHtml(dayKey)}</span><span>${dayRows.length} 条</span></div>
+    <div class="vp-cal-pop-list">
+      ${dayRows
+        .map(row => {
+          const title =
+            (titleField && String(row.values[titleField.key] ?? '').trim()) || rowTitle(row.values, fields);
+          return `<button type="button" class="vp-cal-item" data-vp-pop-card="${escapeHtml(row.id)}">${escapeHtml(
+            title
+          )}</button>`;
+        })
+        .join('')}
+    </div>`;
+  document.body.appendChild(pop);
+  calPopover = pop;
+
+  // 贴在按钮下方；下面放不下就翻到上面，左右夹在视口内。
+  const box = anchor.getBoundingClientRect();
+  const width = pop.offsetWidth;
+  const height = pop.offsetHeight;
+  const left = Math.max(10, Math.min(box.left, window.innerWidth - width - 10));
+  let top = box.bottom + 6;
+  if (top + height > window.innerHeight - 10) top = Math.max(10, box.top - height - 6);
+  pop.style.left = `${left}px`;
+  pop.style.top = `${top}px`;
+
+  pop.addEventListener('click', event => {
+    const card = event.target.closest('[data-vp-pop-card]');
+    if (!card) return;
+    const row = dayRows.find(item => String(item.id) === String(card.dataset.vpPopCard));
+    closeDayPopover();
+    if (row) openCard(row, ctx);
+  });
+
+  // 延迟一拍再挂外部监听：触发这次打开的那次点击还在冒泡，
+  // 立刻挂上会被自己这一下关掉。
+  setTimeout(() => {
+    document.addEventListener('mousedown', onPopoverOutside, true);
+    document.addEventListener('keydown', onPopoverKey, true);
+    window.addEventListener('resize', closeDayPopover);
+  }, 0);
 }
 
 // ==========================================

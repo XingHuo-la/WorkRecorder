@@ -836,10 +836,6 @@ function setupRecordsView() {
     return viewData;
   };
 
-  const openRowDrawerFor = (table, row) => {
-    openRowDrawer({ row, fields: viewData.fields, subtitle: table?.name || '' });
-  };
-
   const applyView = async view => {
     if (!currentTable || !view) return;
     // 这一帧认死一张表：下面交给视图层的回调绑定它，而不是「当前表」这个还会变的状态。
@@ -906,7 +902,9 @@ function setupRecordsView() {
           viewData = { tableId: null, fields: [], rows: [] };
           await applyView(view);
           const fresh = (await readTableRows(table)).find(item => String(item.id) === String(id));
-          if (fresh) openRowDrawerFor(table, fresh);
+          // 这里不自己开抽屉：viewPage 那边要在打开时挂上「字段格可编辑」和
+          // 「关闭即刷新」两个回调，宿主抢着开就会开出一个只能看不能改的抽屉。
+          return fresh || null;
         },
         onChanged: () => {
           viewData = { tableId: null, fields: [], rows: [] };

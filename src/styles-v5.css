@@ -1087,11 +1087,60 @@ body[data-skin="v4"] .vp-cal-item:hover {
 }
 
 body[data-skin="v4"] .vp-cal-rest {
+  align-self: flex-start !important;
   padding: 1px 6px !important;
+  border: 0 !important;
+  border-radius: 4px !important;
+  background: transparent !important;
   color: var(--v4-text-3) !important;
   font-family: var(--v4-sans) !important;
   font-size: 11px !important;
-  cursor: default !important;
+  text-align: left !important;
+  cursor: pointer !important;
+  transition: color 110ms ease, background 110ms ease !important;
+}
+
+body[data-skin="v4"] .vp-cal-rest:hover {
+  background: color-mix(in srgb, var(--color-text) 7%, transparent) !important;
+  color: var(--v4-text) !important;
+}
+
+/* 一天的完整列表：宽 240、最高 260 内滚。
+   底色必须用实色（--v4-surface），浮层压在日历上，透出下面的格子线会很脏。 */
+body[data-skin="v4"] .vp-cal-pop {
+  position: fixed !important;
+  z-index: 2400 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 4px !important;
+  width: 240px !important;
+  padding: 6px !important;
+  border: 1px solid var(--v4-line-2) !important;
+  border-radius: 10px !important;
+  background: var(--v4-surface) !important;
+  box-shadow: 0 18px 44px -20px rgba(0, 0, 0, 0.55) !important;
+}
+
+body[data-skin="v4"] .vp-cal-pop-head {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 10px !important;
+  padding: 2px 4px 6px !important;
+  border-bottom: 1px solid var(--v4-line) !important;
+  color: var(--v4-text-3) !important;
+  font-family: var(--v4-sans) !important;
+  font-size: 11.5px !important;
+  font-variant-numeric: tabular-nums !important;
+}
+
+body[data-skin="v4"] .vp-cal-pop-list {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 3px !important;
+  max-height: 260px !important;
+  overflow-y: auto !important;
+  overscroll-behavior: contain !important;
 }
 
 /* ---- 拖拽锁：页签条右端的那个开关 ----
