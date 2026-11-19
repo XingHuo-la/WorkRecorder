@@ -237,6 +237,50 @@ body[data-skin="v4"] .sh-cell.is-wrap .ft-inline-input.is-multiline {
   align-self: stretch !important;
 }
 
+/* 编辑器必须「看起来不存在」——这一条以前漏了，于是单行输入框带着
+   表单控件那套外观进到格子里：1px 边框 + 8px 圆角 + 4%/6% 底 + 32px 定高，
+   在拖高过的行里尤其明显（格子 200px 高，里面浮着一条 32px 的小框）。
+
+   压不住的原因不是「没写」，而是「写了也输」：.ft-inline-input 只是 (0,1,0)，
+   而下面两条同带 !important、权重更高：
+     styles.css   input[type="text"], …, .input, .select, …   { border:1px solid … ; border-radius:8px ; background:… }   (0,1,1)
+     styles-v3.css body[data-ui="v3"] input[type="text"], …   { background:…4% ; height:32px ; border:1px solid … }        (0,2,2)
+                  body[data-ui="v3"] input[type="text"]:focus { background:…6% }                                            (0,3,2)
+   所以这里按住它们：.sh-table 那一组是 (0,4,1)/(0,5,1)，.wr-cell 那一组是 (0,3,1)/(0,4,1)，
+   两组都压得过上面三条；而且只作用于表内就地编辑器，页面上正常的输入框一个都不动。 */
+body[data-skin="v4"] .sh-table .sh-cell .ft-inline-input,
+body[data-skin="v4"] .wr-cell .ft-inline-input {
+  border: 0 !important;
+  border-top-width: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  min-height: 0 !important;
+  box-shadow: none !important;
+  outline: none !important;
+  transition: none !important;
+}
+
+/* 非换行的格子：整格就是输入框，文字落点与静态态一样（垂直居中）。
+   换行的格子不进这条 —— 那边靠内容撑高行，height:100% 会成环。 */
+body[data-skin="v4"] .sh-table .sh-cell:not(.is-wrap) .ft-inline-input {
+  height: 100% !important;
+}
+
+/* 聚焦时也别现形：格子那一圈 .ft-cell-editing 描边已经是全部的「正在编辑」提示，
+   再叠 outline-offset:2px 的淡紫环，就是截图里「框里还有框」的来源。 */
+body[data-skin="v4"] .sh-table .sh-cell .ft-inline-input:focus,
+body[data-skin="v4"] .sh-table .sh-cell .ft-inline-input:focus-visible,
+body[data-skin="v4"] .wr-cell .ft-inline-input:focus,
+body[data-skin="v4"] .wr-cell .ft-inline-input:focus-visible {
+  background: transparent !important;
+  background-color: transparent !important;
+  border-color: transparent !important;
+  outline: none !important;
+  box-shadow: none !important;
+}
+
 /* =====================================================================
    第 4 节 · 列宽：拖边界 / 双击自适应
    ---------------------------------------------------------------------
