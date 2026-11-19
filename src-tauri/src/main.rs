@@ -730,6 +730,41 @@ fn init_and_migrate_db_at(db_path: &str, json_path: &str) -> Result<(), String> 
             .map_err(|e| format!("数据库升级到 v15 失败: {}", e))?;
     }
 
+    // v16：预置表「内容」列默认开启自动换行。
+    //
+    // 之前这一列是单行列，长内容只能压成一行省略号；Sir 要的是「行高容得下就换行、
+    // 超出就省略」，与自建表勾了换行的文本列同一套行为（前端 isWrap → .is-wrap）。
+    // 行为落点在前端：行高未固定时仍按 styles.css 6.10 压成一行；用户拖高行
+    // （row.height > 0）后由 .is-clamped + --clamp 按可用行数截断、末尾省略号。
+    //
+    // 只补默认值：老库里 options 本来就是 NULL；将来用户在列设置里显式关掉换行
+    // （wrap:false）不该被这次迁移覆盖。迁移只跑一次，但仍判存在性，防止
+    // 回滚旧版本再升级时重复进入。
+    if schema_version < 16 {
+        let raw: Option<String> = conn
+            .query_row(
+                "SELECT options FROM field_def WHERE entity = 'log' AND key = 'text'",
+                [],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .unwrap_or(None);
+        let mut options: serde_json::Map<String, Value> = raw
+            .as_deref()
+            .and_then(|text| serde_json::from_str::<Value>(text).ok())
+            .and_then(|value| value.as_object().cloned())
+            .unwrap_or_default();
+        if !options.contains_key("wrap") {
+            options.insert("wrap".to_string(), Value::Bool(true));
+            conn.execute(
+                "UPDATE field_def SET options = ?1 WHERE entity = 'log' AND key = 'text'",
+                rusqlite::params![Value::Object(options).to_string()],
+            )
+            .map_err(|e| format!("为「内容」字段开启自动换行失败: {}", e))?;
+        }
+        conn.execute_batch("PRAGMA user_version = 16;")
+            .map_err(|e| format!("数据库升级到 v16 失败: {}", e))?;
+    }
+
     let json_exists = Path::new(json_path).exists();
     // ✅ 修复了之前的借用检查器报错，一步到位！
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM tags", [], |row| row.get(0)).unwrap_or(0);
@@ -2051,6 +2086,81 @@ mod tests {
             .unwrap();
         assert_eq!(presets_after, 1, "二次迁移多建了预置表");
         assert_eq!(views_after, views_before, "二次迁移重复补了视图");
+
+        drop(conn);
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    // v16：「内容」列默认开启自动换行（行为本体在前端：is-wrap → 截断行数）。
+    //   ① 全新库：field_def(log/text).options 里带 wrap = true
+    //   ② 幂等：重跑不报错、值不变
+    //   ③ 边界：用户显式关掉（wrap:false）后，v16 再跑一遍不能把它翻回来
+    #[test]
+    fn v16_wraps_preset_content_field() {
+        let tmp = std::env::temp_dir().join("wr-v16-wrap");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).expect("创建临时目录失败");
+        let db = tmp.join("t.db");
+        let json = tmp.join("t.json");
+        init_and_migrate_db_at(&db.to_string_lossy(), &json.to_string_lossy())
+            .expect("全新库迁移失败");
+
+        // 只读「内容」列的 options，别的列一概不关心
+        fn content_options(conn: &Connection) -> Value {
+            let raw: Option<String> = conn
+                .query_row(
+                    "SELECT options FROM field_def WHERE entity = 'log' AND key = 'text'",
+                    [],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .unwrap_or(None);
+            raw.as_deref()
+                .and_then(|text| serde_json::from_str::<Value>(text).ok())
+                .unwrap_or(Value::Null)
+        }
+
+        let conn = Connection::open(&db).unwrap();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert!(version >= 16, "全新库版本号应至少为 16，实际 {}", version);
+
+        // ① 默认开
+        let options = content_options(&conn);
+        assert_eq!(
+            options.get("wrap"),
+            Some(&Value::Bool(true)),
+            "「内容」列没有默认开启换行：{}",
+            options
+        );
+
+        // ② 幂等
+        drop(conn);
+        init_and_migrate_db_at(&db.to_string_lossy(), &json.to_string_lossy())
+            .expect("二次迁移失败");
+        let conn = Connection::open(&db).unwrap();
+        assert_eq!(
+            content_options(&conn).get("wrap"),
+            Some(&Value::Bool(true)),
+            "二次迁移把默认值改掉了"
+        );
+
+        // ③ 用户显式关掉后，重放 v16 不能覆盖
+        conn.execute(
+            "UPDATE field_def SET options = '{\"wrap\":false}' WHERE entity = 'log' AND key = 'text'",
+            [],
+        )
+        .unwrap();
+        conn.execute_batch("PRAGMA user_version = 15;").unwrap();
+        drop(conn);
+        init_and_migrate_db_at(&db.to_string_lossy(), &json.to_string_lossy())
+            .expect("重放 v16 失败");
+        let conn = Connection::open(&db).unwrap();
+        assert_eq!(
+            content_options(&conn).get("wrap"),
+            Some(&Value::Bool(false)),
+            "v16 覆盖了用户显式关掉的换行设置"
+        );
 
         drop(conn);
         let _ = fs::remove_dir_all(&tmp);
