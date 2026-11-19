@@ -789,7 +789,80 @@ export async function insertTableRow(table, values = {}) {
   return created?.[0]?.id ?? null;
 }
 
-export async function listViews(tableId) {  const rows = await db().dbQuery(
+// ==========================================
+// 表无关的读写门面（P2.5）
+//
+// 起因：sheetPage 以前只认自建表 —— 它读 sheet_field / 按 sheet_id 读 record。
+// 预置表的字段在 field_def、行是 kind='log' 且 sheet_id 为空，两套口径完全不同。
+// 这里把差异收进四个函数：上面的视图层只认 (table, values)，不再关心值躺在哪。
+//
+// 两种物理形态、一种读法 —— 与 readTableFields / readTableRows 是同一条原则。
+// ==========================================
+
+// 连着插 N 条空行（sheetPage 的「上方/下方插入 N 行」）。
+// 自建表要挪 sort 腾位置；预置表按时间排序，sort 没有意义，就是插 N 条。
+export async function insertTableRowsAt(table, sortIndex, count = 1, values = {}) {
+  if (!table) return;
+  if (table.kind !== TABLE_KIND_PRESET) {
+    await insertRowAt(table.id, sortIndex, count, values);
+    return;
+  }
+  const safeCount = Math.max(1, Math.min(50, Number(count) || 1));
+  for (let i = 0; i < safeCount; i += 1) await insertTableRow(table, values);
+}
+
+// 复制一行：两种表都是「拿一份 values 再插一条」，差别已经在 insertTableRow 里了。
+export async function duplicateTableRow(table, values) {
+  if (!table) return null;
+  return insertTableRow(table, values);
+}
+
+export async function createTableField(table, { label, type = 'text', options = null, width = null, sort = null } = {}) {
+  if (!table) return null;
+  if (table.kind !== TABLE_KIND_PRESET) return createField(table.id, { label, type, options, width, sort });
+
+  // ⚠️ 预置表的新字段必须写 field_def。往 sheet_field 里补一条「看起来一样」的复制，
+  // readTableFields 读不到（它只认 field_def），界面表现为「加了字段但没出现」。
+  const existing = await readTableFields(table);
+  const nextSort = sort == null ? (existing.length ? Math.max(...existing.map(item => Number(item.sort) || 0)) + 1 : 0) : sort;
+  await db().dbExecute(
+    'INSERT INTO field_def (entity, key, label, type, options, sort, visible, builtin) VALUES (?, ?, ?, ?, ?, ?, 1, 0)',
+    [
+      'log',
+      newFieldKey(),
+      String(label || '新字段').trim(),
+      type,
+      // 与 createField 同一条坑：已经序列化好的 JSON 不能再过一遍 serializeOptions，
+      // 否则它被当成「没有 options 的对象」，选项会被清空。
+      options ? (typeof options === 'string' ? options : serializeOptions(options)) : null,
+      nextSort,
+    ]
+  );
+  return null;
+}
+
+export async function patchTableField(table, fieldId, patch) {
+  if (!table || !fieldId) return;
+  if (table.kind !== TABLE_KIND_PRESET) return patchField(fieldId, patch);
+
+  const allowed = ['label', 'type', 'options', 'width', 'visible', 'sort'];
+  const entries = Object.entries(patch || {}).filter(([key]) => allowed.includes(key) && patch[key] !== undefined);
+  if (!entries.length) return;
+  const sets = entries.map(([key, value]) => (value == null ? `${key} = NULL` : `${key} = ?`)).join(', ');
+  const values = entries.filter(([, value]) => value != null).map(([, value]) => value);
+  await db().dbExecute(`UPDATE field_def SET ${sets} WHERE id = ?`, [...values, fieldId]);
+}
+
+export async function deleteTableField(table, fieldId) {
+  if (!table || !fieldId) return;
+  if (table.kind !== TABLE_KIND_PRESET) return deleteField(fieldId);
+  // 与老的基础表一致：不拦 builtin。删掉 text 这类内置列会让快速记录找不到落点，
+  // 但那是用户明确按下的删除 —— 拦住反而和以前不一样。
+  await db().dbExecute('DELETE FROM field_def WHERE id = ?', [fieldId]);
+}
+
+export async function listViews(tableId) {
+  const rows = await db().dbQuery(
     'SELECT id, table_id, name, form, config, sort FROM view_def WHERE table_id = ? ORDER BY sort, id',
     [tableId]
   );
@@ -798,7 +871,6 @@ export async function listViews(tableId) {  const rows = await db().dbQuery(
     config: parseViewConfig(item),
   }));
 }
-
 export async function createView(tableId, { name, form = 'table', config = {} } = {}) {
   const stamp = nowStamp();
   const maxRows = await db().dbQuery(

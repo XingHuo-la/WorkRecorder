@@ -1004,3 +1004,141 @@ body[data-skin="v4"] .sh-row[style] > .sh-td > .sh-cell.is-wrap {
   align-items: center !important;
   padding-top: 0 !important;
 }
+
+/* =====================================================================
+   12. 预置表的快捷筛选（.sh-filterbar / .sh-quick）
+   ---------------------------------------------------------------------
+   合流前这排 chip 在页面表头（#base-table-tools），合流后它得跟着表走 ——
+   页面表头是「这一页」的工具，而「今天 / 待整理 / 某个分类」是「这张表看哪一段」。
+   放在工具栏下面一行，和「当前生效的条件」共用一条横带（.sh-filterbar）：
+   两者都是范围状态，分成两行会白吃一格行高。
+
+   外观沿用 .v4-chip（页面表头那排的同一套），不做第二套 chip 语言。
+   这里只管排列、间距、两个下拉的壳 —— chip 本身的尺寸/配色在 styles-v4 里。
+   ===================================================================== */
+
+body[data-skin="v4"] .sh-filterbar {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  align-items: center !important;
+  gap: 6px 10px !important;
+  flex: none !important;
+  min-height: 27px !important;
+}
+
+/* 表内（.sheet-pane）向上收一点：快捷栏是工具栏的延续，不该和工具栏一样
+   离表格那么远。10px 的页间距里吃掉 4，剩下 6 —— 读成一簇，又不粘在一起。 */
+body[data-skin="v4"] .sheet-pane .sh-filterbar { margin-top: -4px !important; }
+
+/* 详情页里「表格 / 看板 / 日历」这三个 tab 是 sheetPage 自带的占位，
+   而上面 #view-bar 已经有真视图页签（同样是「表格」打头）。
+   两排长得一样、职责不同 —— 一排能切，一排点了弹「还没做」。
+   详情页里留真的那排：这里把占位的收掉（表页 subview 里它仍是唯一的入口，不动）。 */
+body[data-skin="v4"] .sheet-pane .sh-views { display: none !important; }
+
+/* 条件 chip 在横带里占剩下的宽度，并且自己管换行。
+   .sh-chips 原有 flex:none，塞进 flex-wrap 容器里会按 max-content 撑出去。 */
+body[data-skin="v4"] .sh-filterbar > .sh-chips {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+}
+
+body[data-skin="v4"] .sh-quick {
+  display: flex !important;
+  align-items: center !important;
+  gap: 2px !important;
+  flex: none !important;
+}
+
+/* chip 之间 4px 在这个密度下偏松（工具栏按钮是紧挨着的），收到 2 */
+body[data-skin="v4"] .sh-quick .v4-chips { gap: 2px !important; }
+
+/* 高度写死 27：.v4-chip 自己那条 27 在这条 DOM 路径上会算成 32
+   （逐层关样式表实测：拿掉 styles-v3 反而变 38，说明有别的层在抬它）。
+   快捷栏是自己的一行，别为省事去改 .v4-chip 让页面表头跟着变。 */
+body[data-skin="v4"] .sh-quick .v4-chip {
+  height: 27px !important;
+  min-height: 27px !important;
+  max-height: 27px !important;
+  line-height: 27px !important;
+  padding: 0 11px !important;
+  box-sizing: border-box !important;
+}
+
+body[data-skin="v4"] .sh-quick-sep {
+  width: 1px !important;
+  height: 14px !important;
+  margin: 0 7px !important;
+  background: var(--v4-line-2) !important;
+}
+
+/* 两个下拉：不要原生 select 那个系统框。透明底 + hover 才现底，
+   和旁边 .sh-tool 的按钮是同一套手感；选中的那个给淡底（.is-on），
+   于是一眼能看出「现在收窄到某个分类了」。 */
+body[data-skin="v4"] .sh-quick-pick {
+  position: relative !important;
+  display: inline-flex !important;
+  align-items: center !important;
+}
+
+body[data-skin="v4"] .sh-quick-pick select {
+  appearance: none !important;
+  -webkit-appearance: none !important;
+  height: 27px !important;
+  min-width: 0 !important;
+  max-width: 168px !important;
+  padding: 0 22px 0 10px !important;
+  border: 0 !important;
+  border-radius: 7px !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  color: var(--v4-text-2) !important;
+  font-family: var(--v4-sans) !important;
+  font-size: 12.5px !important;
+  font-weight: 450 !important;
+  text-overflow: ellipsis !important;
+  cursor: pointer !important;
+  transition: background .14s ease, color .14s ease !important;
+}
+
+body[data-skin="v4"] .sh-quick-pick:hover select {
+  background: var(--v4-surface-2) !important;
+  color: var(--v4-text) !important;
+}
+
+body[data-skin="v4"] .sh-quick-pick.is-on select {
+  background: var(--v4-surface-2) !important;
+  color: var(--v4-text) !important;
+  font-weight: 500 !important;
+}
+
+/* appearance:none 把系统框去掉了，焦点环得自己补一个 ——
+   键盘走到这两个下拉时，得看得见「现在在这儿」。
+   用内描边（负 offset）而不是外发光：外发光会被工具栏行高裁掉。 */
+body[data-skin="v4"] .sh-quick-pick select:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-primary) 60%, transparent) !important;
+  outline-offset: -2px !important;
+}
+
+/* 自己画箭头：原生箭头在 appearance:none 之后就没了，
+   data: 图片会被 CSP 拦，所以用两条边拼一个 V。 */
+body[data-skin="v4"] .sh-quick-pick::after {
+  content: '' !important;
+  position: absolute !important;
+  right: 9px !important;
+  top: 50% !important;
+  width: 4px !important;
+  height: 4px !important;
+  margin-top: -3.5px !important;
+  border-right: 1.2px solid var(--v4-text-3) !important;
+  border-bottom: 1.2px solid var(--v4-text-3) !important;
+  transform: rotate(45deg) !important;
+  pointer-events: none !important;
+}
+
+/* 下拉展开时的系统列表：跟随主题，别在深色主题里弹一张白纸 */
+body[data-skin="v4"] .sh-quick-pick option {
+  background: var(--bg-body) !important;
+  color: var(--color-text) !important;
+}
+

@@ -43,17 +43,19 @@ import {
   getDefaultTableId,
   setDefaultTableId,
   touchSheet,
-  loadFields,
-  loadRows,
-  createField,
-  patchField,
-  deleteField,
-  insertRow,
-  insertRowAt,
+  // 读写一律走「表无关」的门面（P2.5）：预置表的字段在 field_def、行是 kind='log'，
+  // 自建表在 sheet_field / sheet_id。差异全在 sheetStore 里，这一层不需要知道。
+  readTableFields,
+  readTableRows,
+  saveTableRow,
+  insertTableRow,
+  insertTableRowsAt,
+  duplicateTableRow,
+  createTableField,
+  patchTableField,
+  deleteTableField,
   setRowHeight,
-  saveRowValues,
   deleteRow,
-  duplicateRow,
   SHEET_TEMPLATES,
   serializeOptions,
   mergeFieldOptions,
@@ -78,6 +80,74 @@ const state = {
   rowTotal: 0,
   fieldIndex: new Map(), // sheetId → [{label, type}]，库视图卡片上展示字段摘要
 };
+
+// ==========================================
+// 字段三件套的分派器（P2.5）
+//
+// 预置表的字段在 field_def、自建表在 sheet_field —— 写错地方的表现是「改了没反应」
+// 而不是报错，所以这两条路必须在**一个**地方分叉，不能让 15 处调用各判一次。
+// 签名与原来的 createField(sheetId, opts) / patchField(id, patch) / deleteField(id)
+// 完全一致，下面所有调用点一行都不用改。
+// ==========================================
+const createField = (_sheetId, opts) => createTableField(state.sheet, opts);
+const patchField = (fieldId, patch) => patchTableField(state.sheet, fieldId, patch);
+const deleteField = fieldId => deleteTableField(state.sheet, fieldId);
+
+// ==========================================
+// 预置表的快捷筛选（P2.5）
+//
+// 合流前它们在 #base-table-tools 里（页面表头那排「全部/今天/待整理 + 主分类/子项目」）。
+// 搬到表内之后刻意**不入 state.filters**：
+//   state.filters 是「筛选」面板里手写的条件，一个 chip 一个 ×；
+//   快捷栏是三个开关 + 两个下拉，语义是「我眼下在看哪一段」。
+// 混在一起的话，「清除筛选」会把用户刚点的「今天」也清掉。
+// ==========================================
+const presetQuick = { mode: 'all', tag: '', sub: '' };
+
+function resetPresetQuick() {
+  presetQuick.mode = 'all';
+  presetQuick.tag = '';
+  presetQuick.sub = '';
+}
+
+function todayString() {
+  const now = new Date();
+  const pad = value => String(value).padStart(2, '0');
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+}
+
+// 真正生效的筛选条件 = 面板里手写的 + 快捷栏的。filterRows 只认这一个入口。
+function activeFilters() {
+  const list = [...state.filters];
+  if (state.sheet?.kind === 'preset') {
+    // 「今天」用 contains 而不是 equals：时间列的值是「2026-11-18 21:30」，
+    // equals 要精确到分钟，选不中当天任何一条。
+    if (presetQuick.mode === 'today') list.push({ key: 'date', op: 'contains', value: todayString() });
+    if (presetQuick.mode === 'inbox') list.push({ key: 'status', op: 'equals', value: 'unprocessed' });
+    // 主分类是单选、子项目是多选（数组），所以一个 equals、一个 contains。
+    if (presetQuick.tag) list.push({ key: 'tag', op: 'equals', value: presetQuick.tag });
+    if (presetQuick.sub) list.push({ key: 'sub_tag', op: 'contains', value: presetQuick.sub });
+  }
+  return list;
+}
+
+// 下拉的候选值从「现有行」里取，不读 field_def.options ——
+// 主分类的 options 是 {"source":"tags"}（没有静态列表），子项目干脆没有选项。
+function presetQuickOptions() {
+  const tags = new Set();
+  const subs = new Set();
+  state.rows.forEach(row => {
+    const tag = String(row.values?.tag ?? '').trim();
+    if (tag) tags.add(tag);
+    const sub = row.values?.sub_tag;
+    (Array.isArray(sub) ? sub : [sub]).forEach(item => {
+      const text = String(item ?? '').trim();
+      if (text) subs.add(text);
+    });
+  });
+  const sortZh = (a, b) => a.localeCompare(b, 'zh');
+  return { tags: [...tags].sort(sortZh), subs: [...subs].sort(sortZh) };
+}
 
 let host = null;
 let saveTimer = null;
@@ -208,9 +278,10 @@ function searchTextOf(field, value) {
 
 function filterRows(rows) {
   let list = rows;
-  if (state.filters.length) {
+  const filters = activeFilters();
+  if (filters.length) {
     list = list.filter(row =>
-      state.filters.every(filter => {
+      filters.every(filter => {
         const field = state.fields.find(item => item.key === filter.key);
         if (!field) return true;
         const raw = displayValue(field, row.values[filter.key]);
@@ -355,6 +426,48 @@ function renderLibrary() {
 // 表视图
 // ==========================================
 
+// 预置表专用的快捷筛选行：三个开关 + 两个下拉。
+// 复用页面表头那套 .v4-chip（同一个产品里同一种「快速筛选」不该长两个样）。
+function renderPresetQuick() {
+  if (state.sheet?.kind !== 'preset') return '';
+  const { tags, subs } = presetQuickOptions();
+  const chip = (mode, label) => {
+    const on = presetQuick.mode === mode;
+    return `<button type="button" class="v4-chip${on ? ' is-on' : ''}" data-quick="${mode}"
+      aria-pressed="${on ? 'true' : 'false'}">${label}</button>`;
+  };
+  const option = (value, current, label) =>
+    `<option value="${escapeHtml(value)}"${String(current) === String(value) ? ' selected' : ''}>${escapeHtml(label)}</option>`;
+  return `<div class="sh-quick" role="group" aria-label="快速筛选">
+    <div class="v4-chips" role="group" aria-label="按时间/状态快筛">
+      ${chip('all', '全部')}${chip('today', '今天')}${chip('inbox', '待整理')}
+    </div>
+    <span class="sh-quick-sep" aria-hidden="true"></span>
+    <label class="sh-quick-pick${presetQuick.tag ? ' is-on' : ''}">
+      <select data-quick-tag aria-label="按主分类筛选">
+        ${option('', presetQuick.tag, '主分类')}
+        ${tags.map(tag => option(tag, presetQuick.tag, tag)).join('')}
+      </select>
+    </label>
+    <label class="sh-quick-pick${presetQuick.sub ? ' is-on' : ''}">
+      <select data-quick-sub aria-label="按子项目筛选">
+        ${option('', presetQuick.sub, '子项目')}
+        ${subs.map(sub => option(sub, presetQuick.sub, sub)).join('')}
+      </select>
+    </label>
+  </div>`;
+}
+
+// 快捷筛选行 + 「当前生效的条件」同处一条横带：
+// 二者都是「我在看哪一段」的状态，分成两行会白占一格行高；
+// 没有条件时不渲染 .sh-chips，横带就只剩快捷栏（预置表之外干脆整条不出现）。
+function filterBarHtml(filterChips, sortChip) {
+  const quick = renderPresetQuick();
+  const chips = filterChips || sortChip ? `<div class="sh-chips">${filterChips}${sortChip}</div>` : '';
+  if (!quick && !chips) return '';
+  return `<div class="sh-filterbar">${quick}${chips}</div>`;
+}
+
 function toolbarHtml() {
   const filterChips = state.filters.length
     ? state.filters
@@ -396,7 +509,7 @@ function toolbarHtml() {
     </label>
     <button type="button" class="sh-btn is-primary" data-act="new-row">＋ 新建记录</button>
   </div>
-  ${filterChips || sortChip ? `<div class="sh-chips">${filterChips}${sortChip}</div>` : ''}`;
+  ${filterBarHtml(filterChips, sortChip)}`;
 }
 
 function renderSheet({ resetScroll = false } = {}) {
@@ -620,8 +733,10 @@ async function openSheet(sheetId, options = {}) {
   state.filters = [];
   state.sorts = [];
   state.search = '';
-  state.fields = await loadFields(sheet.id);
-  state.rows = await loadRows(sheet.id);
+  // 快捷筛选也归零：切到另一张表还挂着「今天」会让人以为那张表空的
+  resetPresetQuick();
+  state.fields = await readTableFields(sheet);
+  state.rows = await readTableRows(sheet);
   state.view = 'sheet';
   // 换了一张表：必须回到顶部，不能沿用上一张表的滚动位置
   renderSheet({ resetScroll: true });
@@ -640,11 +755,11 @@ function backToLibrary() {
 }
 
 async function reloadFields() {
-  state.fields = await loadFields(state.sheet.id);
+  state.fields = await readTableFields(state.sheet);
 }
 
 async function reloadRows() {
-  state.rows = await loadRows(state.sheet.id);
+  state.rows = await readTableRows(state.sheet);
 }
 
 // ==========================================
@@ -658,7 +773,7 @@ const rowWriteChains = new Map();
 function writeRow(row) {
   const key = String(row.id);
   const prev = rowWriteChains.get(key) || Promise.resolve();
-  const next = prev.catch(() => {}).then(() => saveRowValues(row.id, row.values));
+  const next = prev.catch(() => {}).then(() => saveTableRow(state.sheet, row, row.values));
   rowWriteChains.set(key, next.catch(() => {}));
   return next;
 }
@@ -988,12 +1103,26 @@ export { closeAllPanels };
 // 行操作
 // ==========================================
 
+// 预置表「新建一行」的既定形状。老的基础表就是这么写的（今天 + 未分类 + 待开始），
+// 不照做的话新行会显示成「时间空、状态空」—— 同一张表两种新建结果。
+function presetNewRowValues() {
+  const now = new Date();
+  const pad = value => String(value).padStart(2, '0');
+  return {
+    text: '',
+    tag: '未分类',
+    status: 'pending',
+    date: `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`,
+  };
+}
+
 async function addRow() {
-  // 新建的就是一行空记录，不预填任何字段值（所见即所得：建出来什么样就是什么样）
-  const values = {};
+  // 自建表：建出来就是一行空记录，不预填任何字段值（所见即所得：建出来什么样就是什么样）
+  // 预置表：它是一条「工作记录」，有既定形状，见 presetNewRowValues。
+  const values = state.sheet?.kind === 'preset' ? presetNewRowValues() : {};
   let id = null;
   try {
-    id = await insertRow(state.sheet.id, values);
+    id = await insertTableRow(state.sheet, values);
     await reloadRows();
     await touchSheet(state.sheet.id);
   } catch (error) {
@@ -1560,7 +1689,7 @@ async function pasteTSVAt(cellEl, text) {
 async function insertRows(row, count, side) {
   const sortIndex = Number(row.sort || 0) + (side === 'below' ? 1 : 0);
   try {
-    await insertRowAt(state.sheet.id, sortIndex, count);
+    await insertTableRowsAt(state.sheet, sortIndex, count);
     await reloadRows();
     await touchSheet(state.sheet.id);
   } catch (error) {
@@ -1891,7 +2020,7 @@ function openSheetMenu(anchorEl, target = null) {
         // 而不是等用户记完一笔才发现什么都没落下。
         if (String(sheet.kind || '') !== 'preset') {
           let fields = [];
-          try { fields = await loadFields(sheet.id); } catch (error) { fields = []; }
+          try { fields = await readTableFields(sheet); } catch (error) { fields = []; }
           if (!fields.some(field => field.type === 'text')) {
             toast('这张表没有文本列：快速记录没地方写，先加一列文本', 'info');
             return;
@@ -2366,7 +2495,7 @@ async function onBulkBarClick(event) {
     const ids = pickedRowIds();
     const rowsInOrder = rowsInView().filter(row => ids.some(id => String(id) === String(row.id)));
     for (const row of rowsInOrder) {
-      try { await duplicateRow(state.sheet.id, row.values); } catch (error) { console.warn('duplicateRow failed', row.id, error); }
+      try { await duplicateTableRow(state.sheet, row.values); } catch (error) { console.warn('duplicateRow failed', row.id, error); }
     }
     clearSelection();
     await reloadRows();
@@ -2742,6 +2871,15 @@ function onHostClick(event) {
     if (act === 'sheet-menu') { openSheetMenu(actEl); return; }
   }
 
+  // 预置表快捷筛选：三个开关。点已选中的那个不取消（「全部」就是取消），
+  // 与页面表头原来那排 chip 的手感一致。
+  const quick = event.target.closest('[data-quick]');
+  if (quick) {
+    presetQuick.mode = quick.dataset.quick || 'all';
+    renderSheet({ resetScroll: true });
+    return;
+  }
+
   const card = event.target.closest('.sh-sheet-card');
   if (card) { openSheet(card.dataset.sheet).catch(error => toast(`打开失败：${error?.message || error}`, 'danger')); return; }
 
@@ -2799,8 +2937,21 @@ function onHostClick(event) {
   }
 
   // 点到表格空白等非操作区域：取消选中（工具条、菜单入口保持）
-  const keep = event.target.closest('.sh-toolbar, .sh-crumbs, .sh-sheet-head, .sh-bulk, .sh-status, .sh-chips, .sh-table-foot, .sh-rownum');
+  const keep = event.target.closest('.sh-toolbar, .sh-filterbar, .sh-quick, .sh-crumbs, .sh-sheet-head, .sh-bulk, .sh-status, .sh-chips, .sh-table-foot, .sh-rownum');
   if (!keep) clearSelection();
+}
+
+// 快捷筛选的两个下拉：<select> 只发 change，click 事件里拿不到最终值。
+function onHostChange(event) {
+  const tag = event.target.closest?.('[data-quick-tag]');
+  const sub = event.target.closest?.('[data-quick-sub]');
+  if (!tag && !sub) return;
+  if (tag) presetQuick.tag = tag.value;
+  if (sub) presetQuick.sub = sub.value;
+  renderSheet({ resetScroll: true });
+  // 整页重排把 <select> 换成了新节点，焦点会掉回 body。
+  // 主分类、子项目通常要连着改两次，这里把焦点接回去（只聚焦，不展开）。
+  host.querySelector(tag ? '[data-quick-tag]' : '[data-quick-sub]')?.focus({ preventScroll: true });
 }
 
 function applyFilters(filters) {
@@ -2949,6 +3100,7 @@ export async function initSheetPage() {
   if (!host.dataset.shBound) {
     host.dataset.shBound = '1';
     host.addEventListener('click', onHostClick);
+    host.addEventListener('change', onHostChange);
     host.addEventListener('pointerdown', onHostPointerDown);
     // 浏览器默认会把 <img> 拖成 ghost 图，打断拖框选择（图片单元格尤其明显）
     host.addEventListener('dragstart', event => {
@@ -2968,8 +3120,9 @@ export async function initSheetPage() {
       // 正在输入时一律放行给原生控件。注意必须包含 textarea ——
       // 自动换行的单元格用的是多行 textarea，漏掉它会导致
       // Backspace/Delete 被下面「清空选区」截获，表现为编辑时删除键失灵。
+      // select 也在这里：快捷筛选的两个下拉拿到焦点后，Delete 不该去清表格。
       const typing =
-        document.activeElement?.closest?.('input, textarea, [contenteditable="true"]') ||
+        document.activeElement?.closest?.('input, textarea, select, [contenteditable="true"]') ||
         document.querySelector('.sh-dp, .ft-dropdown, .sh-bulk input');
       if (typing) return;
       // 焦点在格子里时由 onHostKeydown（gridCore）处理，这里只管「没焦点」的情形 ——
@@ -2994,7 +3147,7 @@ export async function initSheetPage() {
       if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return;
       const key = String(event.key).toLowerCase();
       if (key !== 'c' && key !== 'v' && key !== 'x') return;
-      const typing = document.activeElement?.closest?.('input, textarea, [contenteditable="true"]');
+      const typing = document.activeElement?.closest?.('input, textarea, select, [contenteditable="true"]');
       if (typing || document.querySelector('.ft-cell-editing')) return;
 
       if (key === 'c') {
@@ -3037,7 +3190,7 @@ export async function initSheetPage() {
     // Ctrl+V：选中单元格（非编辑态）时直接粘贴，图片覆盖原内容
     document.addEventListener('paste', event => {
       if (state.view !== 'sheet' || !host) return;
-      const typing = document.activeElement?.closest?.('input, textarea, [contenteditable="true"]');
+      const typing = document.activeElement?.closest?.('input, textarea, select, [contenteditable="true"]');
       if (typing) return; // 正在输入 → 交给原生粘贴
       if (document.querySelector('.ft-cell-editing')) return;
       const cell = host.querySelector('.sh-cell.is-active');

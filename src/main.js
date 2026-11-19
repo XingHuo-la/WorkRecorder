@@ -691,6 +691,25 @@ function setupRecordsView() {
 
   const isPreset = table => String(table?.kind || '') === 'preset';
 
+  // P2.5 网格合流 · 双跑开关
+  //
+  // 预设表（工作记录）也走 sheetPage —— 至此两张表只剩一套网格。
+  // 快捷筛选（全部/今天/待整理 + 主分类/子项目）已经搬进表内的 .sh-quick 行。
+  //
+  // 回退到老的基础表（tablePage.js 还在，只是没人走了）：
+  //   localStorage.setItem('wrPresetGrid', 'legacy')   然后刷新
+  // 恢复：
+  //   localStorage.removeItem('wrPresetGrid')
+  const presetGridIsSheet = () => {
+    try {
+      return localStorage.getItem('wrPresetGrid') !== 'legacy';
+    } catch (error) {
+      return true;
+    }
+  };
+  // 这张表的「表格形态」该用哪套网格：自建表永远是 sheetPage。
+  const usesSheetGrid = table => !isPreset(table) || presetGridIsSheet();
+
   // 默认表决定「快速记录写哪儿」。取它要 await，所以列表重画前先刷一次，
   // 否则删表 / 改默认之后列表上的徽标会停在上一个状态。
   const refreshDefaultTableId = async () => {
@@ -742,24 +761,24 @@ function setupRecordsView() {
     if (!table) return;
     current = `table:${table.id}`;
     currentTable = table;
-    const preset = isPreset(table);
 
     if (titleEl) titleEl.textContent = table.name;
     // 空字符串 = 回到样式表默认值，不写死 display（早期层有 !important，硬写会被压）
-    basePane.style.display = preset ? '' : 'none';
-    sheetPane.style.display = preset ? 'none' : '';
-    if (toolsEl) toolsEl.style.display = preset ? 'flex' : 'none';
+    const sheetGrid = usesSheetGrid(table);
+    basePane.style.display = sheetGrid ? 'none' : '';
+    sheetPane.style.display = sheetGrid ? '' : 'none';
+    if (toolsEl) toolsEl.style.display = sheetGrid ? 'none' : 'flex';
     if (moreBtn) moreBtn.style.display = 'inline-flex';
     const countBadge = document.getElementById('rec-count');
-    if (countBadge) countBadge.style.display = preset ? '' : 'none';
+    if (countBadge) countBadge.style.display = sheetGrid ? 'none' : '';
     if (viewBar) viewBar.style.display = '';
     if (viewPane) viewPane.style.display = 'none';
     setMode('detail');
 
     try {
-      // 表格形态仍然交给原来那两个渲染器：它们各自调了很久，
-      // 视图层只决定「显示哪一个」，不去重写一遍表格。
-      if (preset) await initTablePage();
+      // 表格形态只有一套网格（P2.5）：预设表也走 sheetPage 之后，
+      // tablePage 就只剩「双跑开关回退」这一条用途。
+      if (!sheetGrid) await initTablePage();
       else {
         if (!sheetReady) { await initSheetPage(); sheetReady = true; }
         await openSheetTab(String(table.id));
@@ -836,20 +855,22 @@ function setupRecordsView() {
 
     const preset = isPreset(table);
     const tableForm = view.form === 'table';
+    // 表格形态用哪套网格（预设表可被双跑开关切到 sheetPage，见 usesSheetGrid）
+    const sheetGrid = usesSheetGrid(table);
 
     if (viewPane) viewPane.style.display = tableForm ? 'none' : '';
     if (tableForm) {
-      basePane.style.display = preset ? '' : 'none';
-      sheetPane.style.display = preset ? 'none' : '';
+      basePane.style.display = sheetGrid ? 'none' : '';
+      sheetPane.style.display = sheetGrid ? '' : 'none';
     } else {
       basePane.style.display = 'none';
       sheetPane.style.display = 'none';
     }
-    // 表头那排「全部 / 今天 / 字段 / 筛选 / 排序 / 主分类」只喂表格形态：
-    // 看板、画廊走另一套读取路径，留着它们等于让人点一堆没反应的按钮。
+    // 表头那排「全部 / 今天 / 字段 / 筛选 / 排序 / 主分类」是基础表专用：
+    // 自建表（以及合流后的预设表）由 sheetPage 自带一整套工具栏。
     // 「＋ 新建」也一起收：它唤起的是全局录入浮层，写完只刷新表格，视图这边不会变。
     // 看板每栏自带「＋ 新建」（还能顺手带上分组值），顶栏不需要再来一个。
-    if (toolsEl) toolsEl.style.display = preset && tableForm ? 'flex' : 'none';
+    if (toolsEl) toolsEl.style.display = preset && !sheetGrid && tableForm ? 'flex' : 'none';
 
     if (!tableForm) {
       const data = await loadViewData(table);
@@ -1178,7 +1199,9 @@ function setupRecordsView() {
     }
   });
 
-  // 快速筛选 chips（全部 / 今天 / 待整理）：状态只存在 tablePage 里
+  // 快速筛选 chips（全部 / 今天 / 待整理）：状态只存在 tablePage 里。
+  // P2.5 起默认走 sheetPage，这排 chip 随 #base-table-tools 一起隐藏，筛选由表内 .sh-quick 负责；
+  // 这段只在 `wrPresetGrid = 'legacy'` 回退时才有活路，别当它是现役入口。
   const chips = Array.from(document.querySelectorAll('[data-rec-filter]'));
   chips.forEach(chip => {
     chip.addEventListener('click', () => {

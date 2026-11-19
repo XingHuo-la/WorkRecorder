@@ -12,10 +12,48 @@
 |---|---|---|---|
 | **P1 地基** | 给基础表建一条表记录（带「预置／普通」标记）；建 `table_field` 只读 union 视图；把 log 行的真实列翻成 `values` 的适配抽出来共用 | 基础表页面行为零变化，probe 45/45 仍全部通过 | ✅ 已完成（v15 迁移；`sheet.kind` + `field_def` + `resolveCaptureTable`） |
 | **P2 视图对象** | 建视图表（绑定表 + 形态 + 配置 + 归属）；侧栏改「表」；表内页签 | 能给任意表建第二个表格视图，只改列序和筛选，数据一条不加 | ✅ 已完成（`view_def`；表内页签；视图重命名/删除；`lockDrag`） |
-| **P2.5 网格合流**（本轮新增） | 把预设表并到 `sheetPage`：去掉 `main.js applyView()` 里 `preset → #rec-table-pane(tablePage.js)` 这条分叉，预设表改走 `#sheet-pane`。迁移清单：工具栏（全部/今天/待整理/字段/筛选/排序/主分类/子项目）、行详情抽屉、字段面板入口、`mountGestures`（填充柄 + 行高）、行高/列宽写库适配器 | ① 工作记录页逐项零回退（行高拖、框选、填充柄、撤销、列菜单、行号、编辑态、行详情）；② 全库只剩一套网格 CSS 在生效，`.wr-*` 不再被任何页面引用；③ `tablePage.js` 可下线 | ⬜ 未开始 |
+| **P2.5 网格合流**（本轮新增） | 把预设表并到 `sheetPage`：去掉 `main.js applyView()` 里 `preset → #rec-table-pane(tablePage.js)` 这条分叉，预设表改走 `#sheet-pane`。迁移清单：工具栏（全部/今天/待整理/字段/筛选/排序/主分类/子项目）、行详情抽屉、字段面板入口、`mountGestures`（填充柄 + 行高）、行高/列宽写库适配器 | ① 工作记录页逐项零回退（行高拖、框选、填充柄、撤销、列菜单、行号、编辑态、行详情）；② 全库只剩一套网格 CSS 在生效，`.wr-*` 不再被任何页面引用；③ `tablePage.js` 可下线 | 🚧 步① ✅ 步② ✅，**默认已切 sheet**，观察一周后删 `tablePage.js` |
 | **P3 四种形态** | 表格（复用现有）→ 看板 → 日历 → 画廊 | 看板优先做——它一次验掉「分组靠单选列」「拖卡片 = 改字段值」两条关键约定 | 🚧 看板 ✅ / 画廊 ✅ / **日历 ⬜**（`view_def.forms` 里 `ready:false`） |
 | **P4 写回闭环** | 视图内增行（默认值规则）、删行（软删除 + 撤销）、拖拽换组 | 在看板里加一张卡片，切回表格能看到状态和创建时间都在 | 🚧 增行 ✅ / 拖拽换组 ✅（带锁 + Ctrl+Z）/ 删行+撤销待补 |
 | **P5 收尾** | `url` 类型、`attachment.accept`、导出可搬移包（库 + assets 一起） | 导出的包换台机器能直接打开 | ⬜ 未开始（`url`/`accept` 已排，导出包未动） |
+
+## P2.5 进度
+
+**步① 数据层（已完成）** —— `sheetPage` 不再只认自建表：
+
+| 能力 | 落点 | 验证 |
+|---|---|---|
+| 读字段 | `readTableFields(table)`：预置表读 `field_def`，自建表读 `sheet_field` | 7 个字段、key/type 与 `presetValues` 对齐 |
+| 读行 | `readTableRows(table)`：预置表读 `kind='log'` 且 `sheet_id` 为空的行，摊成 values | 45 行，`status` 已归一（inbox→unprocessed） |
+| 改值 | `saveTableRow(table, row, values)`：预置表落真列 + 合并 custom | 改完 `title/status/happened_date` 三列同时变 |
+| 增行 | `insertTableRow` / `insertTableRowsAt` / `duplicateTableRow` | 新行 `kind='log'`、`sheet_id=NULL`、状态归一 |
+| 字段增删改 | `createTableField` / `patchTableField` / `deleteTableField` | 只写 `field_def`，**不会**在 `sheet_field` 里留副本（实测 0 行） |
+
+`sheetPage` 侧只做了一件事：把 `loadFields/loadRows/saveRowValues/insertRow/...` 换成上表这几个，
+字段三件套用同名分派器（`const patchField = (id, patch) => patchTableField(state.sheet, id, patch)`），
+所以 15 处调用点一行没动。预设表「＋新建」补了既定形状（今天 + 未分类 + 待开始），与老基础表一致。
+
+**步② 工具栏（已完成）** —— 预设表表头那排「全部/今天/待整理 + 主分类/子项目」搬进表内：
+
+- 结构：`sheetPage.toolbarHtml()` 末尾输出 `.sh-filterbar`，里面装 `.sh-quick`（三个 `.v4-chip` + 分隔线 + 两个下拉）
+  和原有的 `.sh-chips`（手写条件）。两者都是「我在看哪一段」，共用一条横带，省一格行高；非预置表只出 `.sh-chips`。
+- 状态：`presetQuick = { mode, tag, sub }` 独立成一份，**不入 `state.filters`** ——
+  否则「清除筛选」会把刚点的「今天」一起清掉。
+- 合流：`activeFilters()` 是唯一入口，`filterRows()` 只认它；筛选面板仍然读写 `state.filters`，两边互不干扰。
+- 候选值：主分类/子项目从现有行的 `values` 里取（`field_def.options` 是 `{"source":"tags"}`，没有静态列表）。
+- 切换表 / 重进表：`resetPresetQuick()` 归零，避免「切到另一张表还挂着今天，看着像空表」。
+- 「＋新建记录」在预置表下补默认值（今天 / 未分类 / 待开始），与老基础表一致。
+
+同时定了两件合流必须先解决的事：
+
+1. **详情页收起 `sheetPage` 自带的占位 tab**（`.sheet-pane .sh-views` 隐藏）。
+   `#view-bar` 已经有真视图页签、同样以「表格」打头；两排并排、一排能切一排点了弹「还没做」，只会让人以为界面坏了。
+2. **快捷栏 chip 高度写死 27**（`.sh-quick .v4-chip`）。逐层关样式表实测：`styles-v4` 那条 27 在这条 DOM 路径上算成 32，
+   拿掉 `styles-v3` 反而变 38 —— 有别层在抬它。不改 `.v4-chip` 本身，免得页面表头那排跟着变。
+
+**现在的默认**：`presetGridIsSheet()` 返回 true（走 sheetPage）。
+回退老基础表：`localStorage.setItem('wrPresetGrid', 'legacy')` 然后刷新；恢复 `removeItem`。
+观察一周零回退后再删 `tablePage.js` 与 `.wr-*` 规则。
 
 ## P2.5 为什么插在 P2 和 P3 之间
 
