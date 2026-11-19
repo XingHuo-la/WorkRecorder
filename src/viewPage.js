@@ -13,6 +13,7 @@ import { escapeHtml } from './htmlUtils.js';
 import { showUndoToast } from './undoToast.js';
 import { undoStack } from './undoCore.js';
 import { saveRowValues, rowTitle, fieldOptionsList } from './sheetStore.js';
+import { isDateOnly } from './fieldTypes.js';
 
 const UNGROUPED = '__ungrouped__';
 
@@ -528,6 +529,187 @@ function renderGallery(root, ctx) {
 }
 
 // ==========================================
+// 日历
+// ==========================================
+//
+// 最小可用：月网格 + 按日期列落点 + 在格子里新建。
+// 刻意不做的三件（等真有人用起来再加）：
+//   · 拖拽改日期 —— 看板那套 pointer 手势能复用，但「拖错了」的代价比看板大
+//     （日期是单值，拖走就没有痕迹），先把只读看明白；
+//   · 跨天事件（开始/结束两列）—— 现在一条记录只有一个日期列的值；
+//   · 「＋N」展开 —— 一天超过 3 条时点开当日列表，得配一个日视图。
+
+const WEEK_LABELS = ['一', '二', '三', '四', '五', '六', '日'];
+const CAL_ITEMS_PER_DAY = 3;
+
+// 翻到哪个月是「我眼下在看什么」，不是这张视图的定义 —— 所以不进 view.config
+// （写进库会变成「上次停在 3 月，这次打开还是 3 月」），只在本次会话里记着。
+const calendarMonth = new Map();
+
+const pad2 = value => String(value).padStart(2, '0');
+
+function dayKeyOf(date) {
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+}
+
+// 只认前 10 位的 YYYY-MM-DD：日期列的值可能带时间（YYYY-MM-DD HH:MM）。
+// 手工拆而不走 new Date(str) —— 后者按 UTC 解析，东八区会把 1 号算成上月最后一天。
+function parseDayOf(text) {
+  const match = String(text ?? '').slice(0, 10).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function calendarDateField(fields, config) {
+  return (
+    fieldByKey(fields, config.dateField) ||
+    fields.find(field => field.type === 'date' && Number(field.visible) !== 0) ||
+    fields.find(field => field.type === 'date') ||
+    null
+  );
+}
+
+// 新建时给的值要与列精度一致：只到日的列收 YYYY-MM-DD，
+// 带时间的列补 00:00 —— 否则日期渲染里 slice(11,16) 拿到空串，会显示成一个孤零零的日期。
+function dayValueFor(field, key) {
+  return isDateOnly(field) ? key : `${key} 00:00`;
+}
+
+function renderCalendar(root, ctx) {
+  const { table, view, fields, rows } = ctx;
+  const dateFields = fields.filter(field => field.type === 'date');
+  const dateField = calendarDateField(fields, view.config);
+
+  if (!dateField) {
+    root.innerHTML = `<div class="vp-blank">
+      <div class="vp-blank-title">这张表还没有日期列</div>
+      <div class="vp-blank-desc">日历要把每条记录落到某一天上。去表里加一列「日期」类型，再回来。</div>
+    </div>`;
+    return;
+  }
+
+  const todayKey = dayKeyOf(new Date());
+  const anchor = calendarMonth.get(String(view.id)) || todayKey.slice(0, 7);
+  const [year, month] = anchor.split('-').map(Number);
+  const first = new Date(year, month - 1, 1);
+  // 周一为一周之始：getDay() 里周日是 0，换算成「距离本周一几天」
+  const lead = (first.getDay() + 6) % 7;
+  const gridStart = new Date(year, month - 1, 1 - lead);
+
+  const byDay = new Map();
+  let unscheduled = 0;
+  rows.forEach(row => {
+    const day = parseDayOf(row.values[dateField.key]);
+    if (!day) {
+      unscheduled += 1;
+      return;
+    }
+    const key = dayKeyOf(day);
+    if (!byDay.has(key)) byDay.set(key, []);
+    byDay.get(key).push(row);
+  });
+
+  const titleField =
+    fieldByKey(fields, view.config.titleField) || fields.find(field => field.type === 'text') || null;
+  const monthCount = rows.filter(row => {
+    const day = parseDayOf(row.values[dateField.key]);
+    return day && dayKeyOf(day).startsWith(anchor);
+  }).length;
+
+  // 固定 42 格（6 周）：月份切换时高度不跳，翻两个月不会看到表格在抖。
+  let cells = '';
+  for (let index = 0; index < 42; index += 1) {
+    const day = new Date(gridStart.getFullYear(), gridStart.getMonth(), gridStart.getDate() + index);
+    const key = dayKeyOf(day);
+    const out = key.slice(0, 7) !== anchor;
+    const dayRows = byDay.get(key) || [];
+    const shown = dayRows.slice(0, CAL_ITEMS_PER_DAY);
+    const rest = dayRows.length - shown.length;
+    cells += `<div class="vp-cal-day${out ? ' is-out' : ''}${key === todayKey ? ' is-today' : ''}" data-vp-day="${key}">
+      <div class="vp-cal-head">
+        <span class="vp-cal-num">${day.getDate()}</span>
+        <button type="button" class="vp-cal-add" data-vp-add="${key}" title="在 ${key} 新建一条" aria-label="在 ${key} 新建一条">＋</button>
+      </div>
+      <div class="vp-cal-items">
+        ${shown
+          .map(row => {
+            const title =
+              (titleField && String(row.values[titleField.key] ?? '').trim()) || rowTitle(row.values, fields);
+            return `<button type="button" class="vp-cal-item" data-vp-card="${escapeHtml(row.id)}" title="${escapeHtml(
+              title
+            )}">${escapeHtml(title)}</button>`;
+          })
+          .join('')}
+        ${rest > 0 ? `<span class="vp-cal-rest">还有 ${rest} 条</span>` : ''}
+      </div>
+    </div>`;
+  }
+
+  root.innerHTML = `<div class="vp-cal">
+    <div class="vp-cal-bar">
+      <div class="vp-cal-nav">
+        <button type="button" class="vp-cal-step" data-vp-step="-1" aria-label="上个月">‹</button>
+        <button type="button" class="vp-cal-step is-text" data-vp-today>今天</button>
+        <button type="button" class="vp-cal-step" data-vp-step="1" aria-label="下个月">›</button>
+        <span class="vp-cal-title">${year} 年 ${month} 月</span>
+      </div>
+      <div class="vp-cal-meta">
+        ${
+          dateFields.length > 1
+            ? `<label class="vp-board-pick">日期列
+                <select data-vp-date>
+                  ${dateFields
+                    .map(
+                      field =>
+                        `<option value="${escapeHtml(field.key)}"${
+                          field.key === dateField.key ? ' selected' : ''
+                        }>${escapeHtml(field.label)}</option>`
+                    )
+                    .join('')}
+                </select>
+              </label>`
+            : ''
+        }
+        <span class="vp-board-count">本月 ${monthCount} 条${unscheduled ? ` · 未排期 ${unscheduled} 条` : ''}</span>
+      </div>
+    </div>
+    <div class="vp-cal-week">${WEEK_LABELS.map(label => `<span>${label}</span>`).join('')}</div>
+    <div class="vp-cal-grid">${cells}</div>
+  </div>`;
+
+  // 翻月只重画自己，不走 ctx.refresh —— 那里会重新查库，翻个月不该发 SQL。
+  const move = offset => {
+    const next = new Date(year, month - 1 + offset, 1);
+    calendarMonth.set(String(view.id), dayKeyOf(next).slice(0, 7));
+    renderCalendar(root, ctx);
+  };
+
+  root.querySelectorAll('[data-vp-step]').forEach(button => {
+    button.addEventListener('click', () => move(Number(button.dataset.vpStep)));
+  });
+  root.querySelector('[data-vp-today]')?.addEventListener('click', () => {
+    calendarMonth.delete(String(view.id));
+    renderCalendar(root, ctx);
+  });
+  root.querySelector('[data-vp-date]')?.addEventListener('change', event => {
+    ctx.onConfig?.({ dateField: event.target.value });
+  });
+
+  root.querySelector('.vp-cal-grid')?.addEventListener('click', event => {
+    const add = event.target.closest('[data-vp-add]');
+    if (add) {
+      ctx.onAddRow?.(dateField, dayValueFor(dateField, add.dataset.vpAdd));
+      return;
+    }
+    const card = event.target.closest('[data-vp-card]');
+    if (!card) return;
+    const row = rows.find(item => String(item.id) === String(card.dataset.vpCard));
+    if (row) openCard(row, fields, table);
+  });
+}
+
+// ==========================================
 // 入口
 // ==========================================
 
@@ -540,6 +722,10 @@ export function renderView(root, ctx) {
   }
   if (form === 'gallery') {
     renderGallery(root, ctx);
+    return;
+  }
+  if (form === 'calendar') {
+    renderCalendar(root, ctx);
     return;
   }
   root.innerHTML = `<div class="vp-blank">

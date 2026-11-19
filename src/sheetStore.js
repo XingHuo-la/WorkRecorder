@@ -580,7 +580,7 @@ export const VIEW_FORMS = [
   { form: 'table', label: '表格', desc: '一行一条，横向看字段', ready: true },
   { form: 'board', label: '看板', desc: '按单选列分栏，拖卡片换状态', ready: true },
   { form: 'gallery', label: '画廊', desc: '大卡片带封面，适合图多的表', ready: true },
-  { form: 'calendar', label: '日历', desc: '按日期铺到月历上', ready: false },
+  { form: 'calendar', label: '日历', desc: '按日期铺到月历上', ready: true },
 ];
 
 export function viewFormLabel(form) {

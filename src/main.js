@@ -950,6 +950,14 @@ function setupRecordsView() {
       const cover = fields.find(field => field.type === 'attachment');
       return cover ? { coverField: cover.key } : {};
     }
+    if (form === 'calendar') {
+      // 日期列优先「时间 / 日期 / date」这类名字 —— 预置表叫「时间」，
+      // 自建表用户多半就叫「日期」，命名不符也无所谓：日历顶栏能随时换列。
+      const dateFields = fields.filter(field => field.type === 'date');
+      const preferred = dateFields.find(field => /时间|日期|date|day/i.test(`${field.key} ${field.label}`));
+      const chosen = preferred || dateFields[0];
+      return chosen ? { dateField: chosen.key } : {};
+    }
     return {};
   };
 
@@ -998,15 +1006,24 @@ function setupRecordsView() {
     if (!fields.length) fields = await readTableFields(currentTable);
 
     const ready = VIEW_FORMS.filter(item => item.ready);
-    // 没有单选列时先说明白，别让用户建完一个空看板再来问为什么是空的。
+    // 两种形态都有硬前提：看板要一个能分组的单选列，日历要一个日期列。
+    // 缺了就把选项禁掉并写明缺什么 —— 别让用户建完一个空视图再来问为什么是空的。
     const grouped = fields.some(field => ['select', 'multi_select', 'checkbox'].includes(field.type));
+    const dated = fields.some(field => field.type === 'date');
+    const lackOf = form =>
+      form === 'board' && !grouped ? '（缺单选列）' : form === 'calendar' && !dated ? '（缺日期列）' : '';
     window.showModal?.(
       '新建视图',
       `<div class="sh-modal">
         <label class="sh-label">形态</label>
         <select class="sh-select" data-view-form>
           ${ready
-            .map(item => `<option value="${item.form}"${item.form === 'board' ? (grouped ? '' : ' disabled') : ''}>${escapeHtml(item.label)} · ${escapeHtml(item.desc)}${item.form === 'board' && !grouped ? '（缺单选列）' : ''}</option>`)
+            .map(
+              item =>
+                `<option value="${item.form}"${lackOf(item.form) ? ' disabled' : ''}>${escapeHtml(item.label)} · ${escapeHtml(
+                  item.desc
+                )}${lackOf(item.form)}</option>`
+            )
             .join('')}
         </select>
         <label class="sh-label" style="margin-top:12px;">名称</label>

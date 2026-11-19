@@ -874,6 +874,226 @@ body[data-skin="v4"] .vp-blank-desc {
   line-height: 1.65 !important;
 }
 
+/* ---- 日历 ----
+   一套 WPS 式月网格：外框一个圆角，格子只画右/下两条线。
+   数字在左上、条目在下面，一格能放三条就够 —— 再多的信息应该点进当天看，
+   而不是把格子撑成一面墙。 */
+body[data-skin="v4"] .vp-cal-bar {
+  display: flex !important;
+  align-items: center !important;
+  gap: 12px !important;
+  margin: 0 0 12px !important;
+}
+
+body[data-skin="v4"] .vp-cal-nav {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+}
+
+body[data-skin="v4"] .vp-cal-step {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  min-width: 26px !important;
+  height: 26px !important;
+  padding: 0 8px !important;
+  border: 1px solid var(--v4-line) !important;
+  border-radius: 7px !important;
+  background: transparent !important;
+  color: var(--v4-text-2) !important;
+  font-family: var(--v4-sans) !important;
+  font-size: 13px !important;
+  line-height: 1 !important;
+  cursor: pointer !important;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease !important;
+}
+
+body[data-skin="v4"] .vp-cal-step:hover {
+  background: color-mix(in srgb, var(--color-text) 5%, transparent) !important;
+  color: var(--v4-text) !important;
+}
+
+body[data-skin="v4"] .vp-cal-step.is-text {
+  font-size: 12px !important;
+}
+
+body[data-skin="v4"] .vp-cal-title {
+  margin-left: 6px !important;
+  color: var(--v4-text) !important;
+  font-family: var(--v4-sans) !important;
+  font-size: 14.5px !important;
+  font-weight: 600 !important;
+  letter-spacing: -0.01em !important;
+  font-variant-numeric: tabular-nums !important;
+}
+
+body[data-skin="v4"] .vp-cal-meta {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 12px !important;
+  margin-left: auto !important;
+}
+
+/* 周标题与日期格必须用同一套列宽，否则「三」会落在「星期三」的右边 */
+body[data-skin="v4"] .vp-cal-week {
+  display: grid !important;
+  grid-template-columns: repeat(7, minmax(0, 1fr)) !important;
+  gap: 0 !important;
+  padding: 0 0 7px !important;
+}
+
+body[data-skin="v4"] .vp-cal-week span {
+  /* 与日期数字的左缘对齐：格子内边距 6 + 数字自身 3 */
+  padding-left: 9px !important;
+  color: var(--v4-text-3) !important;
+  font-family: var(--v4-sans) !important;
+  font-size: 11.5px !important;
+  letter-spacing: 0.02em !important;
+}
+
+body[data-skin="v4"] .vp-cal-grid {
+  display: grid !important;
+  grid-template-columns: repeat(7, minmax(0, 1fr)) !important;
+  gap: 0 !important;
+  border: 1px solid var(--v4-line) !important;
+  border-radius: 10px !important;
+  overflow: hidden !important;
+}
+
+body[data-skin="v4"] .vp-cal-day {
+  display: flex !important;
+  flex-direction: column !important;
+  min-width: 0 !important;
+  min-height: 108px !important;
+  padding: 5px 6px 6px !important;
+  border-right: 1px solid var(--v4-line) !important;
+  border-bottom: 1px solid var(--v4-line) !important;
+  background: transparent !important;
+  transition: background 110ms ease !important;
+}
+
+/* 第 7 列不画右边、最后一行不画下边 —— 外框已经有了，否则右缘和下缘是双线 */
+body[data-skin="v4"] .vp-cal-day:nth-child(7n) {
+  border-right: 0 !important;
+}
+
+body[data-skin="v4"] .vp-cal-day:nth-child(n + 36) {
+  border-bottom: 0 !important;
+}
+
+body[data-skin="v4"] .vp-cal-day:hover {
+  background: color-mix(in srgb, var(--color-text) 2.6%, transparent) !important;
+}
+
+/* 上/下月的日子还在，但退到背景里：翻月时能看出「这个月从哪天开始」，
+   又不会跟本月的记录抢注意力。 */
+body[data-skin="v4"] .vp-cal-day.is-out {
+  opacity: 0.4 !important;
+}
+
+body[data-skin="v4"] .vp-cal-day.is-out:hover {
+  opacity: 0.75 !important;
+}
+
+body[data-skin="v4"] .vp-cal-head {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  min-height: 22px !important;
+}
+
+body[data-skin="v4"] .vp-cal-num {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  min-width: 20px !important;
+  height: 20px !important;
+  padding: 0 3px !important;
+  border-radius: 10px !important;
+  color: var(--v4-text-2) !important;
+  font-family: var(--v4-sans) !important;
+  font-size: 12px !important;
+  font-variant-numeric: tabular-nums !important;
+}
+
+/* 今天：数字反过来做成主色胶囊。深色主题下主色亮、bg-body 深，浅色主题正好相反 ——
+   所以字色用 --v4-bg 而不是写死白色，两套主题都能读。 */
+body[data-skin="v4"] .vp-cal-day.is-today .vp-cal-num {
+  background: var(--color-primary) !important;
+  color: var(--v4-bg) !important;
+  font-weight: 600 !important;
+}
+
+body[data-skin="v4"] .vp-cal-add {
+  width: 20px !important;
+  height: 20px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 5px !important;
+  background: transparent !important;
+  color: var(--v4-text-3) !important;
+  font-family: var(--v4-sans) !important;
+  font-size: 13px !important;
+  line-height: 1 !important;
+  cursor: pointer !important;
+  opacity: 0 !important;
+  transition: opacity 110ms ease, background 110ms ease, color 110ms ease !important;
+}
+
+/* 「＋」只在鼠标进入这一格时出现：一格一个按钮、42 格常驻一排加号会很吵。
+   但格子整体不接点击 —— 日历误触的代价不是「多看了一眼」，而是写进库里一条
+   空记录，而删行的 UI 入口还没做（P4）。所以入口必须是个明确的按钮。 */
+body[data-skin="v4"] .vp-cal-day:hover .vp-cal-add,
+body[data-skin="v4"] .vp-cal-add:focus-visible {
+  opacity: 1 !important;
+}
+
+body[data-skin="v4"] .vp-cal-add:hover {
+  background: color-mix(in srgb, var(--color-text) 8%, transparent) !important;
+  color: var(--v4-text) !important;
+}
+
+body[data-skin="v4"] .vp-cal-items {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 3px !important;
+  margin-top: 2px !important;
+  min-width: 0 !important;
+}
+
+body[data-skin="v4"] .vp-cal-item {
+  display: block !important;
+  width: 100% !important;
+  padding: 3px 6px !important;
+  border: 1px solid var(--v4-line) !important;
+  border-radius: 6px !important;
+  background: var(--v4-surface) !important;
+  color: var(--v4-text) !important;
+  font-family: var(--v4-sans) !important;
+  font-size: 11.5px !important;
+  line-height: 1.5 !important;
+  text-align: left !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  cursor: pointer !important;
+  transition: border-color 110ms ease, background 110ms ease !important;
+}
+
+body[data-skin="v4"] .vp-cal-item:hover {
+  border-color: color-mix(in srgb, var(--color-text) 26%, transparent) !important;
+  background: color-mix(in srgb, var(--color-text) 4%, var(--v4-surface)) !important;
+}
+
+body[data-skin="v4"] .vp-cal-rest {
+  padding: 1px 6px !important;
+  color: var(--v4-text-3) !important;
+  font-family: var(--v4-sans) !important;
+  font-size: 11px !important;
+  cursor: default !important;
+}
+
 /* ---- 拖拽锁：页签条右端的那个开关 ----
    放在右端而不是跟在一排视图后面，是因为它管的不是「看哪个视图」，
    而是「这个视图能不能被改」—— 两类不同的东西不该挤在一起。
