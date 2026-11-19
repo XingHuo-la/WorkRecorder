@@ -2856,7 +2856,10 @@ function onHostContextMenu(event) {
       event.preventDefault();
       const r = Number(cellEl.dataset.rowindex);
       const c = Number(cellEl.dataset.col);
-      if (grid && !grid.sel.contains(r, c)) ensureGrid().select(r, c);
+      // 正在编辑的格子不重新选中：select() 会把焦点从编辑器挪走，右键一下编辑就没了。
+      // 它的选区本来就在，菜单照开（Excel 右键编辑中的格子也是保留编辑）。
+      const editing = cellEl.classList.contains('ft-cell-editing');
+      if (!editing && grid && !grid.sel.contains(r, c)) ensureGrid().select(r, c);
       openCellMenuFor(cellEl, field, row);
       return;
     }
@@ -2875,6 +2878,7 @@ function onHostContextMenu(event) {
 // 也就是「想点一下挪光标，结果编辑没了」。这里拦下这一下并把焦点还给编辑器；
 // 点在输入框本身上就放行，光标落点交给浏览器（Excel 也是这个手感）。
 function onHostMouseDown(event) {
+  if (event.button !== 0) return;   // 右键交给 contextmenu，别在这里拦（拦了菜单可能不弹）
   const editingCell = event.target.closest?.('.sh-cell.ft-cell-editing');
   if (!editingCell) return;
   if (event.target.closest('.ft-inline-input, .ft-dropdown')) return;
