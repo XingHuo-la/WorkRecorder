@@ -1814,6 +1814,17 @@ function openDetail(row) {
       startCellEdit(field, live, cellEl);
     },
     onDelete: target => removeRow(target),
+    // 抽屉里改标题走的是 patchRecord（没经过 writeRow / commitCell），
+    // 网格上那一格不会自己变 —— 关掉抽屉还写着旧字，看起来就是「没保存」。
+    onTitleSaved: (field, value) => {
+      if (!field || !host) return;
+      const cellEl = host.querySelector(
+        `.sh-cell[data-row="${CSS.escape(String(row.id))}"][data-key="${CSS.escape(field.key)}"]`
+      );
+      if (cellEl && !cellEl.classList.contains('ft-cell-editing')) {
+        cellEl.innerHTML = renderCell(field, value, cellCtx(field));
+      }
+    },
     onPrev: () => {
       const prev = list[index - 2];
       if (!prev) return;

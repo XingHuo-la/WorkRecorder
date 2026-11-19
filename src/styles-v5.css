@@ -1535,3 +1535,147 @@ body[data-ui="v3"][data-skin="v4"] .sheet-pane .sh-search:focus-within {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 12%, transparent) !important;
 }
 
+
+/* =====================================================================
+   抽屉大标题：就地改名 + 「取自哪一列」
+   ---------------------------------------------------------------------
+   两件事：
+   1) 点标题改标题，输入框必须**长在标题那一行**，且字号字重与原标题一致
+      （.sh-drawer-title 是 20px/700，.rd-title-input 原来写死 16px/600，
+       点一下字缩一圈，看着像跳到了别处的输入框）；
+   2) 旁边那枚字段名标签说明这行字取自哪一列，也是换列的入口。
+
+   按钮要压过 styles.css:5608 那条全局 `button`（min-height 40px / 左右 16px
+   padding / 边框 / 底色，全带 !important），否则标签会长成一个 40px 高的方块。
+   ===================================================================== */
+body[data-skin="v4"] .sh-drawer-head .sh-drawer-titles {
+  position: relative;
+}
+
+body[data-skin="v4"] .rd-title-edit {
+  display: flex !important;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  /* 和 .sh-drawer-title.rd-title 的 -1px -4px 负 margin 对齐：
+     标题那一行原先靠它把文字顶到容器的左沿，换行容器不加这条就会整体右移 4px。 */
+  margin: -1px -4px;
+}
+
+/* 必须压过 styles-v3:519 那条通用表单控件规则（(0,2,1)，height 32px / padding 0 9px
+   / 12px 字号 / 7px 圆角，全带 !important）—— 不带的话标题一进编辑态就被压成
+   一个 32px 高的表单小框，字号从 16px 掉到 12px。
+   字号 / 字重 / 行高不在这里写死：rowDrawer 从原标题上量出来，用行内 !important 落，
+   因为 --font-size-xl 在 v3 皮肤下是 16px、在根上是 20px。 */
+body[data-ui="v3"][data-skin="v4"] .rd-title-edit .rd-title-input {
+  flex: 1 1 auto;
+  width: auto !important;
+  min-width: 0;
+  height: auto !important;
+  min-height: 0 !important;
+  padding: 0 3px !important;
+  border: 1px solid color-mix(in srgb, var(--color-primary) 55%, transparent) !important;
+  border-radius: 6px !important;
+  background: color-mix(in srgb, var(--color-text) 5%, transparent) !important;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 12%, transparent) !important;
+}
+
+body[data-skin="v4"] .rd-title-edit .rd-title-tag {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: auto !important;
+  min-height: 0 !important;
+  max-width: 45%;
+  padding: 2px 7px !important;
+  border: 0 !important;
+  border-radius: 5px !important;
+  background: color-mix(in srgb, var(--v4-text) 8%, transparent) !important;
+  color: var(--v4-text-2) !important;
+  box-shadow: none !important;
+  font-size: 11px !important;
+  font-weight: 500 !important;
+  line-height: 16px !important;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transform: none !important;
+}
+
+body[data-skin="v4"] .rd-title-edit .rd-title-tag.is-pickable {
+  cursor: pointer;
+}
+
+body[data-skin="v4"] .rd-title-edit .rd-title-tag.is-pickable:hover {
+  background: color-mix(in srgb, var(--v4-text) 13%, transparent) !important;
+  color: var(--v4-text) !important;
+}
+
+/* 浮层：挂在 .sh-drawer-titles 上（输入框那一行在 finish 之后会被收掉，
+   菜单必须活得比它久）。绝对定位 + z-index，抽屉正文从它下面滚过去。 */
+body[data-skin="v4"] .rd-title-menu {
+  position: absolute;
+  z-index: 60;
+  min-width: 196px;
+  max-width: 260px;
+  padding: 5px;
+  border: 1px solid var(--v4-line) !important;
+  border-radius: 10px;
+  background: var(--v4-surface) !important;
+  box-shadow:
+    0 2px 8px rgba(0, 0, 0, 0.08),
+    0 12px 32px rgba(0, 0, 0, 0.16);
+}
+
+body[data-skin="v4"] .rd-title-menu-head {
+  padding: 4px 8px 6px;
+  color: var(--v4-text-3) !important;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+
+body[data-skin="v4"] .rd-title-menu-item {
+  display: flex !important;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100% !important;
+  height: auto !important;
+  min-height: 0 !important;
+  padding: 6px 8px !important;
+  border: 0 !important;
+  border-radius: 6px !important;
+  background: transparent !important;
+  color: var(--v4-text) !important;
+  box-shadow: none !important;
+  font-size: 13px !important;
+  font-weight: 400 !important;
+  line-height: 1.35 !important;
+  text-align: left;
+  transform: none !important;
+}
+
+body[data-skin="v4"] .rd-title-menu-item:hover {
+  background: var(--v4-surface-2) !important;
+  color: var(--v4-text) !important;
+}
+
+body[data-skin="v4"] .rd-title-menu-item.is-on {
+  color: var(--color-primary) !important;
+  font-weight: 600 !important;
+}
+
+body[data-skin="v4"] .rd-title-menu-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body[data-skin="v4"] .rd-title-menu-flag {
+  flex: none;
+  color: var(--v4-text-3) !important;
+  font-size: 11px;
+  font-weight: 400 !important;
+}

@@ -114,6 +114,8 @@ const state = {
  * @param {number} [opts.index]           当前行在筛选结果里的序号（从 1 起）
  * @param {number} [opts.total]           筛选结果总行数
  * @param {string} [opts.subtitle]        抽屉头部的小字（表名 · 第 x / y 条 / 记录类型）
+ * @param {string} [opts.titleField]      大标题取哪一列（字段 key，只认 text 类型）；
+ *                                        不传时取第一个可见 text 字段
  * @param {{rowId:number, fieldKey:string}|null} [opts.anchor] 关闭 / 返回时要定位的格（T09 用）
  * @param {boolean} [opts.fromNav]        true = 由 popNav 触发，不再压栈（T09 用）
  * @param {object} [opts.record]          **只用于首屏**的部分记录（{title, body} 即可）；
@@ -142,10 +144,16 @@ export function openRowDrawer(opts = {}) {
   const total = Number(options.total) > 0 ? Number(options.total) : 0;
   const index = Number(options.index) > 0 ? Number(options.index) : 0;
 
-  // 标题字段：表格行的标题就是「第一个可见 text 字段」的值，不是 record.title。
-  // 写库只能写 text 字段（custom 里那个 key 才是表格首列的来源），
-  // 但**显示**时如果没有 text 字段，退到第一个可见字段（和表格首列的取法一致）。
-  const titleField = visibleFields.find(field => field.type === 'text') || null;
+  // 标题字段：表格行的标题是某个 **text 字段**的值（存在 custom[key] 里），不是 record.title。
+  // 取哪一列由调用方决定 —— 视图把自己的 config.titleField 传进来，卡片上写的那行字
+  // 和抽屉里改的那行字才是同一个字段；不传 / 传的不是 text 类型时退到第一个可见 text 字段。
+  // （只认 text：往 select / number / date 里写一段字符串会把值写成脏数据。）
+  const wantedTitleKey = String(options.titleField ?? '').trim();
+  const wantedTitleField = wantedTitleKey
+    ? visibleFields.find(field => field.key === wantedTitleKey && field.type === 'text')
+    : null;
+  const titleField = wantedTitleField || visibleFields.find(field => field.type === 'text') || null;
+  // 显示用：没有 text 字段时退到第一个可见字段（和表格首列的取法一致）。
   const displayField = titleField || visibleFields[0] || null;
 
   const ctx = {
@@ -211,6 +219,8 @@ export function openRowDrawer(opts = {}) {
     // 菜单打开时挂的 window 捕获 Esc / document 捕获 mousedown（关抽屉时必须摘掉）
     menuKeyCapture: null,
     menuOutside: null,
+    // 「大标题取哪一列」菜单（{el, onKey, onDown}），关抽屉时必须摘监听器
+    titleMenu: null,
   };
 
   const initialTitle = resolveTitle(ctx);
@@ -295,6 +305,7 @@ export function openRowDrawer(opts = {}) {
       teardownBodyEditor(ctx);
       teardownNotePanel(ctx);
       closeMenu(ctx);
+      closeTitleFieldMenu(ctx);
       state.open = false;
       state.el = null;
       handlers.onClose?.();
@@ -401,6 +412,10 @@ function normalizeHandlers(options) {
     onPrev: pick('onPrev'),
     onNext: pick('onNext'),
     onCellClick: pick('onCellClick'),
+    // 换「大标题取哪一列」（视图层才有：要写回 view_def.config）
+    onTitleFieldPick: pick('onTitleFieldPick'),
+    // 标题存进库之后通知宿主（预置表要拿它把网格里那一格重画一遍）
+    onTitleSaved: pick('onTitleSaved'),
     onClose: pick('onClose'),
     actions,
   };
@@ -1843,7 +1858,8 @@ function bindTitleEdit(ctx) {
   titleEl.classList.add('rd-title');
   titleEl.setAttribute('role', 'button');
   titleEl.setAttribute('tabindex', '0');
-  titleEl.setAttribute('title', '点击修改标题');
+  const label = ctx.titleField ? ctx.titleField.label || ctx.titleField.key : '';
+  titleEl.setAttribute('title', label ? `点击修改「${label}」` : '点击修改标题');
 
   const start = () => startTitleEdit(ctx, titleEl);
   titleEl.addEventListener('click', start);
@@ -1855,38 +1871,65 @@ function bindTitleEdit(ctx) {
 }
 
 function startTitleEdit(ctx, titleEl) {
-  // 表格行：标题就是首列 text 字段。走 sheetPage 的单元格编辑器而不是自己写库 ——
-  // 编辑器那条路会 commitCell → writeRow → 重绘表格，表格里那一格立刻同步；
-  // 自己 patchRecord 只会改库，state.rows 里的值不动，表格要重开才变。
-  if (ctx.titleField && typeof ctx.handlers.onCellClick === 'function') {
-    const cell = [...(ctx.el?.querySelectorAll('.sh-detail-cell') || [])].find(
-      el => el.dataset.key === ctx.titleField.key
-    );
-    if (cell) {
-      cell.classList.add('is-title-target');
-      setTimeout(() => cell.classList.remove('is-title-target'), 600);
-      cell.click();
-      return;
-    }
-  }
+  // 只有一条路：就地改名。
+  //
+  // 以前这里在「有 text 字段 + 宿主给了 onCellClick」时会去点字段格、借表格的单元格
+  // 编辑器 —— 那是 sheetPage 时代的绕行（借它同步 state.rows）。放进抽屉就是错位：
+  // 点的是标题，输入框却长在下面「内容」那一行里，用户以为改错了字段；更糟的是
+  // filterGridFields 会把「值恰好等于标题」的那一格删掉，点了干脆没反应。
   openInlineTitleInput(ctx, titleEl);
 }
 
+/**
+ * 标题就地编辑。
+ *
+ * 三个容易踩的点：
+ * 1. 输入框里必须是**字段真值**。标题为空时大标题显示的是「未命名记录 #77」这种兜底文案，
+ *    把那串字塞进输入框，回车就会把它当成内容写进库里 —— 兜底文案只能当 placeholder。
+ * 2. 字号 / 字重 / 行高必须和被替换掉的大标题逐像素一致，而且要从原标题**量**出来，
+ *    不能写死：--font-size-xl 在 v3 皮肤下是 16px、在根上是 20px，写死哪一档都会
+ *    点一下字就变大小 —— 那种「像跳到了另一个输入框」的错觉正是用户报的问题。
+ * 3. 旁边那枚字段名标签是「这个标题取自哪一列」的唯一说明，也是换列的入口。
+ */
 function openInlineTitleInput(ctx, titleEl) {
-  const current = String(titleEl.textContent ?? '');
+  if (ctx.el?.querySelector('.rd-title-edit')) return; // 已经开着（连点两下不叠框）
+  const current = String(titleEl.textContent ?? '').trim();
+  const seed = ctx.titleField ? String(ctx.row?.values?.[ctx.titleField.key] ?? '') : current;
+  // 字号字重行高从**原来的标题**上量，不要写死：--font-size-xl 在 v3 皮肤下是 16px、
+  // 在根上是 20px，写死任何一档都会在另一档里点一下字就变大小。
+  // 必须用 important 落成行内样式：v3 那条 input[type="text"] 是 !important 的，
+  // 普通行内声明赢不了它（表现是标题一进编辑就缩成 12px 的表单框）。
+  const titleStyle = getComputedStyle(titleEl);
+  const lockType = (el, style) => {
+    el.style.setProperty('font-size', style.fontSize, 'important');
+    el.style.setProperty('font-weight', style.fontWeight, 'important');
+    el.style.setProperty('line-height', style.lineHeight, 'important');
+  };
+
+  const wrap = document.createElement('div');
+  wrap.className = 'rd-title-edit';
+
   const input = document.createElement('input');
   input.type = 'text';
   input.className = 'rd-title-input';
-  input.value = current;
-  input.setAttribute('aria-label', '修改标题');
+  input.value = seed;
+  lockType(input, titleStyle);
+  if (!seed && current) input.placeholder = current;
+  input.spellcheck = false;
+  input.setAttribute(
+    'aria-label',
+    ctx.titleField ? `修改标题（${ctx.titleField.label || ctx.titleField.key}）` : '修改标题'
+  );
+  wrap.append(input);
+
   titleEl.hidden = true;
-  titleEl.after(input);
+  titleEl.after(wrap);
   input.focus();
   input.select();
 
   let settled = false;
   const restore = () => {
-    input.remove();
+    wrap.remove();
     titleEl.hidden = false;
   };
 
@@ -1894,7 +1937,7 @@ function openInlineTitleInput(ctx, titleEl) {
     if (settled) return;
     settled = true;
     const next = input.value.trim();
-    if (!commit || !next || next === current) {
+    if (!commit || next === seed || !next) {
       restore();
       return;
     }
@@ -1909,8 +1952,8 @@ function openInlineTitleInput(ctx, titleEl) {
     const record = ctx.record || (ctx.recordPromise ? await ctx.recordPromise : null);
     const patch = { title: next };
     if (ctx.titleField) {
-      // 表格行的标题存在 custom[第一个 text 字段的 key] 里；
-      // 只写 record.title 的话表格首列不会变，用户会以为没保存。
+      // 表格行的标题存在 custom[titleField.key] 里；
+      // 只写 record.title 的话表格里那一列不会变，用户会以为没保存。
       patch.custom = { ...(record?.custom || {}), [ctx.titleField.key]: next };
     }
 
@@ -1920,7 +1963,7 @@ function openInlineTitleInput(ctx, titleEl) {
         record.title = next;
         if (patch.custom) record.custom = patch.custom;
       }
-      // 字段网格里的那一格同步更新（该格是 titleField 的单元格）。
+      // 字段网格里的那一格同步更新（该格是 titleField 的单元格，可能已被过滤掉）。
       // 表里没有 text 字段时这里不动作：那种表的首列是数字 / 日期，和「标题」不是一回事，
       // 把 record.title 硬写进去会把首列的值覆盖成一段文字。
       if (ctx.titleField) {
@@ -1928,6 +1971,13 @@ function openInlineTitleInput(ctx, titleEl) {
           el => el.dataset.key === ctx.titleField.key
         );
         if (cell) cell.innerHTML = renderCell(ctx.titleField, next, { placeholder: '点击填写' });
+        // 就地改行对象（不要换成新对象）：预置表那边 state.rows 里的就是这一个引用，
+        // 换了引用网格上的那一格就永远读不到新值。宿主再负责把它画出来。
+        if (ctx.row) {
+          const values = ctx.row.values || (ctx.row.values = {});
+          values[ctx.titleField.key] = next;
+        }
+        ctx.handlers.onTitleSaved?.(ctx.titleField, next);
       }
       setTitle(ctx, next);
     } catch (error) {
@@ -1937,6 +1987,31 @@ function openInlineTitleInput(ctx, titleEl) {
       restore();
     }
   };
+
+  // 字段名标签：明确「这行字属于哪一列」，有换列能力时它还是个下拉入口。
+  // mousedown 必须 preventDefault —— 否则输入框先 blur、finish 把 wrap 收走，
+  // 这一下 click 就连人带菜单一起消失了。
+  const canPick =
+    typeof ctx.handlers.onTitleFieldPick === 'function' &&
+    (ctx.visibleFields || []).filter(field => field.type === 'text').length > 1;
+  const tag = document.createElement(canPick ? 'button' : 'span');
+  if (canPick) tag.type = 'button';
+  tag.className = `rd-title-tag${canPick ? ' is-pickable' : ''}`;
+  tag.textContent = ctx.titleField ? ctx.titleField.label || ctx.titleField.key : '';
+  tag.title = ctx.titleField
+    ? canPick
+      ? `大标题取自「${tag.textContent}」列，点一下可以换一列`
+      : `大标题取自「${tag.textContent}」列`
+    : '';
+  if (ctx.titleField) wrap.append(tag);
+  if (canPick) {
+    tag.addEventListener('mousedown', event => event.preventDefault());
+    tag.addEventListener('click', async () => {
+      // 先把手上的修改落了再换列：用户可能在打字途中才发现列是错的。
+      await finish(true);
+      openTitleFieldMenu(ctx, titleEl);
+    });
+  }
 
   input.addEventListener('keydown', event => {
     if (event.key === 'Enter') {
@@ -1953,8 +2028,101 @@ function openInlineTitleInput(ctx, titleEl) {
     }
   });
   input.addEventListener('blur', () => {
+    // 点菜单那一下 input 已经被收掉了（tag 的 mousedown preventDefault 挡住了 blur），
+    // 所以这里不必再判断菜单状态：正常点外面就是「改完即存」。
     void finish(true);
   });
+}
+
+/**
+ * 「大标题取哪一列」菜单（只在视图里出现：宿主给了 onTitleFieldPick + 至少两列文本）。
+ *
+ * 为什么放在标题编辑态里：用户正是在这一刻才发现「我改的原来是内容列」。
+ * 菜单挂在 .sh-drawer-titles 上（不是输入框那一行）—— 输入框那一行在 finish 之后会被收掉。
+ */
+function openTitleFieldMenu(ctx, anchorEl) {
+  closeTitleFieldMenu(ctx);
+  const host = ctx.el?.querySelector('.sh-drawer-titles');
+  if (!host || !anchorEl) return;
+
+  const options = (ctx.visibleFields || []).filter(
+    field => field.type === 'text' && Number(field.visible) !== 0
+  );
+  if (options.length < 2) return;
+
+  const menu = document.createElement('div');
+  menu.className = 'rd-title-menu';
+  menu.setAttribute('role', 'menu');
+  menu.innerHTML =
+    '<div class="rd-title-menu-head">大标题取哪一列</div>' +
+    options
+      .map(field => {
+        const on = field.key === ctx.titleField?.key;
+        return `<button type="button" class="rd-title-menu-item${on ? ' is-on' : ''}"
+          role="menuitemradio" aria-checked="${on}" data-title-key="${escapeHtml(field.key)}">
+          <span class="rd-title-menu-label">${escapeHtml(field.label || field.key)}</span>
+          ${on ? '<span class="rd-title-menu-flag">当前</span>' : ''}
+        </button>`;
+      })
+      .join('');
+
+  const hostRect = host.getBoundingClientRect();
+  const anchorRect = anchorEl.getBoundingClientRect();
+  menu.style.top = `${Math.round(anchorRect.bottom - hostRect.top + 6)}px`;
+  menu.style.left = `${Math.round(anchorRect.left - hostRect.left)}px`;
+  host.append(menu);
+
+  const onKey = event => {
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    event.stopPropagation();
+    closeTitleFieldMenu(ctx);
+  };
+  const onDown = event => {
+    if (menu.contains(event.target) || anchorEl.contains(event.target)) return;
+    closeTitleFieldMenu(ctx);
+  };
+  // 捕获阶段：点外面先收菜单，再看那一击本身要做什么
+  window.addEventListener('keydown', onKey, true);
+  document.addEventListener('mousedown', onDown, true);
+  ctx.titleMenu = { el: menu, onKey, onDown };
+
+  menu.addEventListener('click', async event => {
+    const item = event.target.closest('[data-title-key]');
+    if (!item) return;
+    const key = item.dataset.titleKey;
+    closeTitleFieldMenu(ctx);
+    if (!key || key === ctx.titleField?.key) return;
+    const next = options.find(field => field.key === key);
+    if (!next) return;
+    // 本地先切：标题立刻换成新列的值，不用等宿主把配置写回去再重开抽屉。
+    // 这里不走 resolveTitle —— 它最后会退到 record.title（也就是旧标题），
+    // 新列一空就会显示成「切了跟没切一样」。
+    ctx.titleField = next;
+    ctx.displayField = next;
+    const nextTitle = String(ctx.row?.values?.[next.key] ?? '').trim();
+    setTitle(
+      ctx,
+      nextTitle || (ctx.recordId !== null ? `未命名记录 #${ctx.recordId}` : '未命名记录')
+    );
+    anchorEl.setAttribute('title', `点击修改「${next.label || next.key}」`);
+    try {
+      await ctx.handlers.onTitleFieldPick?.(key);
+      showHint(ctx, `大标题已改为「${next.label || next.key}」列`);
+    } catch (error) {
+      console.warn('[rowDrawer] 切换标题列失败', error);
+      showHint(ctx, `切换标题列失败：${error?.message || error}`);
+    }
+  });
+}
+
+function closeTitleFieldMenu(ctx) {
+  if (!ctx?.titleMenu) return;
+  const { el, onKey, onDown } = ctx.titleMenu;
+  window.removeEventListener('keydown', onKey, true);
+  document.removeEventListener('mousedown', onDown, true);
+  el.remove();
+  ctx.titleMenu = null;
 }
 
 // ==========================================

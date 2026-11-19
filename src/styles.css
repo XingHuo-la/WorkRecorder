@@ -14530,12 +14530,6 @@ body.cmdk-open { overflow: hidden !important; }
   line-height: 1.35;
 }
 
-/* 点标题时若走的是表格单元格编辑器，闪一下让用户知道编辑发生在哪一格 */
-.sh-detail-cell.is-title-target {
-  border-color: var(--color-focus);
-  background: rgba(127, 127, 127, 0.16);
-}
-
 /* 8.4 字段网格 / 记录信息网格 ------------------------------------------- */
 /* 字段网格沿用 .sh-detail / .sh-detail-field / .sh-detail-cell（不推倒重来），
    但**必须带 !important**：11871 行那段「详情抽屉：字号、行距」把

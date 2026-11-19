@@ -181,11 +181,17 @@ function editCellInDrawer(field, cellEl, row, ctx) {
 
 function openCard(row, ctx) {
   const list = ctx.fields.filter(field => field.key);
+  // 大标题取哪一列：和卡片 / 画廊 / 日历用的是同一个 config.titleField。
+  // 不传的话抽屉会自己挑「第一个 text 字段」，于是卡片上写着 A、抽屉里改的却是 B。
+  const titleKey = String(ctx.view?.config?.titleField || '').trim();
   openRowDrawer({
     row,
     fields: list,
+    titleField: titleKey || undefined,
     subtitle: ctx.table?.name || '',
     onCellClick: (field, cellEl, liveRow) => editCellInDrawer(field, cellEl, liveRow, ctx),
+    // 抽屉里「换标题列」→ 写回这张视图的配置（只影响这一个视图，不动表结构）
+    onTitleFieldPick: ctx.onConfig ? key => ctx.onConfig({ titleField: key }) : undefined,
     // 抽屉里改标题走的是 patchRecord（不经 ctx.saveRow），视图侧的数据不会自己变。
     // 关抽屉时统一重取一遍行：宁可多查一次，也不要留一个「改了看起来没保存」的界面。
     onClose: () => {
