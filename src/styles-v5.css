@@ -1198,3 +1198,71 @@ body[data-skin="v4"] .sh-quick-pick option {
   color: var(--color-text) !important;
 }
 
+/* =====================================================================
+   表头必须不透明 —— sticky 表头一透明，纵向滚动时行文字会从表头底下穿过
+   ---------------------------------------------------------------------
+   根因在 v4 层：`body[data-skin="v4"] .sheet-pane .sh-table thead th`
+   为「去掉表头底色」写成了 `background: transparent`。表头是 sticky 的，
+   表格行滚到它下面时整条表头在闪，看起来像半透明玻璃。
+
+   表头本来就要「比表体深一档」：v4 自己的 --v4-surface 是
+   color-mix(文字色 4.5%, bg-body)，两端都是实色 ⇒ 结果不透明，
+   五套主题（含两套深色）都成立，不需要为深色单独写值。
+
+   列选中态 .sh-th.is-sel 是 13% 透明灰（本文件前面那条），直接把
+   background 换掉会再次变透明 —— 用「实底 + 渐变叠层」重写，
+   让选中仍是「在表头上加一层灰」，不是「把表头变玻璃」。
+   ===================================================================== */
+body[data-skin="v4"] .sheet-pane .sh-table thead th.sh-th {
+  background: var(--v4-surface) !important;
+}
+
+body[data-skin="v4"] .sheet-pane .sh-table thead th.sh-th.is-sel {
+  background:
+    linear-gradient(
+      color-mix(in srgb, var(--color-text) 13%, transparent),
+      color-mix(in srgb, var(--color-text) 13%, transparent)
+    ),
+    var(--v4-surface) !important;
+}
+
+/* 行号列表头要压在数据列之上：横向滚动时它 sticky 在左边，
+   下面的单元格会从它背后经过，层级必须高于普通表头格。 */
+body[data-skin="v4"] .sheet-pane .sh-table thead th.sh-th.sh-th-index {
+  z-index: 7 !important;
+}
+
+/* =====================================================================
+   搜索框只能有一个框
+   ---------------------------------------------------------------------
+   .sh-search 自己就是那个「浅槽 + 1px 边 + 8px 圆角」的壳（v4 层给的）。
+   但内层 <input type="search"> 被 v3 那条通用表单规则按住了：
+   `body[data-ui="v3"] input[type="search"]`（0,2,1）给 1px 边框 + 7px 圆角
+   + 4% 底 + 左右 9px padding，而 `.sh-search input` 只有 (0,1,1) —— 压不过。
+   结果壳里又浮出一个小框，看起来像「两个框套在一起」。
+
+   和表格就地编辑器同一个病（`.ft-inline-input` 那组）：v5 用更高权重把
+   内层彻底抹平，只留文字与光标；focus 的框交给外层的 :focus-within，
+   内层不许自己画。
+   ===================================================================== */
+body[data-ui="v3"][data-skin="v4"] .sheet-pane .sh-search input[type="search"],
+body[data-ui="v3"][data-skin="v4"] .sheet-pane .sh-search input[type="search"]:hover,
+body[data-ui="v3"][data-skin="v4"] .sheet-pane .sh-search input[type="search"]:focus,
+body[data-ui="v3"][data-skin="v4"] .sheet-pane .sh-search input[type="search"]:focus-visible {
+  height: 100% !important;
+  min-height: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  outline: none !important;
+}
+
+/* 旧的 :focus-within 用的是 --ui-ring，v4 皮肤下这个令牌没有定义，
+   整条 box-shadow 会被丢掉、只剩边框换色。这里补一套自足的焦点环。 */
+body[data-ui="v3"][data-skin="v4"] .sheet-pane .sh-search:focus-within {
+  border-color: color-mix(in srgb, var(--color-primary) 62%, transparent) !important;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 12%, transparent) !important;
+}
+
