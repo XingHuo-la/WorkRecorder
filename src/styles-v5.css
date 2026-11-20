@@ -1936,3 +1936,29 @@ body[data-skin="v4"] .rd-fieldcfg-eye.is-off {
 body[data-skin="v4"] .rd-fieldcfg-eye:not(.is-off) {
   color: var(--v4-text-2) !important;
 }
+
+/* =====================================================================
+   日期选择器：七列必须都在框里
+   ---------------------------------------------------------------------
+   症状：日历抽屉里点「时间」，弹出的日历右边最后一列（日）被切掉一半。
+   根因不在宽度，在**内边距**：styles.css:5608 那条全局 `button` 给了
+   `padding: 0 var(--space-4)`（左右各 16px，带 !important），而 .sh-dp-day
+   只写了 height / border-radius，没清 padding。grid 的 1fr 轨道最小宽度是
+   min-content，于是每格 = 32px 内边距 + 数字 ≈ 40px，7 格 + 间距 ≈ 292px，
+   而面板内容区只有 252px —— 多出来的 40px 直接把最后一列顶出边框。
+   ===================================================================== */
+body[data-skin="v4"] .sh-dp-day,
+body[data-skin="v4"] .sh-dp-month {
+  padding: 0 !important;
+  min-width: 0 !important;
+}
+
+body[data-skin="v4"] .sh-dp-grid,
+body[data-skin="v4"] .sh-dp-week {
+  min-width: 0 !important;
+}
+
+/* 窗口很窄时（抽屉贴着屏幕边）也不许横向溢出：只能缩，不能撑破。 */
+body[data-skin="v4"] .sh-dp {
+  max-width: calc(100vw - 16px) !important;
+}

@@ -249,7 +249,29 @@ export function openDatePicker(anchorEl, options = {}) {
       event.preventDefault();
       if (!dirty && !timeChanged && originalRaw) { closeDatePicker(); return; }
       commit(selected || new Date(), dateOnly ? '' : timeRaw);
+      return;
     }
+    // 方向键直接挪选中日：只在「日」视图下、且焦点不在时间输入框里才接管
+    if (viewMode !== 'day') return;
+    if (event.target.matches?.('[data-time]')) return;
+    const stepDay = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -7, ArrowDown: 7 }[event.key];
+    const stepMonth = event.key === 'PageUp' ? -1 : (event.key === 'PageDown' ? 1 : 0);
+    if (stepDay === undefined && !stepMonth) return;
+    event.preventDefault();
+    const base = selected ? new Date(selected) : new Date(viewYear, viewMonth, 1);
+    if (stepMonth) {
+      const delta = stepMonth * (event.shiftKey ? 12 : 1);
+      base.setDate(1);
+      base.setMonth(base.getMonth() + delta);
+    } else {
+      base.setDate(base.getDate() + stepDay);
+    }
+    selected = base;
+    viewYear = base.getFullYear();
+    viewMonth = base.getMonth();
+    dirty = true;
+    paint();
+    el.querySelector('.sh-dp-day.is-on')?.focus?.();
   };
   document.addEventListener('mousedown', onOutside, true);
   document.addEventListener('keydown', onKey, true);
