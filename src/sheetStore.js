@@ -607,6 +607,9 @@ export function parseViewConfig(view) {
     dateField: str(parsed.dateField),
     titleField: str(parsed.titleField),
     coverField: str(parsed.coverField),
+    // 抽屉「内容」槽位绑哪一列。空 = 用记录自身的正文（record.body，走 markdown 渲染）；
+    // 指到某一列时正文区改成该列的大号文本块（纯文本、保留换行）。
+    bodyField: str(parsed.bodyField),
     filter: Array.isArray(parsed.filter) ? parsed.filter : [],
     sorts: Array.isArray(parsed.sorts) ? parsed.sorts : [],
     fields: Array.isArray(parsed.fields) ? parsed.fields : [],

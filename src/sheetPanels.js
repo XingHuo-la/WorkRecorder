@@ -131,7 +131,16 @@ export function openDrawer({ title, subtitle = '', width = 396, body, footer = '
     closeAllPanels();
   };
   const onKey = event => {
-    if (event.key === 'Escape') closeAllPanels();
+    if (event.key !== 'Escape') return;
+    // Esc 是「退一层」，不是「一次全关」。下列情况把这一下让给里面那层：
+    //   · 单元格编辑器开着（抽屉里改字段时按 Esc 想撤掉这一格，不是关掉整条记录）
+    //   · 日期选择器 / 下拉 / 灯箱开着（它们各自有 Esc 处理）
+    //   · 标题就地改名、饰框改名开着
+    // 曾经的表现：在抽屉里编辑任意一格，按一次 Esc 连抽屉一起没了。
+    if (document.querySelector(
+      '.ft-cell-editing, .ft-inline-input, .sh-dp, .ft-dropdown, .sh-lightbox, .custom-modal-overlay, .rd-title-input, .rd-fieldcfg-rename'
+    )) return;
+    closeAllPanels();
   };
   document.addEventListener('mousedown', onOutside, true);
   document.addEventListener('keydown', onKey, true);

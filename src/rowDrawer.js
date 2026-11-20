@@ -72,6 +72,15 @@ const KIND_LABELS = {
 const DRAWER_SIZES = ['lg', 'md', 'sm'];
 const DRAWER_SIZE_LABELS = { lg: '大', md: '中', sm: '小' };
 
+// 饰框（= 一个字段在抽屉里的展示位）能落在哪 —— 两档就够，再多就没人能说清区别：
+//   grid：正文网格，带字段名的格子，大/中/小三档大小都在这儿；
+//   head：大标题下面那一行，只有「值」，给状态、负责人这种一眼要看到的东西。
+const DRAWER_ZONES = ['grid', 'head'];
+const DRAWER_ZONE_LABELS = { grid: '正文', head: '标题下' };
+
+// 三个基础槽位（标题 / 时间 / 内容）。名字就是面板上那三行的字，别在两处各写一份。
+const SLOT_LABELS = { title: '标题', date: '时间', body: '内容' };
+
 // 库里 status 的取值混着两套语义：record 表的（inbox / pending / done）
 // 和旧视图换算出来的（unprocessed / processed）。两套都认，认不出就原样显示。
 const STATUS_LABELS = {
@@ -161,6 +170,24 @@ export function openRowDrawer(opts = {}) {
   // 显示用：没有 text 字段时退到第一个可见字段（和表格首列的取法一致）。
   const displayField = titleField || visibleFields[0] || null;
 
+  // —— 槽位②：时间 ——
+  // 调用方（日历视图）把它自己的 config.dateField 传进来：那条「这条记录在哪天」的
+  // 语义才是这个视图认的，抽屉里改的也必须是同一列，否则日历上的位置不会跟着动。
+  // 只认 date 类型：往 select / number 里塞日期字符串会写脏数据。
+  const wantedDateKey = String(options.slotDate ?? '').trim();
+  const slotDateField = wantedDateKey
+    ? visibleFields.find(field => field.key === wantedDateKey && field.type === 'date') || null
+    : null;
+
+  // —— 槽位③：内容 ——
+  // 空 = 用记录自身的正文（record.body，走 markdown 渲染 + 自动保存，v1.2 的老路）；
+  // 指到某一列 = 正文区换成该列的大号文本块，点击就地编辑，写的是那一格。
+  // 附件列不行：它的「值」是文件列表，放进正文区既不能打字也不能拖。
+  const wantedBodyKey = String(options.slotBody ?? '').trim();
+  const slotBodyField = wantedBodyKey
+    ? visibleFields.find(field => field.key === wantedBodyKey && field.type !== 'attachment') || null
+    : null;
+
   const ctx = {
     el: null,
     recordId,
@@ -170,6 +197,11 @@ export function openRowDrawer(opts = {}) {
     visibleFields,
     titleField,
     displayField,
+    // 三个基础槽位各绑哪一列。title / date / body —— 日历和看板把自己的视图配置传进来，
+    // 表格视图不传，于是「时间」「内容」两个槽位为空，行为和 v1.2 完全一样。
+    slot: { title: titleField, date: slotDateField, body: slotBodyField },
+    // 内容槽位用的字段（null = 记录自身正文）。渲染正文区时两选一，别在别处再判一次。
+    slotBodyField,
     handlers,
     preload,
     // 调用方显式给了 subtitle 就不再用记录自身的类型去覆盖（表名 · 第 x / y 条 更有信息量）
@@ -217,9 +249,16 @@ export function openRowDrawer(opts = {}) {
     // ③ 按 field.options.drawer.order 重排。ctx.fields 仍保留全量 ——
     //   onCellClick 按 data-key 找字段、找 titleField 的格子都靠它。
     gridFields: [],
-    // 每个字段在抽屉里的显示参数（隐藏 / 大小 / 顺序），key → {hidden, size, order}。
+    // 每个字段在抽屉里的显示参数（隐藏 / 大小 / 顺序 / 名字 / 位置 / 是否移出），
+    // key → {hidden, off, size, order, label, zone}。
     // 与 field.options.drawer 一一对应；打开时从字段上读，改完立即回写。
     fieldLayout: new Map(),
+    // 归到「标题下」那行（zone='head'）的字段，顺序同网格
+    headBlocks: [],
+    // 字段设置里「添加饰框」展开的字段池是否打开
+    blockPoolOpen: false,
+    // 宿主能不能写视图配置（槽位）。表格抽屉没有视图上下文，槽位区就不出现。
+    slotHandlers: typeof handlers.onSlotChange === 'function',
     // 字段设置有面板是否展开
     fieldPanelOpen: false,
     // 字段设置的写库串行链：连点「上移」时后一次不能拿旧快照覆盖前一次
@@ -239,10 +278,11 @@ export function openRowDrawer(opts = {}) {
   const initialTitle = resolveTitle(ctx);
   const initialKicker = String(options.subtitle ?? '') || defaultKicker(preload);
 
-  // 字段网格的「显示层」编排：先按 field.options.drawer 排顺序 / 藏起来，
-  // 再删与大标题逐字相同的那些格子（只删格子，不删字段）。
+  // 字段网格的「显示层」编排：先按 field.options.drawer 排顺序 / 藏起来 / 归位置，
+  // 再删与大标题逐字相同的那些格子（只删格子，不删字段），最后排掉已被槽位占用的列。
   for (const field of visibleFields) ctx.fieldLayout.set(field.key, drawerConfigOf(field));
-  ctx.gridFields = arrangeGridFields(visibleFields, row, initialTitle, ctx.fieldLayout);
+  ctx.gridFields = arrangeGridFields(visibleFields, row, initialTitle, ctx.fieldLayout, slotSkipKeys(ctx));
+  ctx.headBlocks = headBlocksOf(visibleFields, ctx.fieldLayout);
 
   const bodyHtml = `
     <div class="rd">
@@ -255,9 +295,20 @@ export function openRowDrawer(opts = {}) {
         <span class="rd-meta-when" data-meta-when hidden></span>
       </div>
 
-      <!-- ② 正文：不放 h3 标题 —— 它就在页面第二行，标题纯占位 -->
+      <!-- ①′ 头部行：时间槽位 + 归到「标题下」的饰框。
+           日历 / 看板会把 config.dateField 传进来，于是这一行是这条记录的「哪天」；
+           表格视图不传，整行不出现。 -->
+      <div class="rd-headline" data-section="headline" hidden></div>
+
+      <!-- ② 正文槽位：绑了列就画那一列的大号文本块，没绑就走记录正文（markdown）。
+           两个节点**常驻**、只切显隐 —— 换槽位时不用重建 DOM，正文编辑器的绑定
+           （bindBodyEditor 挂的是 [data-body]）才不会因为节点被换掉而失效。
+           ★ 显隐必须写行内 style，不能用 hidden 属性：.rd-body.is-empty 有一条
+             display:flex，作者样式的 display 会盖掉 UA 的 [hidden]{display:none}，
+             空正文时两个块会同时出现在屏幕上。 -->
       <section class="rd-body-block" data-section="body">
-        <div class="rd-body markdown-body" data-body></div>
+        <div class="rd-body markdown-body" data-body${ctx.slotBodyField ? ' style="display:none"' : ''}></div>
+        <div class="rd-body-field" data-body-field${ctx.slotBodyField ? '' : ' style="display:none"'}>${bodySlotInner(ctx)}</div>
       </section>
 
       <!-- ③ 字段：.sh-detail 在层 9 变成两列网格，DOM 结构不变。
@@ -363,6 +414,8 @@ export function openRowDrawer(opts = {}) {
   state.bodyBaseline = ctx.bodySource;
 
   // 首屏：正文先用已知文本顶上（markdown 渲染要等 vendor 脚本，不能阻塞开抽屉）
+  // 头部行（时间槽位 + 标题下饰框）走的是行里的值，同步就能画。
+  renderHeadline(ctx);
   paintPreloadBody(ctx);
   bindEvents(ctx);
   // 异步分区：面包屑 / 子项 / 子表 / 正文 markdown 都不阻塞首屏
@@ -448,6 +501,8 @@ function normalizeHandlers(options) {
     onCellClick: pick('onCellClick'),
     // 换「大标题取哪一列」（视图层才有：要写回 view_def.config）
     onTitleFieldPick: pick('onTitleFieldPick'),
+    // 槽位换列（标题 / 时间 / 内容）。视图层才有 —— 它写回 view_def.config。
+    onSlotChange: pick('onSlotChange'),
     // 标题存进库之后通知宿主（预置表要拿它把网格里那一格重画一遍）
     onTitleSaved: pick('onTitleSaved'),
     // 字段显示参数变了（隐藏 / 顺序 / 大小），宿主负责落库
@@ -488,15 +543,23 @@ function defaultKicker(record) {
 }
 
 /**
- * 一个字段在抽屉里的显示参数：藏在 field.options.drawer 里（跟着表走，不跟视图走）。
+ * 一个字段在抽屉里的展示位（「饰框」）参数：藏在 field.options.drawer 里。
  *
  * 为什么存在字段自己的 options 而不是新开一张表：
  *   · options 已经是「这个字段自己的杂项设置」的家（wrap / dateOnly / source）；
  *   · 预置表落 field_def、自建表落 sheet_field，两边都有这一列，**零迁移**；
  *   · 换表、换视图、换皮肤都读同一份，不会出现「卡片上一套、抽屉里另一套」。
  *
+ * 五个键各管一件事，互不重叠：
+ *   hidden —— 现在显不显示（眼睛）；临时收起用它，饰框还留在列表里。
+ *   off    —— 这个饰框还要不要（✕）；移出列表，靠「添加饰框」找回。
+ *   size   —— 大 / 中 / 小三档字号与占宽（只对 zone='grid' 有意义）。
+ *   order  —— 排序；null = 没排过，按字段原顺序跟在后面。
+ *   label  —— 改名；空 = 用字段自己的名字（改字段名不该顺带改这里，反之亦然）。
+ *   zone   —— 落在正文网格还是标题下那一行。
+ *
  * @param {object} field 字段
- * @returns {{hidden:boolean, size:'lg'|'md'|'sm', order:number|null}}
+ * @returns {{hidden:boolean, off:boolean, size:'lg'|'md'|'sm', order:number|null, label:string, zone:'grid'|'head'}}
  */
 function drawerConfigOf(field) {
   const config = parseFieldConfig(field) || {};
@@ -504,9 +567,17 @@ function drawerConfigOf(field) {
   const order = Number(raw.order);
   return {
     hidden: raw.hidden === true,
+    off: raw.off === true,
     size: DRAWER_SIZES.includes(raw.size) ? raw.size : 'md',
     order: Number.isFinite(order) ? order : null,
+    label: String(raw.label ?? '').trim(),
+    zone: DRAWER_ZONES.includes(raw.zone) ? raw.zone : 'grid',
   };
+}
+
+/** 一个饰框对外显示的名字：改过名就用改的，没改就用字段名。 */
+function blockLabel(field, layout) {
+  return layout?.label || field?.label || field?.key || '';
 }
 
 /**
@@ -524,14 +595,34 @@ function drawerConfigOf(field) {
  * @param {object|null} row 行（含 values）
  * @param {string} titleText 大标题（已 trim）
  * @param {Map<string, {hidden:boolean, order:number|null}>} layout 字段显示参数
+ * @param {string[]} skipKeys 已被槽位（内容）占用的字段，不再在网格里出现第二遍
  * @returns {object[]} 要渲染的字段（原对象，顺序即渲染顺序）
  */
-function arrangeGridFields(fields, row, titleText, layout) {
+function arrangeGridFields(fields, row, titleText, layout, skipKeys = []) {
   const title = String(titleText ?? '').trim();
+  const skip = new Set(skipKeys.filter(Boolean));
   return layoutItems(fields, layout)
-    .filter(item => !item.layout.hidden)
+    .filter(item => !item.layout.off && !item.layout.hidden)
+    // 归到「标题下」的饰框不走网格 —— 它已经在上面那行出现过了
+    .filter(item => item.layout.zone !== 'head')
+    .filter(item => !skip.has(item.field.key))
     .filter(item => !title || String(row?.values?.[item.field.key] ?? '').trim() !== title)
     .map(item => item.field);
+}
+
+/** 「标题下」那一行的饰框：顺序与网格共用同一套 order，两边不会对不上。 */
+function headBlocksOf(fields, layout) {
+  return layoutItems(fields, layout)
+    .filter(item => item.layout.zone === 'head' && !item.layout.off && !item.layout.hidden)
+    .map(item => item.field);
+}
+
+/**
+ * 已被槽位占住的列 —— 它们在标题 / 头部时间行 / 正文块里各出现一次，
+ * 网格里再来一遍就是同一条信息画了两次。
+ */
+function slotSkipKeys(ctx) {
+  return [ctx.slot?.body?.key, ctx.slot?.date?.key].filter(Boolean);
 }
 
 /** 按「显式 order 升序 → 其余按字段原顺序」排；面板和网格共用这一条，两边不会对不上。 */
@@ -542,13 +633,21 @@ function compareLayoutItems(a, b) {
   return a.layout.order - b.layout.order || a.index - b.index;
 }
 
-/** 全部字段（含已隐藏的）按当前显示参数排好 —— 面板要能看到藏起来的那些。 */
+/** 全部字段（含已隐藏 / 已移除的）按当前显示参数排好 —— 面板要能看到藏起来的那些。 */
 function layoutItems(fields, layout) {
   return fields
     .map((field, index) => ({
       field,
       index,
-      layout: { hidden: false, size: 'md', order: null, ...(layout?.get(field.key) || {}) },
+      layout: {
+        hidden: false,
+        off: false,
+        size: 'md',
+        order: null,
+        label: '',
+        zone: 'grid',
+        ...(layout?.get(field.key) || {}),
+      },
     }))
     .sort(compareLayoutItems);
 }
@@ -563,9 +662,10 @@ function fieldsHtml(gridFields, row, layout, allHidden = false) {
   }
   const cells = gridFields
     .map(field => {
-      const size = layout?.get(field.key)?.size || 'md';
+      const cfg = layout?.get(field.key) || {};
+      const size = cfg.size || 'md';
       return `<div class="sh-detail-field" data-size="${escapeHtml(size)}">
-        <div class="sh-detail-label">${escapeHtml(field.label || field.key)}</div>
+        <div class="sh-detail-label">${escapeHtml(blockLabel(field, cfg))}</div>
         <div class="sh-detail-cell sh-cell" data-key="${escapeHtml(field.key)}" data-row="${escapeHtml(row?.id ?? '')}" tabindex="-1">${renderCell(
           field,
           row?.values?.[field.key],
@@ -575,6 +675,73 @@ function fieldsHtml(gridFields, row, layout, allHidden = false) {
     })
     .join('');
   return `<div class="sh-detail">${cells}</div>`;
+}
+
+/**
+ * 正文槽位：内容那一列画成一个「大号格子」。
+ *
+ * 为什么不做成另一套编辑器：它就是表格里的一格，点击 → onCellClick → 复用表格 /
+ * 视图各自的单元格编辑器（viewPage 的 editCellInDrawer、sheetPage 的 startCellEdit）。
+ * 另起一套提交路径等于把「预置表要写回真列」这类规则再实现一遍，迟早两边不一致。
+ *
+ * @param {object} ctx 抽屉上下文（slotBodyField 必须已就绪）
+ * @returns {string} HTML（无槽位时为空串）
+ */
+function bodySlotInner(ctx) {
+  const field = ctx.slotBodyField;
+  if (!field) return '';
+  return `<div class="sh-detail-cell sh-cell rd-body-cell" data-key="${escapeHtml(field.key)}"
+       data-row="${escapeHtml(ctx.row?.id ?? '')}" tabindex="-1">${renderCell(field, ctx.row?.values?.[field.key], {
+         placeholder: '写点什么…',
+       })}</div>`;
+}
+
+/**
+ * 切正文槽位：只切显隐 + 重画那一个格子。
+ * 两个节点常驻是刻意的 —— 换节点等于把 bindBodyEditor 绑好的监听器一起扔掉。
+ * @param {object} ctx 抽屉上下文
+ */
+function applyBodySlot(ctx) {
+  const block = section(ctx, 'body');
+  const markdown = block?.querySelector('[data-body]');
+  const slot = block?.querySelector('[data-body-field]');
+  if (!markdown || !slot) return;
+  const on = Boolean(ctx.slotBodyField);
+  // 行内 display（不是 hidden 属性）：见 bodyHtml 里的注释
+  markdown.style.display = on ? 'none' : '';
+  slot.style.display = on ? '' : 'none';
+  slot.innerHTML = on ? bodySlotInner(ctx) : '';
+}
+
+/**
+ * 头部行：时间槽位 + 归到「标题下」的饰框。
+ *
+ * 三样东西（时间 / 自定义饰框）排成一行 `标签 值`，空值不占位。
+ * 整行没内容就把 `[data-section=headline]` 自己 hidden —— 22px 也是正文首屏的敌人。
+ * @param {object} ctx 抽屉上下文
+ */
+function renderHeadline(ctx) {
+  const host = section(ctx, 'headline');
+  if (!host) return;
+
+  const items = [];
+  const push = field => {
+    if (!field) return;
+    const cfg = ctx.fieldLayout.get(field.key) || {};
+    items.push(`<div class="rd-hl-item" data-hl-field="${escapeHtml(field.key)}">
+      <span class="rd-hl-label">${escapeHtml(blockLabel(field, cfg))}</span>
+      <div class="sh-detail-cell sh-cell rd-hl-cell" data-key="${escapeHtml(field.key)}"
+           data-row="${escapeHtml(ctx.row?.id ?? '')}" tabindex="-1">${renderCell(field, ctx.row?.values?.[field.key], {
+             placeholder: '点击填写',
+           })}</div>
+    </div>`);
+  };
+
+  push(ctx.slot?.date);
+  for (const field of ctx.headBlocks || []) push(field);
+
+  host.innerHTML = items.join('');
+  host.hidden = items.length === 0;
 }
 
 // ---- 字段显示设置（显示哪些 / 什么顺序 / 多大）------------------------------
@@ -601,68 +768,176 @@ function renderFieldPanel(ctx) {
   if (!ctx.fieldPanelOpen) {
     panel.hidden = true;
     panel.innerHTML = '';
+    ctx.blockPoolOpen = false;
     return;
   }
 
-  const items = layoutItems(ctx.visibleFields, ctx.fieldLayout);
+  // 被槽位吃掉的三列不进饰框列表：它们在槽位区已经各有一份配置，
+  // 再列一行「大小 / 位置」只会让人以为调了有用。
+  const consumed = new Set(
+    [ctx.slot?.title?.key, ctx.slot?.date?.key, ctx.slot?.body?.key].filter(Boolean)
+  );
+  const all = layoutItems(ctx.visibleFields, ctx.fieldLayout);
+  const items = all.filter(item => !item.layout.off && !consumed.has(item.field.key));
+  const pool = all.filter(item => item.layout.off && !consumed.has(item.field.key));
   const canMove = items.length > 1;
+
   panel.hidden = false;
   panel.innerHTML = `
-    <div class="rd-fieldcfg-list">
-      ${items
-        .map((item, at) => {
-          const field = item.field;
-          const isTitle = ctx.titleField && field.key === ctx.titleField.key;
-          const label = escapeHtml(field.label || field.key);
-          return `<div class="rd-fieldcfg-row${item.layout.hidden ? ' is-off' : ''}"
-                       data-field-row="${escapeHtml(field.key)}">
-            <span class="rd-fieldcfg-move">
-              <button type="button" class="rd-mini-btn" data-move="-1"
-                      aria-label="把「${label}」上移"${!canMove || at === 0 ? ' disabled' : ''}>
-                <svg class="wr-icon rd-cfg-arrow-up" aria-hidden="true"><use href="#ic-chevron-right"/></svg>
-              </button>
-              <button type="button" class="rd-mini-btn" data-move="1"
-                      aria-label="把「${label}」下移"${!canMove || at === items.length - 1 ? ' disabled' : ''}>
-                <svg class="wr-icon rd-cfg-arrow-down" aria-hidden="true"><use href="#ic-chevron-right"/></svg>
-              </button>
-            </span>
-            <span class="rd-fieldcfg-name">${label}${
-              isTitle ? '<em class="rd-fieldcfg-tag">标题</em>' : ''
-            }</span>
-            <span class="rd-fieldcfg-size" role="group" aria-label="「${label}」显示大小">
-              ${DRAWER_SIZES.map(
-                size => `<button type="button" class="rd-mini-btn${
-                  item.layout.size === size ? ' is-on' : ''
-                }" data-size="${size}" aria-pressed="${item.layout.size === size}"
-                   title="${label} · ${DRAWER_SIZE_LABELS[size]}">${DRAWER_SIZE_LABELS[size]}</button>`
-              ).join('')}
-            </span>
-            <button type="button" class="rd-mini-btn rd-fieldcfg-eye${
-              item.layout.hidden ? ' is-off' : ''
-            }" data-hide="${item.layout.hidden ? '0' : '1'}"
-               aria-pressed="${item.layout.hidden}"
-               title="${item.layout.hidden ? '在抽屉里显示' : '在抽屉里隐藏'}"
-               aria-label="${item.layout.hidden ? `显示「${label}」` : `隐藏「${label}」`}">
-              <svg class="wr-icon" aria-hidden="true"><use href="#${
-                item.layout.hidden ? 'ic-eye-off' : 'ic-check'
-              }"/></svg>
-            </button>
-          </div>`;
-        })
-        .join('')}
+    ${ctx.slotHandlers ? slotSectionHtml(ctx) : ''}
+    <div class="rd-fieldcfg-head">
+      <span class="rd-fieldcfg-title">饰框</span>
+      <button type="button" class="rd-mini-btn rd-fieldcfg-add" data-add-block
+              aria-expanded="${ctx.blockPoolOpen ? 'true' : 'false'}"
+              title="${pool.length ? '把移出的字段加回抽屉' : '所有字段都已在饰框里'}">＋ 添加</button>
     </div>
-    <div class="rd-fieldcfg-foot">隐藏只影响这个抽屉，表格里的列不变。</div>`;
+    ${ctx.blockPoolOpen ? blockPoolHtml(ctx, all, consumed) : ''}
+    <div class="rd-fieldcfg-list">
+      ${items.length ? items.map((item, at) => blockRowHtml(ctx, item, at, items.length, canMove)).join('') : ''}
+    </div>
+    ${items.length ? '' : '<div class="rd-fieldcfg-empty">饰框都移出去了 · 用上面的「添加」挑回来</div>'}
+    <div class="rd-fieldcfg-foot">双击名字改名 · ✕ 只是移出抽屉，表格里的列不变。</div>`;
+}
+
+/** 饰框行：一行装完「排序 · 名字 · 大小 · 位置 · 显隐 · 移出」。 */
+function blockRowHtml(ctx, item, at, total, canMove) {
+  const field = item.field;
+  const label = escapeHtml(blockLabel(field, item.layout));
+  const renamed = item.layout.label ? ' is-renamed' : '';
+  return `<div class="rd-fieldcfg-row${item.layout.hidden ? ' is-off' : ''}"
+               data-field-row="${escapeHtml(field.key)}">
+    <span class="rd-fieldcfg-move">
+      <button type="button" class="rd-mini-btn" data-move="-1"
+              aria-label="把「${label}」上移"${!canMove || at === 0 ? ' disabled' : ''}>
+        <svg class="wr-icon rd-cfg-arrow-up" aria-hidden="true"><use href="#ic-chevron-right"/></svg>
+      </button>
+      <button type="button" class="rd-mini-btn" data-move="1"
+              aria-label="把「${label}」下移"${!canMove || at === total - 1 ? ' disabled' : ''}>
+        <svg class="wr-icon rd-cfg-arrow-down" aria-hidden="true"><use href="#ic-chevron-right"/></svg>
+      </button>
+    </span>
+    <span class="rd-fieldcfg-name${renamed}" data-rename-field role="button" tabindex="0"
+          title="双击改名">${label}</span>
+    <span class="rd-fieldcfg-size" role="group" aria-label="「${label}」显示大小">
+      ${DRAWER_SIZES.map(
+        size => `<button type="button" class="rd-mini-btn${
+          item.layout.size === size ? ' is-on' : ''
+        }" data-size="${size}" aria-pressed="${item.layout.size === size}"
+           title="${label} · ${DRAWER_SIZE_LABELS[size]}">${DRAWER_SIZE_LABELS[size]}</button>`
+      ).join('')}
+    </span>
+    <select class="rd-fieldcfg-zone" data-zone aria-label="「${label}」显示位置"
+            title="显示位置：${label}">
+      ${DRAWER_ZONES.map(
+        zone => `<option value="${zone}"${item.layout.zone === zone ? ' selected' : ''}>${DRAWER_ZONE_LABELS[zone]}</option>`
+      ).join('')}
+    </select>
+    <button type="button" class="rd-mini-btn rd-fieldcfg-eye${
+      item.layout.hidden ? ' is-off' : ''
+    }" data-hide="${item.layout.hidden ? '0' : '1'}"
+       aria-pressed="${item.layout.hidden}"
+       title="${item.layout.hidden ? '在抽屉里显示' : '在抽屉里隐藏'}"
+       aria-label="${item.layout.hidden ? `显示「${label}」` : `隐藏「${label}」`}">
+      <svg class="wr-icon" aria-hidden="true"><use href="#${
+        item.layout.hidden ? 'ic-eye-off' : 'ic-check'
+      }"/></svg>
+    </button>
+    <button type="button" class="rd-mini-btn rd-fieldcfg-drop" data-drop="1"
+            title="移出抽屉（可用「添加」加回来）" aria-label="把「${label}」移出抽屉">
+      <svg class="wr-icon" aria-hidden="true"><use href="#ic-close"/></svg>
+    </button>
+  </div>`;
+}
+
+/** 槽位三行：标题 / 时间 / 内容 各选一列。只有视图抽屉给得出 onSlotChange。 */
+function slotSectionHtml(ctx) {
+  const pick = (slot, emptyLabel, types) => {
+    const current = ctx.slot?.[slot]?.key || '';
+    const list = ctx.visibleFields.filter(field => !types || types.includes(field.type));
+    return `<select class="rd-slot-pick" data-slot="${slot}" aria-label="槽位用哪一列">
+      <option value="">${emptyLabel}</option>
+      ${list
+        .map(
+          field =>
+            `<option value="${escapeHtml(field.key)}"${field.key === current ? ' selected' : ''}>${escapeHtml(
+              field.label || field.key
+            )}</option>`
+        )
+        .join('')}
+    </select>`;
+  };
+  const row = (name, inner) => `<label class="rd-slot-row"><span class="rd-slot-key">${name}</span>${inner}</label>`;
+  return `<div class="rd-slot">
+    <div class="rd-slot-title">槽位</div>
+    ${row('标题', pick('title', '自动（第一个文本列）', ['text']))}
+    ${row('时间', pick('date', '不显示', ['date']))}
+    ${row('内容', pick('body', '记录正文', ['text']))}
+  </div>`;
+}
+
+/** 「添加饰框」展开后的字段池：已在列表里的标「已在」，移出的可以直接点回来。 */
+function blockPoolHtml(ctx, all, consumed) {
+  const rows = all.filter(item => !consumed.has(item.field.key));
+  if (!rows.length) return '<div class="rd-blockpool-empty">没有可添加的字段</div>';
+  return `<div class="rd-fieldcfg-pool" data-block-pool>
+    ${rows
+      .map(item => {
+        const label = escapeHtml(blockLabel(item.field, item.layout));
+        const on = !item.layout.off;
+        return `<button type="button" class="rd-pool-item${on ? ' is-on' : ''}" data-pool-key="${escapeHtml(
+          item.field.key
+        )}"${on ? ' disabled' : ''}>
+          <span class="rd-pool-name">${label}</span>
+          <span class="rd-pool-flag">${on ? '已在' : '＋'}</span>
+        </button>`;
+      })
+      .join('')}
+  </div>`;
+}
+
+/** 面板当前该列出哪些行 —— 渲染和点击必须用同一份，否则「上移」会跳过被藏起来的那些。 */
+function panelItems(ctx) {
+  const consumed = new Set(
+    [ctx.slot?.title?.key, ctx.slot?.date?.key, ctx.slot?.body?.key].filter(Boolean)
+  );
+  const all = layoutItems(ctx.visibleFields, ctx.fieldLayout);
+  return { all, consumed, items: all.filter(item => !item.layout.off && !consumed.has(item.field.key)) };
 }
 
 function onFieldPanelClick(ctx, event) {
+  // ① 「添加饰框」：开合字段池
+  if (event.target.closest('[data-add-block]')) {
+    ctx.blockPoolOpen = !ctx.blockPoolOpen;
+    renderFieldPanel(ctx);
+    return;
+  }
+
+  // ② 字段池里点一个 → 把它加回抽屉（排到末尾）
+  const poolItem = event.target.closest('[data-pool-key]');
+  if (poolItem) {
+    const key = poolItem.dataset.poolKey;
+    const cfg = ctx.fieldLayout.get(key);
+    if (!cfg || !cfg.off) return;
+    const maxOrder = Math.max(
+      -1,
+      ...[...ctx.fieldLayout.values()].map(item => (item.order == null ? -1 : item.order))
+    );
+    const next = new Map(ctx.fieldLayout);
+    next.set(key, { ...cfg, off: false, hidden: false, order: maxOrder + 1 });
+    ctx.blockPoolOpen = false;
+    commitFieldLayout(ctx, next);
+    return;
+  }
+
   const rowEl = event.target.closest('[data-field-row]');
   if (!rowEl) return;
   const key = rowEl.dataset.fieldRow;
-  const items = layoutItems(ctx.visibleFields, ctx.fieldLayout);
+  const { items } = panelItems(ctx);
   const at = items.findIndex(item => item.field.key === key);
-  if (at < 0) return;
+  if (at < 0 || !ctx.fieldLayout.has(key)) return;
 
   const next = new Map(ctx.fieldLayout);
+  const cfg = ctx.fieldLayout.get(key);
 
   const move = event.target.closest('[data-move]');
   if (move) {
@@ -670,8 +945,8 @@ function onFieldPanelClick(ctx, event) {
     if (!Number.isFinite(to) || to < 0 || to >= items.length) return;
     const [moved] = items.splice(at, 1);
     items.splice(to, 0, moved);
-    // 一挪就把所有字段写成显式 order：此后顺序完全由用户决定，
-    // 新加的字段因为没 order 自然排在最后（见 compareLayoutItems）。
+    // 一挪就把列表里所有饰框写成显式 order：此后顺序完全由用户决定，
+    // 之后新加的饰框因为拿到 maxOrder+1 自然排在最后（见 compareLayoutItems）。
     items.forEach((item, index) => next.set(item.field.key, { ...item.layout, order: index }));
     commitFieldLayout(ctx, next);
     return;
@@ -680,20 +955,77 @@ function onFieldPanelClick(ctx, event) {
   const sizeBtn = event.target.closest('[data-size]');
   if (sizeBtn) {
     const size = sizeBtn.dataset.size;
-    if (!DRAWER_SIZES.includes(size) || !ctx.fieldLayout.has(key)) return;
-    if (ctx.fieldLayout.get(key).size === size) return;
-    next.set(key, { ...ctx.fieldLayout.get(key), size });
+    if (!DRAWER_SIZES.includes(size) || cfg.size === size) return;
+    next.set(key, { ...cfg, size });
     commitFieldLayout(ctx, next);
     return;
   }
 
   const eye = event.target.closest('[data-hide]');
   if (eye) {
-    const hidden = eye.dataset.hide === '1';
-    if (!ctx.fieldLayout.has(key)) return;
-    next.set(key, { ...ctx.fieldLayout.get(key), hidden });
+    next.set(key, { ...cfg, hidden: eye.dataset.hide === '1' });
+    commitFieldLayout(ctx, next);
+    return;
+  }
+
+  // ✕ = 移出抽屉。和眼睛的区别只有一点：移出后这一行不再占列表，
+  // 要回来得走「添加」；眼睛是「先留着，现在不显示」。
+  const drop = event.target.closest('[data-drop]');
+  if (drop) {
+    next.set(key, { ...cfg, off: true });
     commitFieldLayout(ctx, next);
   }
+}
+
+/**
+ * 改饰框名字：双击 → 就地输入 → Enter / 失焦提交，Esc 放弃，清空 = 回到字段名。
+ * 名字存在 field.options.drawer.label，和字段自己的 label 各管各的（改列名不该动这里）。
+ * @param {object} ctx 抽屉上下文
+ * @param {HTMLElement} span 名字那一格
+ */
+function startBlockRename(ctx, span) {
+  const rowEl = span.closest('[data-field-row]');
+  const key = rowEl?.dataset.fieldRow;
+  if (!key) return;
+  const field = ctx.visibleFields.find(item => item.key === key);
+  const cfg = ctx.fieldLayout.get(key);
+  if (!field || !cfg) return;
+  if (rowEl.querySelector('.rd-fieldcfg-rename')) return;
+
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'rd-fieldcfg-rename';
+  input.value = cfg.label || '';
+  input.placeholder = field.label || field.key;
+  input.setAttribute('aria-label', '饰框名字');
+  span.textContent = '';
+  span.append(input);
+  input.focus();
+  input.select();
+
+  let settled = false;
+  const finish = save => {
+    if (settled) return;
+    settled = true;
+    if (save) {
+      const label = input.value.trim().slice(0, 24);
+      if (label !== cfg.label) {
+        const next = new Map(ctx.fieldLayout);
+        next.set(key, { ...cfg, label });
+        commitFieldLayout(ctx, next);
+        return;
+      }
+    }
+    renderFieldPanel(ctx);
+  };
+  input.addEventListener('keydown', event => {
+    if (event.isComposing || event.keyCode === 229) return;
+    if (event.key === 'Enter') { event.preventDefault(); finish(true); }
+    else if (event.key === 'Escape') { event.preventDefault(); finish(false); }
+  });
+  input.addEventListener('blur', () => finish(true));
+  // 输入框吞掉冒泡，否则点在自己身上会被面板的委托当成「点了这一行」
+  input.addEventListener('click', event => event.stopPropagation());
 }
 
 /**
@@ -710,10 +1042,31 @@ function commitFieldLayout(ctx, nextMap) {
 
   const changes = [];
   for (const [key, cfg] of nextMap) {
-    const prev = prevMap.get(key) || { hidden: false, size: 'md', order: null };
-    if (prev.hidden === cfg.hidden && prev.size === cfg.size && prev.order === cfg.order) continue;
+    const prev = prevMap.get(key) || { hidden: false, off: false, size: 'md', order: null, label: '', zone: 'grid' };
+    if (
+      prev.hidden === cfg.hidden &&
+      prev.off === cfg.off &&
+      prev.size === cfg.size &&
+      prev.order === cfg.order &&
+      prev.label === cfg.label &&
+      prev.zone === cfg.zone
+    ) continue;
     const field = ctx.visibleFields.find(item => item.key === key);
-    if (field) changes.push({ field, drawer: { hidden: cfg.hidden, size: cfg.size, order: cfg.order } });
+    if (field) {
+      // 整份 drawer 都要给：saveFieldDrawer 是「整列覆写」，只传改动的那个键
+      // 会把 wrap / dateOnly / source 之外的 drawer 兄弟键一并抹掉。
+      changes.push({
+        field,
+        drawer: {
+          hidden: cfg.hidden,
+          off: cfg.off,
+          size: cfg.size,
+          order: cfg.order,
+          label: cfg.label,
+          zone: cfg.zone,
+        },
+      });
+    }
   }
 
   const save = ctx.handlers.onFieldLayoutChange;
@@ -736,8 +1089,14 @@ function renderFieldGrid(ctx) {
   const host = block?.querySelector('[data-fields-grid]');
   if (!host) return;
   const title = String(ctx.el?.querySelector('.sh-drawer-title')?.textContent ?? '').trim();
-  ctx.gridFields = arrangeGridFields(ctx.visibleFields, ctx.row, title, ctx.fieldLayout);
-  const anyShown = ctx.visibleFields.some(field => !ctx.fieldLayout.get(field.key)?.hidden);
+  ctx.gridFields = arrangeGridFields(ctx.visibleFields, ctx.row, title, ctx.fieldLayout, slotSkipKeys(ctx));
+  ctx.headBlocks = headBlocksOf(ctx.visibleFields, ctx.fieldLayout);
+  // 改「位置」得让饰框当场搬家：网格和头部行两边都要重画，不能只画一边
+  renderHeadline(ctx);
+  const anyShown = ctx.visibleFields.some(field => {
+    const cfg = ctx.fieldLayout.get(field.key);
+    return cfg && !cfg.hidden && !cfg.off;
+  });
   host.innerHTML = fieldsHtml(ctx.gridFields, ctx.row, ctx.fieldLayout, !anyShown);
 }
 
@@ -1076,7 +1435,8 @@ function composeMetaWhen(ctx) {
   const hasCrumbs = Boolean(crumbs && !crumbs.hidden && crumbs.textContent.trim());
   const parts = [];
   if (!hasCrumbs && ctx.metaTags) parts.push(ctx.metaTags);
-  if (ctx.metaWhenParts?.happened) parts.push(ctx.metaWhenParts.happened);
+  // 时间槽位接管了「哪天」之后，这一行不再写一遍 —— 同一句话隔 20px 出现两次
+  if (!ctx.slot?.date && ctx.metaWhenParts?.happened) parts.push(ctx.metaWhenParts.happened);
   if (ctx.metaWhenParts?.deadline) parts.push(`截止 ${ctx.metaWhenParts.deadline}`);
   when.textContent = parts.join(' · ');
   when.hidden = !when.textContent;
@@ -1183,6 +1543,15 @@ function bindEvents(ctx) {
   // 笔记面板的输入框是动态换进来的，用委托绑定（面板重绘后不需要重挂）
   bodyEl?.addEventListener('input', event => onBodyInput(ctx, event));
   bodyEl?.addEventListener('keydown', event => onBodyKeydown(ctx, event));
+  // 饰框的「位置」下拉、槽位的「用哪一列」下拉 —— select 只有 change，没有 click
+  bodyEl?.addEventListener('change', event => onBodyChange(ctx, event));
+  // 双击饰框名字 → 就地改名
+  bodyEl?.addEventListener('dblclick', event => {
+    const span = event.target.closest('[data-rename-field]');
+    if (!span) return;
+    event.preventDefault();
+    startBlockRename(ctx, span);
+  });
 
   // footer 由 openDrawer 建（它只给 .sh-drawer-foot，不知道 rd- 前缀），这里补上类名，
   // 让层 9 的 `.rd-foot { position: relative }` 能承载绝对定位的「⋯」菜单。
@@ -1300,6 +1669,70 @@ function onBodyClick(ctx, event) {
   if (!cell) return;
   const field = ctx.fields.find(item => item.key === cell.dataset.key);
   if (field) ctx.handlers.onCellClick?.(field, cell, ctx.row);
+}
+
+/**
+ * select 类控件走 change：饰框「位置」、槽位「用哪一列」。
+ * 都放在这一处，面板里再加下拉不必再挂一个监听器。
+ * @param {object} ctx 抽屉上下文
+ * @param {Event} event change 事件（委托到 .sh-drawer-body）
+ */
+function onBodyChange(ctx, event) {
+  const zone = event.target.closest?.('[data-zone]');
+  if (zone) {
+    const key = zone.closest('[data-field-row]')?.dataset.fieldRow;
+    const cfg = key ? ctx.fieldLayout.get(key) : null;
+    if (!cfg || !DRAWER_ZONES.includes(zone.value) || cfg.zone === zone.value) return;
+    const next = new Map(ctx.fieldLayout);
+    next.set(key, { ...cfg, zone: zone.value });
+    commitFieldLayout(ctx, next);
+    return;
+  }
+  const slotPick = event.target.closest?.('[data-slot]');
+  if (slotPick) void pickSlot(ctx, slotPick.dataset.slot, slotPick.value);
+}
+
+/**
+ * 换槽位绑定的列：先把抽屉本地切过去（用户立刻看到结果），再让宿主写视图配置。
+ *
+ * 三件事必须当场生效，不能等宿主写完库重开抽屉：
+ *   ① 标题立刻换成新列的值；② 头部时间行重画；③ 被占用的列从网格里退场。
+ * @param {object} ctx 抽屉上下文
+ * @param {'title'|'date'|'body'} slot 槽位
+ * @param {string} key 列 key（空串 = 不绑定）
+ */
+async function pickSlot(ctx, slot, key) {
+  const handler = ctx.handlers.onSlotChange;
+  if (typeof handler !== 'function' || !SLOT_LABELS[slot]) return;
+  const field = key ? ctx.visibleFields.find(item => item.key === key) || null : null;
+
+  if (slot === 'title') {
+    ctx.titleField = field;
+    if (field) ctx.displayField = field;
+    const text = field ? String(ctx.row?.values?.[field.key] ?? '').trim() : '';
+    setTitle(ctx, text || (ctx.recordId !== null ? `未命名记录 #${ctx.recordId}` : '未命名记录'));
+  } else if (slot === 'date') {
+    ctx.slot.date = field;
+    // 元信息行里那段时间要让位 / 复位，否则两处写着同一个日期
+    composeMetaWhen(ctx);
+    updateMetaLineVisibility(ctx);
+  } else {
+    ctx.slot.body = field;
+    ctx.slotBodyField = field;
+    applyBodySlot(ctx);
+  }
+
+  // 槽位一变，「哪些列被占用」就变了 —— 网格和面板都得跟着重排
+  renderFieldGrid(ctx);
+  renderFieldPanel(ctx);
+
+  try {
+    await handler(slot, key);
+    showHint(ctx, `${SLOT_LABELS[slot]}已改为「${field ? blockLabel(field, null) : '不绑定'}」`);
+  } catch (error) {
+    console.warn('[rowDrawer] 槽位保存失败', error);
+    showHint(ctx, `${SLOT_LABELS[slot]}没存上：${error?.message || error}`);
+  }
 }
 
 function onBodyInput(ctx, event) {

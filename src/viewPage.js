@@ -18,6 +18,10 @@ import { openDatePicker } from './datePicker.js';
 
 const UNGROUPED = '__ungrouped__';
 
+// 抽屉里那三个基础槽位，各自写回视图配置的哪个键。
+// 放成一张表是为了「加一个槽位」只改这一处 —— 抽屉只认 title / date / body 三个名字。
+const SLOT_CONFIG_KEYS = { title: 'titleField', date: 'dateField', body: 'bodyField' };
+
 function optionOf(field, value) {
   return fieldOptionsList(field).find(item => String(item.value) === String(value)) || null;
 }
@@ -188,10 +192,21 @@ function openCard(row, ctx) {
     row,
     fields: list,
     titleField: titleKey || undefined,
+    // 槽位②③：日历把自己的 dateField 当「时间」，content 列当「内容」。
+    // 不传就是空 —— 抽屉退回「记录正文 + 不出头部时间行」的老样子。
+    slotDate: String(ctx.view?.config?.dateField || '').trim() || undefined,
+    slotBody: String(ctx.view?.config?.bodyField || '').trim() || undefined,
     subtitle: ctx.table?.name || '',
     onCellClick: (field, cellEl, liveRow) => editCellInDrawer(field, cellEl, liveRow, ctx),
     // 抽屉里「换标题列」→ 写回这张视图的配置（只影响这一个视图，不动表结构）
     onTitleFieldPick: ctx.onConfig ? key => ctx.onConfig({ titleField: key }) : undefined,
+    // 三个槽位换列：标题 / 时间 / 内容 各自落到 config 的哪个键
+    onSlotChange: ctx.onConfig
+      ? (slot, key) => {
+          const configKey = SLOT_CONFIG_KEYS[slot];
+          return configKey ? ctx.onConfig({ [configKey]: key || '' }) : undefined;
+        }
+      : undefined,
     // 字段显示参数（隐藏 / 顺序 / 大小）跟着字段自己走，和视图无关
     onFieldLayoutChange: (field, drawer) => saveFieldDrawer(ctx.table, field, drawer),
     // 抽屉里改标题走的是 patchRecord（不经 ctx.saveRow），视图侧的数据不会自己变。
