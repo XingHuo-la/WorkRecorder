@@ -72,13 +72,23 @@ const KIND_LABELS = {
 const DRAWER_SIZES = ['lg', 'md', 'sm'];
 const DRAWER_SIZE_LABELS = { lg: '大', md: '中', sm: '小' };
 
-// 饰框（= 一个字段在抽屉里的展示位）能落在哪 —— 两档就够，再多就没人能说清区别：
-//   grid：正文网格，带字段名的格子，大/中/小三档大小都在这儿；
-//   head：大标题下面那一行，只有「值」，给状态、负责人这种一眼要看到的东西。
-const DRAWER_ZONES = ['grid', 'head'];
-const DRAWER_ZONE_LABELS = { grid: '正文', head: '标题下' };
+// 展示方式（= 一个字段在抽屉里的展示位）能落在哪。
+//
+// 2026-11-23 从「两档」扩成「四种」：内容不再是一个写死的槽位，而是**一种展示方式**——
+// 任何字段都能被设成内容，设了几个就上下并列几块。用户要的是「排版由我定义」，
+// 而不是「只有一列能当正文」。
+//   title：最上方大标题。全表只能有一个（设第二个会把第一个降级成 info）。
+//   body ：内容块。独占一整块、大号字，可多个，按 order 从上到下。
+//   info ：信息网格。标签 + 值，大/中/小三档大小，两列平铺。
+//   head ：标题下那一行，只有值，给状态、负责人这种一眼要看到的东西。
+// 老的 'grid' 统一当 'info' 读（drawerConfigOf 负责翻译），旧数据零迁移。
+const DRAWER_ZONES = ['title', 'body', 'info', 'head'];
+const DRAWER_ZONE_LABELS = { title: '标题', body: '内容', info: '信息', head: '标题下' };
+// 面板里的分区顺序 = 抽屉里从上到下的顺序，改这里就是改面板的排版
+const DRAWER_ZONE_ORDER = ['title', 'body', 'info', 'head'];
 
-// 三个基础槽位（标题 / 时间 / 内容）。名字就是面板上那三行的字，别在两处各写一份。
+// 基础槽位只剩「时间」一个是排布管不到的了（日期列要跟视图走，日历/看板靠它定位）。
+// 标题与内容已并入上面的展示方式。
 const SLOT_LABELS = { title: '标题', date: '时间', body: '内容' };
 
 // 库里 status 的取值混着两套语义：record 表的（inbox / pending / done）
@@ -255,6 +265,11 @@ export function openRowDrawer(opts = {}) {
     fieldLayout: new Map(),
     // 归到「标题下」那行（zone='head'）的字段，顺序同网格
     headBlocks: [],
+    // 被设成「内容」展示方式的字段（zone='body'），可多个，从上到下并列成几块。
+    // 空数组 + record.body 为空 = 内容区整块不出现（没有字段承载的空编辑器不该存在）。
+    bodyBlocks: [],
+    // 面板里的草稿：改完点「应用」才写库。null = 没有未应用的改动。
+    pendingLayout: null,
     // 字段设置里「添加饰框」展开的字段池是否打开
     blockPoolOpen: false,
     // 宿主能不能写视图配置（槽位）。表格抽屉没有视图上下文，槽位区就不出现。
@@ -275,12 +290,26 @@ export function openRowDrawer(opts = {}) {
     titleMenu: null,
   };
 
+  // 先把每个字段的展示参数读进来 —— 大标题取哪一列要看 zone==='title'，
+  // 顺序反了的话「把某列设成标题」不会生效（先按 view 配置算了一遍标题）。
+  for (const field of visibleFields) ctx.fieldLayout.set(field.key, drawerConfigOf(field));
+  const titleBlock = resolveTitleHolder(visibleFields, ctx.fieldLayout, titleField);
+  if (titleBlock) {
+    // 没人把某列设成「标题」时，把这份事实写回显示参数：面板才会把它画进「标题」组。
+    // 否则用户看到的是「网格里没有它、面板说它是信息」，找不到标题在哪。
+    const cfg = ctx.fieldLayout.get(titleBlock.key) || {};
+    if (cfg.zone !== 'title') ctx.fieldLayout.set(titleBlock.key, { ...cfg, zone: 'title' });
+    ctx.titleField = titleBlock;
+    ctx.displayField = titleBlock;
+  }
+  ctx.bodyBlocks = bodyBlocksOf(visibleFields, ctx.fieldLayout, slotBodyField);
+  ctx.slot.body = ctx.bodyBlocks[0] || null;
+
   const initialTitle = resolveTitle(ctx);
   const initialKicker = String(options.subtitle ?? '') || defaultKicker(preload);
 
   // 字段网格的「显示层」编排：先按 field.options.drawer 排顺序 / 藏起来 / 归位置，
   // 再删与大标题逐字相同的那些格子（只删格子，不删字段），最后排掉已被槽位占用的列。
-  for (const field of visibleFields) ctx.fieldLayout.set(field.key, drawerConfigOf(field));
   ctx.gridFields = arrangeGridFields(visibleFields, row, initialTitle, ctx.fieldLayout, slotSkipKeys(ctx));
   ctx.headBlocks = headBlocksOf(visibleFields, ctx.fieldLayout);
 
@@ -307,8 +336,8 @@ export function openRowDrawer(opts = {}) {
              display:flex，作者样式的 display 会盖掉 UA 的 [hidden]{display:none}，
              空正文时两个块会同时出现在屏幕上。 -->
       <section class="rd-body-block" data-section="body">
-        <div class="rd-body markdown-body" data-body${ctx.slotBodyField ? ' style="display:none"' : ''}></div>
-        <div class="rd-body-field" data-body-field${ctx.slotBodyField ? '' : ' style="display:none"'}>${bodySlotInner(ctx)}</div>
+        <div class="rd-body markdown-body" data-body style="display:none"></div>
+        <div class="rd-body-fields" data-body-fields></div>
       </section>
 
       <!-- ③ 字段：.sh-detail 在层 9 变成两列网格，DOM 结构不变。
@@ -417,6 +446,9 @@ export function openRowDrawer(opts = {}) {
   // 头部行（时间槽位 + 标题下饰框）走的是行里的值，同步就能画。
   renderHeadline(ctx);
   paintPreloadBody(ctx);
+  // 内容块是同步就能画的（值就在行里），必须在首屏就位；
+  // 它同时决定「空正文区要不要整块消失」，晚画会闪一下空框。
+  refreshBodySection(ctx);
   bindEvents(ctx);
   // 异步分区：面包屑 / 子项 / 子表 / 正文 markdown 都不阻塞首屏
   void hydrate(ctx, token);
@@ -499,6 +531,12 @@ function normalizeHandlers(options) {
     onPrev: pick('onPrev'),
     onNext: pick('onNext'),
     onCellClick: pick('onCellClick'),
+    // 附件格右下角的「＋」：宿主弹「从剪贴板 / 选择文件」来源菜单。
+    // ★ 这两个必须在这里转发 ★ normalizeHandlers 是白名单，漏一个的后果不是报错，
+    //   而是点击被 onBodyClick 吃掉、什么也不发生 —— 探针里表现为「点了没反应」。
+    onAttachmentAdd: pick('onAttachmentAdd'),
+    // 文件小胶囊（只存链接的附件）：宿主弹「定位 / 打开 / 打开方式」
+    onFileChip: pick('onFileChip'),
     // 换「大标题取哪一列」（视图层才有：要写回 view_def.config）
     onTitleFieldPick: pick('onTitleFieldPick'),
     // 槽位换列（标题 / 时间 / 内容）。视图层才有 —— 它写回 view_def.config。
@@ -559,7 +597,7 @@ function defaultKicker(record) {
  *   zone   —— 落在正文网格还是标题下那一行。
  *
  * @param {object} field 字段
- * @returns {{hidden:boolean, off:boolean, size:'lg'|'md'|'sm', order:number|null, label:string, zone:'grid'|'head'}}
+ * @returns {{hidden:boolean, off:boolean, size:'lg'|'md'|'sm', order:number|null, label:string, zone:'title'|'body'|'info'|'head'}}
  */
 function drawerConfigOf(field) {
   const config = parseFieldConfig(field) || {};
@@ -571,7 +609,8 @@ function drawerConfigOf(field) {
     size: DRAWER_SIZES.includes(raw.size) ? raw.size : 'md',
     order: Number.isFinite(order) ? order : null,
     label: String(raw.label ?? '').trim(),
-    zone: DRAWER_ZONES.includes(raw.zone) ? raw.zone : 'grid',
+    // 'grid' 是旧名字，等同于现在的 'info'
+    zone: raw.zone === 'grid' ? 'info' : DRAWER_ZONES.includes(raw.zone) ? raw.zone : 'info',
   };
 }
 
@@ -603,8 +642,8 @@ function arrangeGridFields(fields, row, titleText, layout, skipKeys = []) {
   const skip = new Set(skipKeys.filter(Boolean));
   return layoutItems(fields, layout)
     .filter(item => !item.layout.off && !item.layout.hidden)
-    // 归到「标题下」的饰框不走网格 —— 它已经在上面那行出现过了
-    .filter(item => item.layout.zone !== 'head')
+    // 只有 info 走网格：标题 / 内容 / 标题下 各自有专属的渲染位置
+    .filter(item => item.layout.zone === 'info')
     .filter(item => !skip.has(item.field.key))
     .filter(item => !title || String(row?.values?.[item.field.key] ?? '').trim() !== title)
     .map(item => item.field);
@@ -618,11 +657,69 @@ function headBlocksOf(fields, layout) {
 }
 
 /**
+ * 大标题取哪一列：展示方式设成「标题」的那一个（全表最多一个，见 setZone）。
+ * 返回 null 表示没人设过 —— 调用方保留 view 配置里的 titleField 或第一个文本列。
+ */
+function titleBlockOf(fields, layout) {
+  const hit = layoutItems(fields, layout)
+    .find(item => item.layout.zone === 'title' && !item.layout.off && !item.layout.hidden);
+  return hit ? hit.field : null;
+}
+
+/**
+ * 大标题实际由哪一列承担。
+ *
+ * `titleBlockOf` 只认「用户明确设成标题」的那一个；没人设过的表（绝大多数）得有一列
+ * 事实上在当标题 —— 调用方给的 titleField（日历 / 看板的视图配置）或第一个文本列。
+ *
+ * ★ 为什么要有这个函数而不是各处各写一遍 ★
+ *   打开抽屉时要把这份「事实」写回显示参数（面板才会把它画进「标题」组），改完排版
+ *   应用之后又要重新算一遍（用户可能刚把标题换了一列）。两处必须用同一条规则，否则
+ *   面板说的和抽屉画的会各说各的。
+ *
+ * 已经明确放到「内容 / 标题下」的列不参与兜底：那是比「默认标题」更晚做出的选择。
+ *
+ * @param {object[]} fields 可见字段
+ * @param {Map<string, object>} layout 显示参数
+ * @param {object|null} preferred 优先当标题的列（调用方原意 / 当前标题）
+ * @returns {object|null} 标题列；null = 连一个候选文本列都没有
+ */
+function resolveTitleHolder(fields, layout, preferred = null) {
+  const explicit = titleBlockOf(fields, layout);
+  if (explicit) return explicit;
+  const claimable = fields.filter(field => {
+    if (field.type !== 'text') return false;
+    const zone = layout.get(field.key)?.zone;
+    return zone !== 'body' && zone !== 'head';
+  });
+  return (preferred && claimable.includes(preferred) ? preferred : claimable[0]) || null;
+}
+
+/**
+ * 「内容」块：展示方式设成内容的字段，按 order 从上到下。
+ *
+ * legacyBody 是视图配置里的 bodyField（日历/看板在用）。只有在一个字段都没被设成
+ * 内容时才回退到它 —— 否则会出现「刚把 A 设成内容，旧的 B 也还画着」两块重复。
+ */
+function bodyBlocksOf(fields, layout, legacyBody) {
+  const list = layoutItems(fields, layout)
+    .filter(item => item.layout.zone === 'body' && !item.layout.off && !item.layout.hidden)
+    .map(item => item.field);
+  if (list.length) return list;
+  return legacyBody ? [legacyBody] : [];
+}
+
+/**
  * 已被槽位占住的列 —— 它们在标题 / 头部时间行 / 正文块里各出现一次，
  * 网格里再来一遍就是同一条信息画了两次。
  */
 function slotSkipKeys(ctx) {
-  return [ctx.slot?.body?.key, ctx.slot?.date?.key].filter(Boolean);
+  // 内容块占用的列不再进 info 网格（同一个值画两遍）；
+  // 时间槽位同理。title 不用列 —— 它本来就被 arrangeGridFields 的 zone 过滤挡掉了。
+  return [
+    ...(ctx.bodyBlocks || []).map(field => field.key),
+    ctx.slot?.date?.key,
+  ].filter(Boolean);
 }
 
 /** 按「显式 order 升序 → 其余按字段原顺序」排；面板和网格共用这一条，两边不会对不上。 */
@@ -645,7 +742,9 @@ function layoutItems(fields, layout) {
         size: 'md',
         order: null,
         label: '',
-        zone: 'grid',
+        // 与 drawerConfigOf 的默认值保持一致：漏在 map 里的字段照样进信息网格，
+        // 不能因为默认值是旧名字 'grid' 就被 arrangeGridFields 的 zone===info 过滤掉。
+        zone: 'info',
         ...(layout?.get(field.key) || {}),
       },
     }))
@@ -695,13 +794,62 @@ function fieldsHtml(gridFields, row, layout, allHidden = false) {
  * @param {object} ctx 抽屉上下文（slotBodyField 必须已就绪）
  * @returns {string} HTML（无槽位时为空串）
  */
-function bodySlotInner(ctx) {
-  const field = ctx.slotBodyField;
-  if (!field) return '';
-  return `<div class="sh-detail-cell sh-cell rd-body-cell" data-key="${escapeHtml(field.key)}"
-       data-row="${escapeHtml(ctx.row?.id ?? '')}" tabindex="-1">${drawValue(field, ctx.row?.values?.[field.key], {
-         placeholder: '写点什么…',
-       })}</div>`;
+/**
+ * 内容区：被设成「内容」展示方式的字段，一个一块，从上到下并列。
+ *
+ * 为什么要能有多块：用户要的是「排版由我定义」—— 一条记录可能既有「现象」又有
+ * 「处理过程」，两块都是正文级的内容，塞进信息网格会被压成一行省略号。
+ * 多块时给每块补一行小标签，否则上下两段文字谁是谁分不清。
+ */
+function bodyBlocksHtml(ctx) {
+  const list = ctx.bodyBlocks || [];
+  if (!list.length) return '';
+  const named = list.length > 1;
+  return list
+    .map(field => {
+      const cfg = ctx.fieldLayout.get(field.key) || {};
+      const label = named
+        ? `<div class="rd-body-label">${escapeHtml(blockLabel(field, cfg))}</div>`
+        : '';
+      return `${label}<div class="sh-detail-cell sh-cell rd-body-cell" data-key="${escapeHtml(field.key)}"
+        data-row="${escapeHtml(ctx.row?.id ?? '')}" tabindex="-1">${drawValue(field, ctx.row?.values?.[field.key], {
+          placeholder: '写点什么…',
+        })}</div>`;
+    })
+    .join('');
+}
+
+/**
+ * 重画整个正文区，并决定这一块到底出不出场。
+ *
+ * 三种情况：
+ *   ① 有内容字段 → 画字段块（record.body 非空时连 markdown 一起画）；
+ *   ② 没有内容字段、record.body 非空 → 只画 markdown（日志 / 待办走这条）；
+ *   ③ 两者都空 → **整块不出现**。
+ *
+ * ③ 是用户明确要求的：截图里那个空着的「写点什么…」没有任何字段承载它，
+ * 属于「显示的东西必须有对应字段」的例外，应该消失而不是留个空框。
+ * 但日志 / 待办不是表格行（没有字段），它们在 ③ 下要继续给入口写字 ——
+ * 所以「表格行」才隐藏，其余保持原样。
+ */
+function refreshBodySection(ctx) {
+  const block = section(ctx, 'body');
+  if (!block) return;
+  const markdown = block.querySelector('[data-body]');
+  const fieldsHost = block.querySelector('[data-body-fields]');
+  if (fieldsHost) fieldsHost.innerHTML = bodyBlocksHtml(ctx);
+
+  const hasFields = (ctx.bodyBlocks || []).length > 0;
+  const hasBody = String(ctx.bodySource ?? '').trim() !== '';
+  const isSheetRow = (ctx.visibleFields || []).length > 0;
+
+  // 有内容字段时 markdown 一律让位：两段「正文」同时出现，用户分不清哪段是自己要改的。
+  // 没有内容字段时才轮到 record.body（日志 / 待办走这条），空着也给入口写字。
+  const showMarkdown = hasFields ? false : hasBody || !isSheetRow;
+  if (markdown) markdown.style.display = showMarkdown ? '' : 'none';
+  if (fieldsHost) fieldsHost.style.display = hasFields ? '' : 'none';
+  // 表格行 + 两样都空 → 整块收起
+  block.style.display = hasFields || showMarkdown ? '' : 'none';
 }
 
 /**
@@ -710,15 +858,7 @@ function bodySlotInner(ctx) {
  * @param {object} ctx 抽屉上下文
  */
 function applyBodySlot(ctx) {
-  const block = section(ctx, 'body');
-  const markdown = block?.querySelector('[data-body]');
-  const slot = block?.querySelector('[data-body-field]');
-  if (!markdown || !slot) return;
-  const on = Boolean(ctx.slotBodyField);
-  // 行内 display（不是 hidden 属性）：见 bodyHtml 里的注释
-  markdown.style.display = on ? 'none' : '';
-  slot.style.display = on ? '' : 'none';
-  slot.innerHTML = on ? bodySlotInner(ctx) : '';
+  refreshBodySection(ctx);
 }
 
 /**
@@ -780,38 +920,78 @@ function renderFieldPanel(ctx) {
     return;
   }
 
-  // 被槽位吃掉的三列不进饰框列表：它们在槽位区已经各有一份配置，
-  // 再列一行「大小 / 位置」只会让人以为调了有用。
-  const consumed = new Set(
-    [ctx.slot?.title?.key, ctx.slot?.date?.key, ctx.slot?.body?.key].filter(Boolean)
-  );
-  const all = layoutItems(ctx.visibleFields, ctx.fieldLayout);
-  const items = all.filter(item => !item.layout.off && !consumed.has(item.field.key));
-  const pool = all.filter(item => item.layout.off && !consumed.has(item.field.key));
-  const canMove = items.length > 1;
+  const map = ctx.pendingLayout || ctx.fieldLayout;
+  const { items } = panelItems(ctx);
+  const pool = layoutItems(ctx.visibleFields, map).filter(item => item.layout.off);
+  const dirty = Boolean(ctx.pendingLayout);
+
+  // 按展示方式分组：这一屏就是抽屉从上到下的排版草图，
+  // 分组顺序 = 渲染顺序（DRAWER_ZONE_ORDER），别在别处再排一次。
+  const groups = DRAWER_ZONE_ORDER.map(zone => ({
+    zone,
+    list: items.filter(item => item.layout.zone === zone),
+  }));
+
+  const rows = groups
+    .filter(group => group.list.length)
+    .map(group => `
+      <div class="rd-fieldcfg-group" data-zone-group="${group.zone}">
+        <div class="rd-fieldcfg-ghead">
+          <span class="rd-fieldcfg-gname">${DRAWER_ZONE_LABELS[group.zone]}</span>
+          <span class="rd-fieldcfg-gnote">${ZONE_NOTES[group.zone]}</span>
+        </div>
+        ${group.list
+          .map((item, at) => blockRowHtml(ctx, item, at, group.list.length, group.list.length > 1))
+          .join('')}
+      </div>`)
+    .join('');
 
   panel.hidden = false;
   panel.innerHTML = `
     ${ctx.slotHandlers ? slotSectionHtml(ctx) : ''}
     <div class="rd-fieldcfg-head">
-      <span class="rd-fieldcfg-title">饰框</span>
+      <span class="rd-fieldcfg-title">展示方式</span>
       <button type="button" class="rd-mini-btn rd-fieldcfg-add" data-add-block
               aria-expanded="${ctx.blockPoolOpen ? 'true' : 'false'}"
-              title="${pool.length ? '把移出的字段加回抽屉' : '所有字段都已在饰框里'}">＋ 添加</button>
+              title="${pool.length ? '把移出的字段加回抽屉' : '所有字段都已在抽屉里'}">＋ 添加</button>
     </div>
-    ${ctx.blockPoolOpen ? blockPoolHtml(ctx, all, consumed) : ''}
+    ${ctx.blockPoolOpen ? blockPoolHtml(ctx, layoutItems(ctx.visibleFields, map), new Set()) : ''}
     <div class="rd-fieldcfg-list">
-      ${items.length ? items.map((item, at) => blockRowHtml(ctx, item, at, items.length, canMove)).join('') : ''}
+      ${rows || '<div class="rd-fieldcfg-empty">字段都移出去了 · 用上面的「添加」挑回来</div>'}
     </div>
-    ${items.length ? '' : '<div class="rd-fieldcfg-empty">饰框都移出去了 · 用上面的「添加」挑回来</div>'}
-    <div class="rd-fieldcfg-foot">双击名字改名 · ✕ 只是移出抽屉，表格里的列不变。</div>`;
+    <div class="rd-fieldcfg-foot2${dirty ? ' is-dirty' : ''}">
+      <span class="rd-fieldcfg-footnote">${dirty ? '有未应用的改动' : '双击名字改名 · ✕ 只是移出抽屉'}</span>
+      <span class="rd-fieldcfg-actions">
+        <button type="button" class="rd-btn-plain" data-cancel-layout${dirty ? '' : ' disabled'}>取消</button>
+        <button type="button" class="rd-btn-primary" data-apply-layout${dirty ? '' : ' disabled'}>应用</button>
+      </span>
+    </div>`;
 }
 
-/** 饰框行：一行装完「排序 · 名字 · 大小 · 位置 · 显隐 · 移出」。 */
+/** 每个展示方式一句话说明 —— 说清「能放几个」，用户才不会以为标题也能堆。 */
+const ZONE_NOTES = {
+  title: '最上方大标题 · 只能一个',
+  body: '独占一块 · 可多个，上下并列',
+  info: '标签 + 值 · 两列平铺',
+  head: '标题下那一行 · 只要值',
+};
+
+/** 展示方式行：一行装完「排序 · 名字 · 大小 · 展示方式 · 显隐 · 移出」。 */
 function blockRowHtml(ctx, item, at, total, canMove) {
   const field = item.field;
   const label = escapeHtml(blockLabel(field, item.layout));
   const renamed = item.layout.label ? ' is-renamed' : '';
+  // 大小只对「信息 / 标题下」有意义：内容块永远是内容级字号，标题更不由这里管
+  const sizeHtml = item.layout.zone === 'info' || item.layout.zone === 'head'
+    ? `<span class="rd-fieldcfg-size" role="group" aria-label="「${label}」显示大小">
+        ${DRAWER_SIZES.map(
+          size => `<button type="button" class="rd-mini-btn${
+            item.layout.size === size ? ' is-on' : ''
+          }" data-size="${size}" aria-pressed="${item.layout.size === size}"
+             title="${label} · ${DRAWER_SIZE_LABELS[size]}">${DRAWER_SIZE_LABELS[size]}</button>`
+        ).join('')}
+      </span>`
+    : '<span class="rd-fieldcfg-size is-muted" aria-hidden="true"></span>';
   return `<div class="rd-fieldcfg-row${item.layout.hidden ? ' is-off' : ''}"
                data-field-row="${escapeHtml(field.key)}">
     <span class="rd-fieldcfg-move">
@@ -826,16 +1006,9 @@ function blockRowHtml(ctx, item, at, total, canMove) {
     </span>
     <span class="rd-fieldcfg-name${renamed}" data-rename-field role="button" tabindex="0"
           title="双击改名">${label}</span>
-    <span class="rd-fieldcfg-size" role="group" aria-label="「${label}」显示大小">
-      ${DRAWER_SIZES.map(
-        size => `<button type="button" class="rd-mini-btn${
-          item.layout.size === size ? ' is-on' : ''
-        }" data-size="${size}" aria-pressed="${item.layout.size === size}"
-           title="${label} · ${DRAWER_SIZE_LABELS[size]}">${DRAWER_SIZE_LABELS[size]}</button>`
-      ).join('')}
-    </span>
-    <select class="rd-fieldcfg-zone" data-zone aria-label="「${label}」显示位置"
-            title="显示位置：${label}">
+    ${sizeHtml}
+    <select class="rd-fieldcfg-zone" data-zone aria-label="「${label}」展示方式"
+            title="展示方式：${label}">
       ${DRAWER_ZONES.map(
         zone => `<option value="${zone}"${item.layout.zone === zone ? ' selected' : ''}>${DRAWER_ZONE_LABELS[zone]}</option>`
       ).join('')}
@@ -847,7 +1020,7 @@ function blockRowHtml(ctx, item, at, total, canMove) {
        title="${item.layout.hidden ? '在抽屉里显示' : '在抽屉里隐藏'}"
        aria-label="${item.layout.hidden ? `显示「${label}」` : `隐藏「${label}」`}">
       <svg class="wr-icon" aria-hidden="true"><use href="#${
-        item.layout.hidden ? 'ic-eye-off' : 'ic-check'
+        item.layout.hidden ? 'ic-eye-off' : 'ic-eye'
       }"/></svg>
     </button>
     <button type="button" class="rd-mini-btn rd-fieldcfg-drop" data-drop="1"
@@ -857,29 +1030,32 @@ function blockRowHtml(ctx, item, at, total, canMove) {
   </div>`;
 }
 
-/** 槽位三行：标题 / 时间 / 内容 各选一列。只有视图抽屉给得出 onSlotChange。 */
+/**
+ * 时间槽位。
+ *
+ * 标题与内容已经并进「展示方式」（任何字段都能设），面板里不再单列那两行 ——
+ * 留着会变成两套说法：上面选一次标题、下面下拉里再选一次，用户不知道该信哪个。
+ * 时间不一样：日历和看板要靠它定位「这条记录算哪天」，属于视图配置，只能单独留一行。
+ */
 function slotSectionHtml(ctx) {
-  const pick = (slot, emptyLabel, types) => {
-    const current = ctx.slot?.[slot]?.key || '';
-    const list = ctx.visibleFields.filter(field => !types || types.includes(field.type));
-    return `<select class="rd-slot-pick" data-slot="${slot}" aria-label="槽位用哪一列">
-      <option value="">${emptyLabel}</option>
-      ${list
-        .map(
-          field =>
-            `<option value="${escapeHtml(field.key)}"${field.key === current ? ' selected' : ''}>${escapeHtml(
-              field.label || field.key
-            )}</option>`
-        )
-        .join('')}
-    </select>`;
-  };
-  const row = (name, inner) => `<label class="rd-slot-row"><span class="rd-slot-key">${name}</span>${inner}</label>`;
+  const current = ctx.slot?.date?.key || '';
+  const list = ctx.visibleFields.filter(field => field.type === 'date');
   return `<div class="rd-slot">
-    <div class="rd-slot-title">槽位</div>
-    ${row('标题', pick('title', '自动（第一个文本列）', ['text']))}
-    ${row('时间', pick('date', '不显示', ['date']))}
-    ${row('内容', pick('body', '记录正文', ['text']))}
+    <div class="rd-slot-title">时间</div>
+    <label class="rd-slot-row"><span class="rd-slot-key">日期列</span>
+      <select class="rd-slot-pick" data-slot="date" aria-label="时间槽位用哪一列">
+        <option value="">不显示</option>
+        ${list
+          .map(
+            field =>
+              `<option value="${escapeHtml(field.key)}"${field.key === current ? ' selected' : ''}>${escapeHtml(
+                field.label || field.key
+              )}</option>`
+          )
+          .join('')}
+      </select>
+    </label>
+    <div class="rd-slot-note">日历 / 看板用这一列定位「这条记录算哪天」。</div>
   </div>`;
 }
 
@@ -905,15 +1081,20 @@ function blockPoolHtml(ctx, all, consumed) {
 
 /** 面板当前该列出哪些行 —— 渲染和点击必须用同一份，否则「上移」会跳过被藏起来的那些。 */
 function panelItems(ctx) {
-  const consumed = new Set(
-    [ctx.slot?.title?.key, ctx.slot?.date?.key, ctx.slot?.body?.key].filter(Boolean)
-  );
-  const all = layoutItems(ctx.visibleFields, ctx.fieldLayout);
+  // 内容块与时间槽位占用的列不再列表（它们已在各自的展示位上）——但要看草稿，
+  // 否则「刚把某列设成内容」要等应用后才从列表里消失，中间那几秒点哪都不对。
+  const map = ctx.pendingLayout || ctx.fieldLayout;
+  const all = layoutItems(ctx.visibleFields, map);
+  const consumed = new Set([ctx.slot?.date?.key].filter(Boolean));
   return { all, consumed, items: all.filter(item => !item.layout.off && !consumed.has(item.field.key)) };
 }
 
 function onFieldPanelClick(ctx, event) {
-  // ① 「添加饰框」：开合字段池
+  // ⓪ 底部两个按钮：应用 / 取消。放在最前面 —— 它们和下面的行操作互斥。
+  if (event.target.closest('[data-apply-layout]')) { applyPending(ctx); return; }
+  if (event.target.closest('[data-cancel-layout]')) { cancelPending(ctx); return; }
+
+  // ① 「添加字段」：开合字段池
   if (event.target.closest('[data-add-block]')) {
     ctx.blockPoolOpen = !ctx.blockPoolOpen;
     renderFieldPanel(ctx);
@@ -924,16 +1105,16 @@ function onFieldPanelClick(ctx, event) {
   const poolItem = event.target.closest('[data-pool-key]');
   if (poolItem) {
     const key = poolItem.dataset.poolKey;
-    const cfg = ctx.fieldLayout.get(key);
+    const cfg = (ctx.pendingLayout || ctx.fieldLayout).get(key);
     if (!cfg || !cfg.off) return;
     const maxOrder = Math.max(
       -1,
-      ...[...ctx.fieldLayout.values()].map(item => (item.order == null ? -1 : item.order))
+      ...[...draftLayout(ctx).values()].map(item => (item.order == null ? -1 : item.order))
     );
-    const next = new Map(ctx.fieldLayout);
+    const next = draftLayout(ctx);
     next.set(key, { ...cfg, off: false, hidden: false, order: maxOrder + 1 });
     ctx.blockPoolOpen = false;
-    commitFieldLayout(ctx, next);
+    stageLayout(ctx, next);
     return;
   }
 
@@ -942,10 +1123,10 @@ function onFieldPanelClick(ctx, event) {
   const key = rowEl.dataset.fieldRow;
   const { items } = panelItems(ctx);
   const at = items.findIndex(item => item.field.key === key);
-  if (at < 0 || !ctx.fieldLayout.has(key)) return;
+  if (at < 0 || !(ctx.pendingLayout || ctx.fieldLayout).has(key)) return;
 
-  const next = new Map(ctx.fieldLayout);
-  const cfg = ctx.fieldLayout.get(key);
+  const next = draftLayout(ctx);
+  const cfg = (ctx.pendingLayout || ctx.fieldLayout).get(key);
 
   const move = event.target.closest('[data-move]');
   if (move) {
@@ -956,7 +1137,7 @@ function onFieldPanelClick(ctx, event) {
     // 一挪就把列表里所有饰框写成显式 order：此后顺序完全由用户决定，
     // 之后新加的饰框因为拿到 maxOrder+1 自然排在最后（见 compareLayoutItems）。
     items.forEach((item, index) => next.set(item.field.key, { ...item.layout, order: index }));
-    commitFieldLayout(ctx, next);
+    stageLayout(ctx, next);
     return;
   }
 
@@ -965,14 +1146,14 @@ function onFieldPanelClick(ctx, event) {
     const size = sizeBtn.dataset.size;
     if (!DRAWER_SIZES.includes(size) || cfg.size === size) return;
     next.set(key, { ...cfg, size });
-    commitFieldLayout(ctx, next);
+    stageLayout(ctx, next);
     return;
   }
 
   const eye = event.target.closest('[data-hide]');
   if (eye) {
     next.set(key, { ...cfg, hidden: eye.dataset.hide === '1' });
-    commitFieldLayout(ctx, next);
+    stageLayout(ctx, next);
     return;
   }
 
@@ -981,7 +1162,7 @@ function onFieldPanelClick(ctx, event) {
   const drop = event.target.closest('[data-drop]');
   if (drop) {
     next.set(key, { ...cfg, off: true });
-    commitFieldLayout(ctx, next);
+    stageLayout(ctx, next);
   }
 }
 
@@ -996,7 +1177,7 @@ function startBlockRename(ctx, span) {
   const key = rowEl?.dataset.fieldRow;
   if (!key) return;
   const field = ctx.visibleFields.find(item => item.key === key);
-  const cfg = ctx.fieldLayout.get(key);
+  const cfg = (ctx.pendingLayout || ctx.fieldLayout).get(key);
   if (!field || !cfg) return;
   if (rowEl.querySelector('.rd-fieldcfg-rename')) return;
 
@@ -1018,9 +1199,9 @@ function startBlockRename(ctx, span) {
     if (save) {
       const label = input.value.trim().slice(0, 24);
       if (label !== cfg.label) {
-        const next = new Map(ctx.fieldLayout);
+        const next = draftLayout(ctx);
         next.set(key, { ...cfg, label });
-        commitFieldLayout(ctx, next);
+        stageLayout(ctx, next);
         return;
       }
     }
@@ -1042,15 +1223,61 @@ function startBlockRename(ctx, span) {
  * 只写**真的变了**的字段 —— 改大小不该顺手把 7 条 order 都重写一遍。
  * 写库串行：连点「上移」两次，第二次不能拿着旧快照覆盖第一次的结果。
  */
+// ---- 面板草稿：改完点「应用」才写库 -------------------------------------
+//
+// 以前每点一下（改大小、挪顺序、换位置）都立刻写库。用户要的是「排完版一次生效，
+// 还能反悔」—— 于是加了草稿层：面板上的所有动作先改 ctx.pendingLayout，
+// 底部「应用」才调 commitFieldLayout 去 diff + 写库，「取消」直接丢掉草稿。
+
+/** 当前该在草稿上改的那份 Map（没有草稿就是现改现算的一份副本）。 */
+function draftLayout(ctx) {
+  return new Map(ctx.pendingLayout || ctx.fieldLayout);
+}
+
+/** 把草稿放回面板（只重画面板，抽屉本体等「应用」才动）。 */
+function stageLayout(ctx, next) {
+  ctx.pendingLayout = next;
+  renderFieldPanel(ctx);
+}
+
+function applyPending(ctx) {
+  const next = ctx.pendingLayout;
+  ctx.pendingLayout = null;
+  if (!next) { renderFieldPanel(ctx); return; }
+  commitFieldLayout(ctx, next);
+  showHint(ctx, '排版已应用');
+}
+
+function cancelPending(ctx) {
+  if (!ctx.pendingLayout) { renderFieldPanel(ctx); return; }
+  ctx.pendingLayout = null;
+  renderFieldPanel(ctx);
+}
+
+/**
+ * 设某一列的展示方式。标题是**唯一**的：谁被设成标题，原来的标题就降成信息 ——
+ * 否则会出现两个字段都自称标题、而抽屉只有一条标题行，后设的那个永远看不到。
+ */
+function setZoneOn(map, key, zone) {
+  const cfg = map.get(key);
+  if (!cfg || !DRAWER_ZONES.includes(zone) || cfg.zone === zone) return false;
+  if (zone === 'title') {
+    for (const [otherKey, other] of map) {
+      if (otherKey !== key && other.zone === 'title') map.set(otherKey, { ...other, zone: 'info' });
+    }
+  }
+  map.set(key, { ...cfg, zone });
+  return true;
+}
+
 function commitFieldLayout(ctx, nextMap) {
   const prevMap = ctx.fieldLayout;
-  ctx.fieldLayout = nextMap;
-  renderFieldGrid(ctx);
-  renderFieldPanel(ctx);
 
+  // ① 先按**草稿本身**算 diff。下面第 ② 步会往 map 里补一个 zone='title'
+  //    （标题兜底），那不是用户改的，不能混进写库清单里。
   const changes = [];
   for (const [key, cfg] of nextMap) {
-    const prev = prevMap.get(key) || { hidden: false, off: false, size: 'md', order: null, label: '', zone: 'grid' };
+    const prev = prevMap.get(key) || { hidden: false, off: false, size: 'md', order: null, label: '', zone: 'info' };
     if (
       prev.hidden === cfg.hidden &&
       prev.off === cfg.off &&
@@ -1077,6 +1304,23 @@ function commitFieldLayout(ctx, nextMap) {
     }
   }
 
+  // ② 落渲染状态：标题这一列可能刚被换掉。
+  //    换了就先把大标题换成新列的值 —— 必须在 renderFieldGrid 之前，因为网格要按
+  //    新标题做「值与大标题逐字相同就不重复占格」的过滤。
+  const holder = resolveTitleHolder(ctx.visibleFields, nextMap, ctx.titleField);
+  ctx.fieldLayout = holder && nextMap.get(holder.key)?.zone !== 'title'
+    ? new Map(nextMap).set(holder.key, { ...nextMap.get(holder.key), zone: 'title' })
+    : nextMap;
+  if (holder) {
+    const changed = String(ctx.titleField?.key ?? '') !== String(holder.key);
+    ctx.titleField = holder;
+    ctx.displayField = holder;
+    if (changed) setTitle(ctx, resolveTitle(ctx));
+  }
+
+  renderFieldGrid(ctx);
+  renderFieldPanel(ctx);
+
   const save = ctx.handlers.onFieldLayoutChange;
   if (!changes.length || typeof save !== 'function') return;
   ctx.layoutChain = (ctx.layoutChain || Promise.resolve()).then(async () => {
@@ -1096,11 +1340,16 @@ function renderFieldGrid(ctx) {
   const block = section(ctx, 'fields');
   const host = block?.querySelector('[data-fields-grid]');
   if (!host) return;
+  // 内容块要跟着排版一起变：「把某列设成内容」之后 bodyBlocks 必须当场重算，
+  // 否则面板改了、正文区还是老样子（而且 slotSkipKeys 会拿旧的算，网格里多出一格）。
+  ctx.bodyBlocks = bodyBlocksOf(ctx.visibleFields, ctx.fieldLayout, ctx.slotBodyField);
+  ctx.slot.body = ctx.bodyBlocks[0] || null;
   const title = String(ctx.el?.querySelector('.sh-drawer-title')?.textContent ?? '').trim();
   ctx.gridFields = arrangeGridFields(ctx.visibleFields, ctx.row, title, ctx.fieldLayout, slotSkipKeys(ctx));
   ctx.headBlocks = headBlocksOf(ctx.visibleFields, ctx.fieldLayout);
-  // 改「位置」得让饰框当场搬家：网格和头部行两边都要重画，不能只画一边
+  // 改「展示方式」得让饰框当场搬家：网格、头部行、内容块三边都要重画，不能只画一边
   renderHeadline(ctx);
+  refreshBodySection(ctx);
   const anyShown = ctx.visibleFields.some(field => {
     const cfg = ctx.fieldLayout.get(field.key);
     return cfg && !cfg.hidden && !cfg.off;
@@ -1276,6 +1525,8 @@ async function applyRecord(ctx, token) {
   }
 
   await renderBody(ctx, body);
+  // 正文到位后重判一次：record.body 非空才留 markdown 通道，否则整块可能该收起来
+  refreshBodySection(ctx);
 }
 
 /**
@@ -1672,6 +1923,24 @@ function onBodyClick(ctx, event) {
     return;
   }
 
+  // ⑦′ 附件格右下角的「＋」→ 交给宿主弹「来源」菜单（和表格里同一套）。
+  //     必须排在第 ⑧ 之前：加号在单元格内部，否则会被当成「点了这一格」。
+  const addAtt = event.target.closest('[data-add-att]');
+  if (addAtt) {
+    const attCell = addAtt.closest('.sh-cell');
+    const attField = attCell && ctx.fields.find(item => item.key === attCell.dataset.key);
+    if (attCell && attField) ctx.handlers.onAttachmentAdd?.(addAtt, attField, attCell);
+    return;
+  }
+
+  // ⑦″ 文件小胶囊（只存链接的那种附件）：和表格里一样弹「定位 / 打开 / 选打开方式」
+  const fileChip = event.target.closest('.ft-file-chip');
+  if (fileChip) {
+    event.preventDefault();
+    ctx.handlers.onFileChip?.(fileChip, ctx.row);
+    return;
+  }
+
   // ⑧ 字段单元格 → 交给 sheetPage 挂上单元格编辑器
   const cell = event.target.closest('.sh-cell');
   if (!cell) return;
@@ -1689,11 +1958,11 @@ function onBodyChange(ctx, event) {
   const zone = event.target.closest?.('[data-zone]');
   if (zone) {
     const key = zone.closest('[data-field-row]')?.dataset.fieldRow;
-    const cfg = key ? ctx.fieldLayout.get(key) : null;
-    if (!cfg || !DRAWER_ZONES.includes(zone.value) || cfg.zone === zone.value) return;
-    const next = new Map(ctx.fieldLayout);
-    next.set(key, { ...cfg, zone: zone.value });
-    commitFieldLayout(ctx, next);
+    if (!key) return;
+    // 写草稿、不写库：改完点「应用」才生效（标题的唯一性在 setZoneOn 里保证）
+    const next = draftLayout(ctx);
+    if (setZoneOn(next, key, zone.value)) stageLayout(ctx, next);
+    else renderFieldPanel(ctx); // 没改动也要把下拉复位，否则界面显示的和状态不一致
     return;
   }
   const slotPick = event.target.closest?.('[data-slot]');
@@ -2082,8 +2351,11 @@ function emptyNotesHtml() {
 }
 
 /**
- * 一篇关联笔记 = 「标题 + 更新日期 + 一行摘要」三行，外加悬停才出现的解除按钮。
+ * 一篇关联笔记 = 「图标 + 标题 + 更新日期 + 一行摘要」，外加悬停才出现的解除按钮。
  * 不打开也知道是哪篇（R10）。
+ *
+ * 图标是刻意加的：笔记在抽屉里和附件是同一类东西（一堆可以打开的文件），
+ * 只靠「笔记」这个小标题区分，扫一眼列表分不出哪几行是文件、哪几行是笔记。
  *
  * @param {object} note 笔记
  * @param {number} index 在列表里的位置（0 = 最近编辑的那篇）
@@ -2099,6 +2371,7 @@ function noteRowHtml(note, index) {
     return `<div class="rd-note-item is-missing">
       <span class="rd-note-open is-dead" aria-disabled="true">
         <span class="rd-note-head">
+          <svg class="wr-icon rd-note-icon" aria-hidden="true"><use href="#ic-notebook"/></svg>
           <span class="rd-row-title">已删除笔记</span>
           <span class="rd-row-meta">${escapeHtml(rel)}</span>
         </span>
@@ -2118,6 +2391,7 @@ function noteRowHtml(note, index) {
         rel
       )}" title="${escapeHtml(title)}">
         <span class="rd-note-head">
+          <svg class="wr-icon rd-note-icon" aria-hidden="true"><use href="#ic-notebook"/></svg>
           <span class="rd-row-title">${escapeHtml(title)}</span>
           ${fresh}
           <span class="rd-row-meta">${escapeHtml(meta)}</span>
@@ -2696,8 +2970,10 @@ function openInlineTitleInput(ctx, titleEl) {
   // 字段名标签：明确「这行字属于哪一列」，有换列能力时它还是个下拉入口。
   // mousedown 必须 preventDefault —— 否则输入框先 blur、finish 把 wrap 收走，
   // 这一下 click 就连人带菜单一起消失了。
+  // 可换列的条件：至少两列文本（只有一列时换无可换）且排版存得下来。
+  // 不再要求宿主给 onTitleFieldPick —— 换列现在写的是字段自己的排布。
   const canPick =
-    typeof ctx.handlers.onTitleFieldPick === 'function' &&
+    typeof ctx.handlers.onFieldLayoutChange === 'function' &&
     (ctx.visibleFields || []).filter(field => field.type === 'text').length > 1;
   const tag = document.createElement(canPick ? 'button' : 'span');
   if (canPick) tag.type = 'button';
@@ -2800,17 +3076,26 @@ function openTitleFieldMenu(ctx, anchorEl) {
     if (!key || key === ctx.titleField?.key) return;
     const next = options.find(field => field.key === key);
     if (!next) return;
-    // 本地先切：标题立刻换成新列的值，不用等宿主把配置写回去再重开抽屉。
-    // 这里不走 resolveTitle —— 它最后会退到 record.title（也就是旧标题），
-    // 新列一空就会显示成「切了跟没切一样」。
-    ctx.titleField = next;
-    ctx.displayField = next;
-    const nextTitle = String(ctx.row?.values?.[next.key] ?? '').trim();
-    setTitle(
-      ctx,
-      nextTitle || (ctx.recordId !== null ? `未命名记录 #${ctx.recordId}` : '未命名记录')
-    );
+
+    // ① 落排版：和面板里的「展示方式 → 标题」是同一个设置，写字段自己的
+    //    options.drawer.zone（表格统一一份），面板里的「标题」组会跟着搬。
+    //    commitFieldLayout 顺带把大标题换成新列的值。
+    const draft = draftLayout(ctx);
+    if (setZoneOn(draft, key, 'title')) commitFieldLayout(ctx, draft);
+    else {
+      // 草稿里没变化（比如这列本来就是标题）：也要把大标题立刻换过来，
+      // 不能等宿主写完配置再重开抽屉 —— 用户会觉得「点了没反应」。
+      ctx.titleField = next;
+      ctx.displayField = next;
+      const nextTitle = String(ctx.row?.values?.[next.key] ?? '').trim();
+      setTitle(ctx, nextTitle || (ctx.recordId !== null ? `未命名记录 #${ctx.recordId}` : '未命名记录'));
+    }
     anchorEl.setAttribute('title', `点击修改「${next.label || next.key}」`);
+    renderFieldGrid(ctx);
+    renderFieldPanel(ctx);
+
+    // ② 视图配置也写一份：卡片 / 画廊 / 日历上的那行字读的是 view.config.titleField，
+    //    不写的话「抽屉里换成 note、卡片上还写着 text」。
     try {
       await ctx.handlers.onTitleFieldPick?.(key);
       showHint(ctx, `大标题已改为「${next.label || next.key}」列`);

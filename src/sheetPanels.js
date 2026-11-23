@@ -1,7 +1,13 @@
 // 浮动层：列头菜单 / 字段面板 / 筛选排序 / 记录详情抽屉。
 //
-// 统一节奏：所有浮层从 openPopover / openDrawer 出生，
-// 由 closeAllPanels 统一收尾，保证任意时刻最多一层，不会叠成三明治。
+// 统一节奏：所有浮层从 openPopover / openDrawer 出生，由 closeAllPanels 统一收尾。
+//
+// 分成两层是后补的（2026-11-23）：原来只有一个 activePanel 槽位，
+// 于是「抽屉里点附件的＋」会先 closeAllPanels() 把抽屉自己关掉 ——
+// 用户看到的就是「一点添加附件，详情就没了」。现在：
+//   基座层 activePanel —— 抽屉。同一时刻最多一个。
+//   浮层层 activeFloat —— 菜单 / 小面板。允许叠在抽屉上，收它不牵连抽屉。
+// closeAllPanels 仍然两层都收（真正要全关的时候用它）。
 
 import { escapeHtml } from './htmlUtils.js';
 import {
@@ -12,12 +18,12 @@ import {
   optionColor,
 } from './fieldTypes.js';
 
-let activePanel = null; // { kind, el, scrim, onOutside, onKey, onClose }
+let activePanel = null; // 基座层 { kind, el, scrim, onOutside, onKey, onClose }
+let activeFloat = null; // 浮层层 { el, onOutside, onKey, onClose }
 
-export function closeAllPanels() {
-  if (!activePanel) return;
-  const { el, scrim, onOutside, onKey, onClose } = activePanel;
-  activePanel = null;
+function teardown(entry) {
+  if (!entry) return;
+  const { el, scrim, onOutside, onKey, onClose } = entry;
   document.removeEventListener('mousedown', onOutside, true);
   document.removeEventListener('keydown', onKey, true);
   scrim?.remove();
@@ -25,20 +31,43 @@ export function closeAllPanels() {
   onClose?.();
 }
 
-export function hasOpenPanel() {
-  return Boolean(activePanel);
+/** 只收浮层（菜单 / 小面板），抽屉留着。 */
+export function closeFloats() {
+  if (!activeFloat) return;
+  const entry = activeFloat;
+  activeFloat = null;
+  teardown(entry);
 }
 
-// 给外部自建浮层（如图片面板）接入同一套「同时只开一层」的收尾逻辑。
-export function registerActivePanel(entry) {
-  activePanel = {
-    kind: 'custom',
+export function closeAllPanels() {
+  closeFloats();
+  if (!activePanel) return;
+  const entry = activePanel;
+  activePanel = null;
+  teardown(entry);
+}
+
+export function hasOpenPanel() {
+  return Boolean(activePanel || activeFloat);
+}
+
+// 给外部自建浮层（如图片面板）接入同一套收尾逻辑。
+// layer='float' 时叠在抽屉上，不会把抽屉挤掉。
+export function registerActivePanel(entry, layer = 'base') {
+  const record = {
+    kind: layer === 'float' ? 'float' : 'custom',
     el: entry.el,
     scrim: entry.scrim || null,
     onOutside: entry.onOutside,
     onKey: entry.onKey,
     onClose: entry.onClose,
   };
+  if (layer === 'float') {
+    closeFloats();
+    activeFloat = record;
+    return;
+  }
+  activePanel = record;
 }
 
 function place(el, rect, { align = 'left', width = 220 } = {}) {
@@ -59,7 +88,8 @@ function place(el, rect, { align = 'left', width = 220 } = {}) {
 // ==========================================
 
 export function openPopover(anchor, className, html, options = {}) {
-  closeAllPanels();
+  // 只收浮层：列头菜单要能叠在详情抽屉上（抽屉里点「＋」加附件就是这个场景）
+  closeFloats();
   const anchorEl = anchor?.nodeType === 1 ? anchor : null;
   const rect = anchorEl ? anchorEl.getBoundingClientRect() : options.rect;
   if (!rect) return null;
@@ -73,15 +103,15 @@ export function openPopover(anchor, className, html, options = {}) {
   anchorEl?.closest?.('.sh-th')?.classList.add('is-open');
 
   const onOutside = event => {
-    if (!el.contains(event.target) && !anchorEl?.contains(event.target)) closeAllPanels();
+    if (!el.contains(event.target) && !anchorEl?.contains(event.target)) closeFloats();
   };
   const onKey = event => {
-    if (event.key === 'Escape') closeAllPanels();
+    if (event.key === 'Escape') closeFloats();
   };
   document.addEventListener('mousedown', onOutside, true);
   document.addEventListener('keydown', onKey, true);
 
-  activePanel = {
+  activeFloat = {
     kind: 'popover',
     el,
     scrim: null,
@@ -137,8 +167,10 @@ export function openDrawer({ title, subtitle = '', width = 396, body, footer = '
     //   · 日期选择器 / 下拉 / 灯箱开着（它们各自有 Esc 处理）
     //   · 标题就地改名、饰框改名开着
     // 曾经的表现：在抽屉里编辑任意一格，按一次 Esc 连抽屉一起没了。
+    // .sh-pop 是浮层菜单（附件来源 / 文件动作 / 下拉面板）：它们自己会收，
+    // 这一下要让给它们，否则「Esc 关菜单」会顺带把整条记录关掉。
     if (document.querySelector(
-      '.ft-cell-editing, .ft-inline-input, .sh-dp, .ft-dropdown, .sh-lightbox, .custom-modal-overlay, .rd-title-input, .rd-fieldcfg-rename'
+      '.sh-pop, .ft-cell-editing, .ft-inline-input, .sh-dp, .ft-dropdown, .sh-lightbox, .custom-modal-overlay, .rd-title-input, .rd-fieldcfg-rename'
     )) return;
     closeAllPanels();
   };
@@ -443,9 +475,43 @@ export function openFileActionMenu(anchor, { name, path }, handlers = {}) {
   el.addEventListener('click', event => {
     const action = event.target.closest('[data-act]')?.dataset.act;
     if (!action) return;
-    closeAllPanels();
+    // 只收浮层：这个菜单也能从**抽屉里**的附件胶囊点出来，
+    // closeAllPanels 会把抽屉一起收走 —— 用户只是要定位文件，不是要离开这条记录。
+    closeFloats();
     handlers[action]?.(path);
   });
+}
+
+/**
+ * 附件格的「＋」来源菜单：先问来源，再动手。
+ *
+ * 放在 sheetPanels 而不是 sheetPage，是因为抽屉（表格视图 / 日历 / 看板）都要用；
+ * 走 openPopover = 浮层层，叠在抽屉上不会把抽屉关掉（这正是以前的老毛病）。
+ *
+ * @param {HTMLElement} anchorEl 加号本身
+ * @param {{onClipboard?:Function, onFile?:Function}} handlers
+ */
+export function openAttachmentSourceMenu(anchorEl, handlers = {}) {
+  const el = openPopover(anchorEl, 'sh-attmenu', `
+    <button type="button" class="sh-attmenu-item" data-att-src="clipboard">
+      <svg class="wr-icon" aria-hidden="true"><use href="#ic-copy"/></svg>
+      <span class="sh-attmenu-label">从剪贴板粘贴</span>
+      <kbd class="sh-attmenu-kbd">Ctrl V</kbd>
+    </button>
+    <button type="button" class="sh-attmenu-item" data-att-src="file">
+      <svg class="wr-icon" aria-hidden="true"><use href="#ic-type-attachment"/></svg>
+      <span class="sh-attmenu-label">选择文件…</span>
+      <span class="sh-attmenu-kbd"></span>
+    </button>`);
+  if (!el) return null;
+  el.addEventListener('click', event => {
+    const src = event.target.closest('[data-att-src]')?.dataset.attSrc;
+    if (!src) return;
+    closeFloats();
+    if (src === 'file') handlers.onFile?.();
+    else handlers.onClipboard?.();
+  });
+  return el;
 }
 
 // ==========================================

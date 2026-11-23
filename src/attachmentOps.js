@@ -271,3 +271,32 @@ export async function importImageSources(sources, { concurrency = 6, onProgress 
   return { items, failures };
 }
 
+
+/**
+ * 读剪贴板（异步 API）。WebView 里可能没有权限、也可能压根不支持 ——
+ * 这里只负责「读到了什么」，降级提示交给调用方。
+ *
+ * 从 sheetPage 搬过来的：视图层（日历/看板）的抽屉也要能「从剪贴板加附件」，
+ * 而 sheetPage 不能反向依赖 viewPage，两份实现又会漂移（历史上已经漂过一次：
+ * 截图粘贴在其中一份里读不到 items）。
+ */
+export async function readClipboardContent() {
+  const files = [];
+  let text = '';
+  if (navigator.clipboard?.read) {
+    const items = await navigator.clipboard.read();
+    for (const item of items) {
+      const imageType = item.types.find(type => type.startsWith('image/'));
+      if (imageType) {
+        const blob = await item.getType(imageType);
+        files.push(new File([blob], `粘贴的图片-${Date.now()}.png`, { type: imageType }));
+        continue;
+      }
+      if (item.types.includes('text/plain')) {
+        text = await (await item.getType('text/plain')).text();
+      }
+    }
+  }
+  if (!files.length && !text) text = (await navigator.clipboard?.readText?.()) || '';
+  return { files, text };
+}

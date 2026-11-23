@@ -2830,3 +2830,146 @@ body[data-skin="v4"] .rd-body-cell .ft-inline-input {
 body[data-skin="v4"] .sh-detail-cell .ft-inline-input::-webkit-scrollbar {
   display: none !important;
 }
+
+/* ==================================================================
+   详情抽屉 · 展示方式面板（v1.3）
+   ------------------------------------------------------------------
+   面板从「槽位 + 饰框」两套黑话改成三段人话：标题 / 内容 / 信息（+ 标题下）。
+   分组是为了让这一屏本身就能当排版的草图看 —— 从上到下的分组顺序，
+   就是抽屉从上到下的渲染顺序。
+
+   底部「应用 / 取消」是这次新加的：以前每点一下都立刻写库，改坏了只能再点回来。
+   ================================================================== */
+body[data-skin="v4"] .rd-fieldcfg-group + .rd-fieldcfg-group {
+  margin-top: 12px;
+}
+
+body[data-skin="v4"] .rd-fieldcfg-ghead {
+  display: flex !important;
+  align-items: baseline !important;
+  gap: 8px !important;
+  padding: 4px 0 5px !important;
+  border-bottom: 1px solid var(--v4-border-weak, var(--border-light)) !important;
+  margin-bottom: 4px !important;
+}
+
+body[data-skin="v4"] .rd-fieldcfg-gname {
+  font-size: 11.5px !important;
+  font-weight: 600 !important;
+  letter-spacing: .04em !important;
+  color: var(--v4-text) !important;
+}
+
+body[data-skin="v4"] .rd-fieldcfg-gnote {
+  font-size: 11px !important;
+  color: var(--v4-text-3) !important;
+}
+
+/* 大小三档在「内容 / 标题」上没有意义：留一块等宽的空白，列才不会左右跳。
+   ★ 必须清掉兜底底色 ★ 父层 .rd-fieldcfg-size 带一层 6% 的胶囊底，
+   空 span 一样会被刷成一条灰横线（截图里像一根多余的下划线）。 */
+body[data-skin="v4"] .rd-fieldcfg-size.is-muted {
+  width: 74px !important;
+  flex: none !important;
+  padding: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+body[data-skin="v4"] .rd-fieldcfg-foot2 {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 10px !important;
+  margin-top: 12px !important;
+  padding-top: 10px !important;
+  border-top: 1px solid var(--v4-border-weak, var(--border-light)) !important;
+}
+
+body[data-skin="v4"] .rd-fieldcfg-footnote {
+  font-size: 11px !important;
+  color: var(--v4-text-3) !important;
+}
+
+body[data-skin="v4"] .rd-fieldcfg-foot2.is-dirty .rd-fieldcfg-footnote {
+  color: var(--color-primary) !important;
+}
+
+body[data-skin="v4"] .rd-fieldcfg-actions {
+  display: flex !important;
+  gap: 8px !important;
+  flex: none !important;
+}
+
+/* 两个按钮都要压过 v3 的全局 button（否则底色/字号/圆角全被改掉，
+   以前灯箱箭头和附件菜单都栽在同一条规则上）。 */
+body[data-ui="v3"] button.rd-btn-plain,
+body[data-ui="v3"] button.rd-btn-primary {
+  height: 28px !important;
+  padding: 0 12px !important;
+  border-radius: 7px !important;
+  font-size: 12.5px !important;
+  font-weight: 500 !important;
+  line-height: 1 !important;
+  cursor: pointer !important;
+  transition: background 140ms ease, color 140ms ease !important;
+}
+
+body[data-ui="v3"] button.rd-btn-plain {
+  background: transparent !important;
+  border: 1px solid var(--v4-border, var(--border)) !important;
+  color: var(--v4-text-2, var(--text-secondary)) !important;
+}
+
+body[data-ui="v3"] button.rd-btn-plain:hover:not(:disabled) {
+  background: var(--v4-surface-2) !important;
+  color: var(--v4-text) !important;
+}
+
+body[data-ui="v3"] button.rd-btn-primary {
+  background: var(--color-primary) !important;
+  border: 0 !important;
+  color: #fff !important;
+}
+
+body[data-ui="v3"] button.rd-btn-primary:hover:not(:disabled) {
+  filter: brightness(1.07) !important;
+}
+
+body[data-ui="v3"] button.rd-btn-plain:disabled,
+body[data-ui="v3"] button.rd-btn-primary:disabled {
+  opacity: .45 !important;
+  cursor: default !important;
+}
+
+/* 内容块：多个时每块上面的小标签，以及块与块之间的间距 */
+body[data-skin="v4"] .rd-body-label {
+  font-size: 11.5px !important;
+  font-weight: 600 !important;
+  letter-spacing: .04em !important;
+  color: var(--v4-text-3) !important;
+  margin: 14px 0 2px !important;
+}
+
+body[data-skin="v4"] .rd-body-fields > .rd-body-label:first-child {
+  margin-top: 0 !important;
+}
+
+/* 笔记行的图标：笔记在抽屉里和附件是同一类东西（一堆能点开的文件），
+   没有图标时扫一眼列表分不出哪几行是笔记。尺寸对齐 .ft-file-chip 里的那个 12px。 */
+body[data-ui="v3"] .rd-note-icon {
+  flex: none !important;
+  align-self: center !important;
+  width: 13px !important;
+  height: 13px !important;
+  color: var(--v4-text-3, var(--text-muted)) !important;
+}
+
+body[data-ui="v3"] .rd-note-open:hover .rd-note-icon,
+body[data-ui="v3"] .rd-note-open:focus-visible .rd-note-icon {
+  color: var(--color-primary) !important;
+}
+
+body[data-ui="v3"] .rd-note-item.is-missing .rd-note-icon {
+  opacity: .5 !important;
+}

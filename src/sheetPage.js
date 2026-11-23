@@ -6,12 +6,14 @@
 
 import { escapeHtml } from './htmlUtils.js';
 import { serializeTSV, parseTSV, createGrid, resolveKeyIntent } from './gridCore.js';
+// 内部剪贴板的「值 → 哪一列」决策：纯函数放在 pasteMap，能单测（跨表最容易出错的就是这里）
+import { adaptClipValue, resolveBlockTargets, resolveRowTargets } from './pasteMap.js';
 // 填充柄 / 拖行下缘：和基础表共用同一套手势实现（gridGestures）。
 // 以前这两样只长在基础表里，空白表没有 —— 也正是「两套表格」最直接的体感来源。
 import { mountFillHandle, mountRowResizer } from './gridGestures.js';
 import { undoStack } from './undoCore.js';
 import { renderCell, openCellEditor, renderFieldIcon, FIELD_TYPE_LABELS } from './fieldTypes.js';
-import { pickAttachmentItems, storeImageFile, setAttachmentNotifier } from './attachmentOps.js';
+import { pickAttachmentItems, storeImageFile, setAttachmentNotifier, readClipboardContent } from './attachmentOps.js';
 // 剪贴板表格：解析在 clipboardTable（纯函数，可单测），预览与落库在 clipboardImport。
 // 分两层是因为「HTML → 矩阵」与「矩阵 → 库」的失败模式完全不同：
 // 前者是格式问题（要能单独测），后者是写库问题（要能回滚）。
@@ -36,7 +38,9 @@ import {
   openFilterPanel,
   openSortPanel,
   openImagePreview,
+  openAttachmentSourceMenu,
   closeAllPanels,
+  closeFloats,
   registerActivePanel,
   operatorLabel,
 } from './sheetPanels.js';
@@ -173,8 +177,15 @@ const clipboard = {
   fieldType: '',   // kind=cell 时的字段类型，粘贴要求同类型
   value: null,     // kind=cell 的原始值（图片是对象数组）
   values: null,    // kind=row 的整行 values
-  block: null,     // kind=block：{ items: [{dr,dc,fieldType,value}] }
+  block: null,     // kind=block：{ items: [{dr,dc,fieldKey,fieldLabel,fieldType,value}], sheetId }
   rowLabel: '',    // 提示用
+  // 来源表：跨表粘贴时要按「列名优先」重新对位，同表内仍按位置（Excel 语义）
+  sheetId: '',
+  fieldKey: '',    // kind=cell 的来源列 key（跨表时按它找同名列）
+  fieldLabel: '',  // kind=cell 的来源列名
+  labels: null,    // kind=row 的「列名 → 值」，跨表时列 key 对不上就用它
+  labelTypes: null, // kind=row 的「列名 → 来源类型」，供 adaptClipValue 判能否转
+  types: null,     // kind=row 的「列 key → 来源类型」
 };
 
 function cloneValue(value) {
@@ -1045,7 +1056,8 @@ function openAttachmentEditor(cellEl, field, row) {
     await commitNow();
     toast(`已添加 ${items.length} 个附件`);
   });
-  panel.querySelector('[data-done]')?.addEventListener('click', () => closeAllPanels());
+  // 只收浮层：附件面板是从抽屉里点开的，别把抽屉一起收走
+  panel.querySelector('[data-done]')?.addEventListener('click', () => closeFloats());
   listEl.addEventListener('click', async event => {
     const index = event.target.closest('[data-remove]')?.dataset.remove;
     if (index == null) {
@@ -1096,7 +1108,8 @@ function openAttachmentEditor(cellEl, field, row) {
 // 各自再造一个会互相压不住、关不掉。
 // panelClass 默认沿用附件面板那套宽度；小菜单传 'sh-attmenu' 就只吃 .sh-pop 的基础样式。
 export function openPopoverSimple(anchorEl, html, panelClass = 'sh-imgpanel') {
-  closeAllPanels();
+  // 只收浮层，不动抽屉 —— 详见 sheetPanels 顶部关于两层的说明
+  closeFloats();
   const el = document.createElement('div');
   el.className = panelClass ? `sh-pop ${panelClass}` : 'sh-pop';
   el.innerHTML = html;
@@ -1113,14 +1126,14 @@ export function openPopoverSimple(anchorEl, html, panelClass = 'sh-imgpanel') {
 
   const onOutside = event => {
     if (el.contains(event.target) || anchorEl.contains(event.target)) return;
-    closeAllPanels();
+    closeFloats();
   };
-  const onKey = event => { if (event.key === 'Escape') closeAllPanels(); };
+  const onKey = event => { if (event.key === 'Escape') closeFloats(); };
   document.addEventListener('mousedown', onOutside, true);
   document.addEventListener('keydown', onKey, true);
 
-  // 借用 closeAllPanels 的统一收尾：注册到同一套状态里
-  registerActivePanel({ el, onOutside, onKey, onClose: () => el._cleanup?.() });
+  // 注册成浮层层：叠在抽屉上，关它不牵连抽屉
+  registerActivePanel({ el, onOutside, onKey, onClose: () => el._cleanup?.() }, 'float');
   return el;
 }
 
@@ -1232,11 +1245,17 @@ function copyCellToClipboard(field, row) {
   clipboard.value = cloneValue(row.values[field.key]);
   clipboard.values = null;
   clipboard.block = null;
+  clipboard.labels = null;
+  clipboard.labelTypes = null;
+  clipboard.types = null;
   clipboard.rowLabel = field.label;
+  clipboard.sheetId = state.sheet?.id ?? '';
+  clipboard.fieldKey = field.key;
+  clipboard.fieldLabel = field.label || field.key;
   // 顺带给系统剪贴板留一份纯文本，方便粘到外面
   const text = displayValue(field, row.values[field.key]);
   if (text) navigator.clipboard?.writeText(text).catch(() => {});
-  toast('已复制该单元格，选中同类型的单元格后 Ctrl+V 粘贴');
+  toast('已复制该单元格，选中目标单元格后 Ctrl+V 粘贴');
 }
 
 function copyRowToClipboard(row) {
@@ -1246,6 +1265,23 @@ function copyRowToClipboard(row) {
   clipboard.value = null;
   clipboard.block = null;
   clipboard.rowLabel = rowTitle(row.values, state.fields) || '记录';
+  clipboard.sheetId = state.sheet?.id ?? '';
+  clipboard.fieldKey = '';
+  clipboard.fieldLabel = '';
+  // 再存一份「列名 → 值」：跨表时两张表的列 key 可能完全不同（同名字段各有各的 key），
+  // 只按 key 找会整行粘空。key 优先、列名兜底，和块粘贴同一套规则。
+  clipboard.labels = {};
+  clipboard.labelTypes = {};
+  clipboard.types = {};
+  for (const field of state.fields) {
+    if (!Object.prototype.hasOwnProperty.call(clipboard.values, field.key)) continue;
+    clipboard.types[field.key] = field.type;
+    const label = String(field.label || field.key).trim();
+    if (label) {
+      clipboard.labels[label] = clipboard.values[field.key];
+      clipboard.labelTypes[label] = field.type;
+    }
+  }
   toast('已复制整行，选中目标行后 Ctrl+V 粘贴');
 }
 
@@ -1290,6 +1326,9 @@ function copySelectionToClipboard() {
       return {
         dr: r - minR,
         dc: c - minC,
+        // 列名要一起带走：跨表粘贴靠它重新对位（同表内仍然只看 dc）
+        fieldKey: field.key,
+        fieldLabel: field.label || field.key,
         fieldType: field.type,
         value: cloneValue(row.values[field.key]),
       };
@@ -1297,10 +1336,15 @@ function copySelectionToClipboard() {
     .filter(Boolean);
   if (!items.length) return false;
   clipboard.kind = 'block';
-  clipboard.block = { items };
+  clipboard.block = { items, sheetId: state.sheet?.id ?? '' };
   clipboard.fieldType = '';
   clipboard.value = null;
   clipboard.values = null;
+  clipboard.labels = null;
+  clipboard.labelTypes = null;
+  clipboard.types = null;
+  clipboard.fieldKey = '';
+  clipboard.fieldLabel = '';
   clipboard.rowLabel = `${items.length} 格`;
 
   // 同时写一份 TSV 到系统剪贴板：粘到 Excel / WPS 时才不会挤成一格。
@@ -1341,25 +1385,51 @@ async function pasteCellFromClipboard(field, row, cellEl) {
   };
 
   if (clipboard.kind === 'cell') {
-    if (clipboard.fieldType !== field.type) {
+    const adapted = adaptClipValue(field, clipboard.fieldType, clipboard.value);
+    if (adapted === null) {
       toast('字段类型不同，不能粘贴', 'info');
       return false;
     }
-    await applyValue(cloneValue(clipboard.value));
+    await applyValue(adapted);
     return true;
   }
   if (clipboard.kind === 'row') {
-    if (!clipboard.values || !Object.prototype.hasOwnProperty.call(clipboard.values, field.key)) {
+    let value;
+    let from = '';
+    if (clipboard.values && Object.prototype.hasOwnProperty.call(clipboard.values, field.key)) {
+      value = clipboard.values[field.key];
+      from = field.key;
+    } else if (clipboard.labels) {
+      // 跨表：列 key 对不上就按列名找（两张表的「状态」可能一个叫 status、一个叫 state）
+      const label = String(field.label || field.key).trim();
+      if (Object.prototype.hasOwnProperty.call(clipboard.labels, label)) {
+        value = clipboard.labels[label];
+        from = label;
+      }
+    }
+    if (!from) {
       toast('复制的记录里没有这一列', 'info');
       return false;
     }
-    await applyValue(cloneValue(clipboard.values[field.key]));
+    const adapted = adaptClipValue(field, (clipboard.types?.[from] || clipboard.labelTypes?.[from] || field.type), value);
+    if (adapted === null) {
+      toast('字段类型不同，不能粘贴', 'info');
+      return false;
+    }
+    await applyValue(adapted);
     return true;
   }
   return false;
 }
 
-// 粘贴多格：以目标格为左上角，按相对偏移写入；类型不一致的列跳过
+/**
+ * 粘贴多格。
+ *
+ * 同一张表内按**位置**（Excel 语义：复制 A1:B2 粘到 D5 就是 D5:E6）。
+ * 跨表则按**列名优先**：两张表的列顺序往往不同，按位置会整块错位 ——
+ * A 表第 2 列是「处理方」、B 表第 2 列是「时间」，按下标粘就是把处理方写进日期列。
+ * 列名对不上再退到「同位置（类型合就用）」和「任一未被占用的同类型列」，都不行就跳过并报出列名。
+ */
 async function pasteBlockFromClipboard(cellEl) {
   const block = clipboard.block;
   if (!block || !block.items?.length) return false;
@@ -1367,22 +1437,27 @@ async function pasteBlockFromClipboard(cellEl) {
   const cols = visibleOf(state.fields);
   const r0 = Number(cellEl.dataset.rowindex);
   const c0 = Number(cellEl.dataset.col);
-  const touchedRows = new Map();
-  const skipped = new Set();
+  const sameTable = String(block.sheetId ?? '') === String(state.sheet?.id ?? '');
 
-  block.items.forEach(item => {
-    const row = rows[r0 + item.dr];
-    const field = cols[c0 + item.dc];
-    if (!row || !field) return;
-    if (field.type !== item.fieldType) { skipped.add(field.label); return; }
+  const { targets, skipped, byName } = resolveBlockTargets({
+    cols,
+    items: block.items,
+    anchorCol: c0,
+    sameTable,
+  });
+  const touchedRows = new Map();
+  for (const target of targets) {
+    const row = rows[r0 + target.dr];
+    if (!row) continue;
     let entry = touchedRows.get(row.id);
     if (!entry) { entry = { row, touched: false }; touchedRows.set(row.id, entry); }
-    row.values[field.key] = cloneValue(item.value);
+    entry.row.values[target.field.key] = target.value;
     entry.touched = true;
-  });
+  }
 
   if (!touchedRows.size) {
-    toast(skipped.size ? '目标区域字段类型不一致，无法粘贴' : '放不下：目标位置超出表格范围', 'info');
+    const names = skipped.slice(0, 3).map(item => item.label).join('、');
+    toast(skipped.length ? `目标表里没有能接住这些值的列（${names}）` : '放不下：目标位置超出表格范围', 'info');
     return false;
   }
   markSaving();
@@ -1394,7 +1469,9 @@ async function pasteBlockFromClipboard(cellEl) {
     markSaved();
     clearSelection();
     renderSheet();
-    toast(skipped.size ? `已粘贴，跳过 ${skipped.size} 列（类型不一致）` : `已粘贴 ${block.items.length} 格`);
+    const skippedText = skipped.length ? `，跳过 ${skipped.length} 列（${skipped.slice(0, 3).map(item => item.label).join('、')}）` : '';
+    const nameText = !sameTable && byName ? `，按列名对位 ${byName} 列` : '';
+    toast(`已粘贴 ${targets.length} 格${nameText}${skippedText}`);
     return true;
   } catch (error) {
     markSaved();
@@ -1410,13 +1487,23 @@ async function pasteRowFromClipboard(targetRows) {
   }
   const rows = targetRows.filter(Boolean);
   if (!rows.length) return false;
+  const crossTable = String(clipboard.sheetId ?? '') !== String(state.sheet?.id ?? '');
+  const { targets, skipped } = resolveRowTargets({
+    fields: visibleFields(),
+    values: clipboard.values,
+    labels: clipboard.labels,
+    types: clipboard.types,
+    labelTypes: clipboard.labelTypes,
+    crossTable,
+  });
+
+  if (!targets.length) {
+    toast('目标表里没有能对上的列，先确认两边的列名', 'info');
+    return false;
+  }
   try {
     for (const row of rows) {
-      visibleFields().forEach(field => {
-        if (Object.prototype.hasOwnProperty.call(clipboard.values, field.key)) {
-          row.values[field.key] = cloneValue(clipboard.values[field.key]);
-        }
-      });
+      for (const { field, value } of targets) row.values[field.key] = value;
       await writeRow(row);
     }
     await touchSheet(state.sheet.id);
@@ -1426,7 +1513,8 @@ async function pasteRowFromClipboard(targetRows) {
   }
   clearSelection();
   renderSheet();
-  toast(rows.length > 1 ? `已粘贴到 ${rows.length} 行` : '已粘贴记录内容');
+  const skippedText = skipped.length ? `，跳过 ${skipped.length} 列` : '';
+  toast(`${rows.length > 1 ? `已粘贴到 ${rows.length} 行` : '已粘贴记录内容'}${skippedText}`);
   return true;
 }
 
@@ -1598,28 +1686,6 @@ async function applyPastedContent(field, row, cellEl, { files = [], text = '' })
 // 剪贴板内容的读取统一走 attachmentOps.filesFromDataTransfer（经 clipboardImport 的快照），
 // 本文件不再自带一份 —— 两份实现漂移过：截图粘贴在其中一份里读不到 items。
 
-// 读剪贴板（异步 API）。WebView 里可能没有权限、也可能压根不支持 ——
-// 这里只负责「读到了什么」，降级提示交给调用方，两条路径不要各写一份。
-async function readClipboardContent() {
-  const files = [];
-  let text = '';
-  if (navigator.clipboard?.read) {
-    const items = await navigator.clipboard.read();
-    for (const item of items) {
-      const imageType = item.types.find(type => type.startsWith('image/'));
-      if (imageType) {
-        const blob = await item.getType(imageType);
-        files.push(new File([blob], `粘贴的图片-${Date.now()}.png`, { type: imageType }));
-        continue;
-      }
-      if (item.types.includes('text/plain')) {
-        text = await (await item.getType('text/plain')).text();
-      }
-    }
-  }
-  if (!files.length && !text) text = (await navigator.clipboard?.readText?.()) || '';
-  return { files, text };
-}
 
 // 菜单里点「粘贴（覆盖）」：走异步剪贴板 API，拿不到就提示用 Ctrl+V
 async function pasteFromClipboard(field, row, cellEl) {
@@ -1671,28 +1737,12 @@ async function appendFromClipboard(field, row, cellEl) {
 async function openAttachmentAddMenu(anchorEl, field, row, cellEl) {
   // 点开菜单即视为选中这一格：不论走哪条路，落点都和 Ctrl+V 一致
   if (cellEl && !cellEl.classList.contains('is-active')) selectFromCell(cellEl);
-
-  const menu = openPopoverSimple(anchorEl, `
-    <button type="button" class="sh-attmenu-item" data-act="clipboard">
-      <svg class="wr-icon" aria-hidden="true"><use href="#ic-copy"/></svg>
-      <span class="sh-attmenu-label">从剪贴板粘贴</span>
-      <kbd class="sh-attmenu-kbd">Ctrl V</kbd>
-    </button>
-    <button type="button" class="sh-attmenu-item" data-act="file">
-      <svg class="wr-icon" aria-hidden="true"><use href="#ic-type-attachment"/></svg>
-      <span class="sh-attmenu-label">选择文件…</span>
-      <span class="sh-attmenu-kbd"></span>
-    </button>`, 'sh-attmenu');
-
-  menu.addEventListener('click', async event => {
-    const act = event.target.closest('[data-act]')?.dataset.act;
-    if (!act) return;
-    // 先收菜单：读剪贴板可能是异步的，菜单挂在屏幕上会挡住结果
-    closeAllPanels();
-    if (act === 'file') { appendAttachments(field, row, cellEl); return; }
-    await appendFromClipboard(field, row, cellEl);
+  // 菜单本体在 sheetPanels（抽屉、日历、看板共用同一套），这里只提供「怎么落库」
+  openAttachmentSourceMenu(anchorEl, {
+    onFile: () => { void appendAttachments(field, row, cellEl); },
+    onClipboard: () => { void appendFromClipboard(field, row, cellEl); },
   });
-  return menu;
+  return null;
 }
 
 /** Excel 粘进来的都是纯文本，按字段类型收一下，别把 "1,234" 直接塞进数字列 */
@@ -2006,6 +2056,20 @@ function openDetail(row) {
     onCellClick: (field, cellEl) => {
       const live = state.rows.find(item => String(item.id) === String(row.id)) || row;
       startCellEdit(field, live, cellEl);
+    },
+    // 附件格右下角的「＋」：和表格里走同一个来源菜单（抽屉不会被关掉，
+    // 因为菜单是浮层层；老实现里它会把抽屉一起收走）
+    onAttachmentAdd: (anchorEl, field, cellEl) => {
+      const live = state.rows.find(item => String(item.id) === String(row.id)) || row;
+      void openAttachmentAddMenu(anchorEl, field, live, cellEl);
+    },
+    // 抽屉里的文件胶囊：和表格里同三个动作
+    onFileChip: (chip) => {
+      openFileActionMenu(chip, { path: chip.dataset.path, name: chip.dataset.name }, {
+        reveal: path => invoke('reveal_path', { path }).catch(error => toast(`定位失败：${error?.message || error}`, 'danger')),
+        open: path => invoke('open_path_with_app', { path, app: null }).catch(error => toast(`打开失败：${error?.message || error}`, 'danger')),
+        openWith: path => invoke('open_path_with_dialog', { path }).catch(error => toast(`打开方式失败：${error?.message || error}`, 'danger')),
+      });
     },
     onDelete: target => removeRow(target),
     // 抽屉里改标题走的是 patchRecord（没经过 writeRow / commitCell），

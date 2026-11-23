@@ -15,6 +15,8 @@ import { undoStack } from './undoCore.js';
 import { saveRowValues, rowTitle, fieldOptionsList, saveFieldDrawer } from './sheetStore.js';
 import { isDateOnly, openCellEditor, renderCell } from './fieldTypes.js';
 import { openDatePicker } from './datePicker.js';
+import { openAttachmentSourceMenu } from './sheetPanels.js';
+import { pickAttachmentItems, storeImageFile, readClipboardContent } from './attachmentOps.js';
 
 const UNGROUPED = '__ungrouped__';
 
@@ -200,6 +202,36 @@ function openCard(row, ctx) {
     slotBody: String(ctx.view?.config?.bodyField || '').trim() || undefined,
     subtitle: ctx.table?.name || '',
     onCellClick: (field, cellEl, liveRow) => editCellInDrawer(field, cellEl, liveRow, ctx),
+    // 附件格右下角的「＋」：来源菜单 + 追加，和表格抽屉共用同一套（以前视图层
+    // 压根没传 onAttachmentEdit，点附件是彻底没反应的）
+    onAttachmentAdd: (anchorEl, field, cellEl) => {
+      const commitAttach = async next => {
+        const values = { ...row.values, [field.key]: next };
+        await ctx.saveRow(row, values);
+        row.values = values;
+        cellEl.classList.remove('ft-cell-editing');
+        cellEl.innerHTML = renderCell(field, next, { placeholder: '点击添加附件', solidPill: true });
+        ctx.onChanged?.();
+      };
+      openAttachmentSourceMenu(anchorEl, {
+        onFile: async () => {
+          const items = await pickAttachmentItems();
+          if (!items.length) return;
+          const base = Array.isArray(row.values[field.key]) ? [...row.values[field.key]] : [];
+          await commitAttach([...base, ...items]);
+        },
+        onClipboard: async () => {
+          let content;
+          try { content = await readClipboardContent(); } catch { return; }
+          const images = (content?.files || []).filter(file => file?.type?.startsWith('image/'));
+          if (!images.length) return;
+          const added = [];
+          for (const file of images) added.push(await storeImageFile(file));
+          const base = Array.isArray(row.values[field.key]) ? [...row.values[field.key]] : [];
+          await commitAttach([...base, ...added]);
+        },
+      });
+    },
     // 抽屉里「换标题列」→ 写回这张视图的配置（只影响这一个视图，不动表结构）
     onTitleFieldPick: ctx.onConfig ? key => ctx.onConfig({ titleField: key }) : undefined,
     // 三个槽位换列：标题 / 时间 / 内容 各自落到 config 的哪个键
