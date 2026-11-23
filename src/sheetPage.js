@@ -247,7 +247,9 @@ function visibleFields() {
 }
 
 function cellCtx(field) {
-  return { placeholder: field.type === 'text' ? '未命名' : '—' };
+  // solidPill：表格里配了色的选项要画成实心色块（编辑提交后重渲染也走这里，
+  // 漏标就会「一改完又变回灰字」）。
+  return { placeholder: field.type === 'text' ? '未命名' : '—', solidPill: true };
 }
 
 function displayValue(field, value) {

@@ -666,7 +666,7 @@ export function openFieldPanel({ field = null, sheetName, onSave, onDelete, onCl
     ;
 
     const previewCell = host.querySelector('[data-preview]');
-    previewCell.innerHTML = renderCell(previewField(), sampleValue(), { placeholder: '（空）' });
+    previewCell.innerHTML = renderCell(previewField(), sampleValue(), { placeholder: '（空）', solidPill: true });
   };
 
   // 预览要有东西可看：日期给个样例、数字给 42，不然永远是「（空）」
@@ -691,7 +691,7 @@ export function openFieldPanel({ field = null, sheetName, onSave, onDelete, onCl
   const repaintPreview = () => {
     const previewCell = host.querySelector('[data-preview]');
     if (!previewCell) return;
-    previewCell.innerHTML = renderCell(previewField(), sampleValue(), { placeholder: '（空）' });
+    previewCell.innerHTML = renderCell(previewField(), sampleValue(), { placeholder: '（空）', solidPill: true });
   };
 
   paint();

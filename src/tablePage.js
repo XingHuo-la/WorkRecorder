@@ -438,6 +438,7 @@ function cellCtxFor(field, row) {
   return {
     getOptions: source => sortedOptionsFor(source, row),
     placeholder: field.key === 'text' ? '未命名' : undefined,
+    solidPill: true,
   };
 }
 

@@ -2483,3 +2483,41 @@ body[data-skin="v4"] .sh-imp-capture kbd {
 body[data-skin="v4"] .custom-modal.is-capture #global-modal-cancel {
   display: none;
 }
+
+/* ==================================================================
+   选项颜色：让「配了色的选项」在表格里真的看得见
+   ------------------------------------------------------------------
+   styles-v4.css:402 起把 .ft-pill 压成了「透明底 + 灰字」（那一层的意图
+   是让标签退成一行安静的文字）。可用户在图表面板里给选项配了颜色，表格
+   里却跟没配一样 —— 配了等于没配，这就是要修的。
+
+   这里只恢复**显式配色的那些**：fieldTypes 只在 option.color 是 #rrggbb
+   且处在表格语境（ctx.solidPill）时才打 is-solid，并按底色亮度算好
+   --pill-ink（暗底白字 / 亮底深字，见 fieldTypes.readableInk）。
+   没配色的选项仍走 hash 兜底色、保持安静 —— 否则每张表都会变成一片彩色，
+   反而看不出哪个是用户真的标过的。
+
+   形状对齐 WPS 智能表格的选项标签：实心色块 + 收得比较紧的小圆角，
+   不是胶囊（胶囊在 42px 行高里会显得过圆、像按钮）。
+   ================================================================== */
+body[data-skin="v4"] .sh-table .ft-pill.is-solid,
+body[data-skin="v4"] .sh-preview .ft-pill.is-solid {
+  padding: 2px 10px !important;
+  border: 0 !important;
+  border-radius: 8px !important;
+  background: var(--pill) !important;
+  color: var(--pill-ink, #fff) !important;
+  font-weight: 500 !important;
+  /* styles.css:16401 给 .ft-pill 的内高光是为「粉彩淡底」准备的，
+     盖在实心色块上会变成一条白边，这里收掉。 */
+  box-shadow: none !important;
+}
+
+/* 多选：v4 的 nowrap 会把第二个值挤到格子外面（style.css:10239 本来就允许换行）。
+   实心之后一挤就露馅，换回 wrap。 */
+body[data-skin="v4"] .sh-table .ft-pill-group,
+body[data-skin="v4"] .sh-preview .ft-pill-group {
+  flex-wrap: wrap !important;
+  gap: 4px !important;
+  row-gap: 3px !important;
+}

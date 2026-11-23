@@ -79,9 +79,26 @@ function pillInkVar(color) {
   return match ? `var(--${match[1]}-ink)` : '';
 }
 
+// 用户自选色（#rrggbb）上没有现成的 ink token，得自己算一个：
+// 深底白字、亮底深字。不能一律用白字 —— 黄 / 亮青这类底色上白字读不出来。
+// 也不用 CSS 的 color-contrast()（WebView2 版本不可控），按 WCAG 相对亮度
+// 一刀切，0.42 是实测几条常用色板的分界：橙 #fb923c(0.414) 留白字，
+// 黄 #facc15(0.636) / 亮绿 #4ade80(0.553) / 青 #22d3ee(0.531) 转深字。
+function readableInk(hex) {
+  const num = parseInt(hex.slice(1), 16);
+  const [r, g, b] = [(num >> 16) & 255, (num >> 8) & 255, num & 255].map(value => {
+    const channel = value / 255;
+    return channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+  });
+  const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  return luminance > 0.42 ? '#1f2328' : '#ffffff';
+}
+
 // 把底色与 ink 拼进 inline style。ink 为空串时输出与旧版完全一致。
-function pillStyle(color) {
-  const ink = pillInkVar(color);
+// solid = 表格语境：底色是用户显式配的 hex，要画成实心色块，
+// 所以順带算一个可读的 ink（见 styles-v5.css 里 .ft-pill.is-solid）。
+function pillStyle(color, solid = false) {
+  const ink = pillInkVar(color) || (solid && /^#[0-9a-f]{6}$/i.test(color) ? readableInk(color) : '');
   return ink ? `--pill:${color};--pill-ink:${ink}` : `--pill:${color}`;
 }
 
@@ -151,13 +168,20 @@ function renderEmpty(actions) {
 // 单元格渲染（只读态）
 // ==========================================
 
-function renderPill(label, color, extraClass = '') {
+function renderPill(label, color, extraClass = '', solid = false) {
   // 颜色会拼进 inline style，必须限定成「十六进制色 / 主题变量」两种形态，
   // 否则一条脏数据就能往 style 里塞任意声明。
   const safe = typeof color === 'string' && /^(#[0-9a-f]{6}|var\(--[a-z0-9-]+\))$/i.test(color)
     ? color
     : optionColor(label);
-  return `<span class="ft-pill${extraClass ? ` ${extraClass}` : ''}" style="${pillStyle(safe)}">${escapeHtml(label)}</span>`;
+  const classes = `ft-pill${extraClass ? ` ${extraClass}` : ''}${solid ? ' is-solid' : ''}`;
+  return `<span class="${classes}" style="${pillStyle(safe, solid)}">${escapeHtml(label)}</span>`;
+}
+
+// 「用户在图表面板里给这个选项配过颜色」——和 hash 兜底色要分开：
+// 配了色的画实心色块，没配色的继续安静（见 renderPill 的 solid 参数）。
+function hasExplicitColor(option) {
+  return typeof option?.color === 'string' && /^#[0-9a-f]{6}$/i.test(option.color);
 }
 
 function selectColor(option) {
@@ -176,7 +200,9 @@ function renderSelectCell(field, value, ctx) {
     // 状态 = 圆点（粉彩底色）+ 文字（ink，深浅主题都可读，见设计层 10）
     return `<span class="ft-status" style="${pillStyle(TONE_VARS[option.tone])}"><span class="ft-status-dot"></span>${escapeHtml(option.label)}</span>`;
   }
-  return renderPill(option.label, selectColor(option));
+  // ctx.solidPill 只在表格 / 字段面板预览里为 true：那些地方「一眼扫色」是刚需。
+  // 详情页、看板保持 v4 的安静基调，不跟着变彩色。
+  return renderPill(option.label, selectColor(option), '', ctx?.solidPill === true && hasExplicitColor(option));
 }
 
 function renderMultiSelectCell(field, value, ctx) {
@@ -185,7 +211,12 @@ function renderMultiSelectCell(field, value, ctx) {
   return `<span class="ft-pill-group">${values
     .map(item => {
       const option = resolveOption(field, item, ctx);
-      return renderPill(option.label, selectColor(option));
+      return renderPill(
+        option.label,
+        selectColor(option),
+        '',
+        ctx?.solidPill === true && hasExplicitColor(option)
+      );
     })
     .join('')}</span>`;
 }

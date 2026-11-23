@@ -115,7 +115,7 @@ export function buildCell(field, row, ctx = {}) {
   const style = styles.length ? ` style="${styles.join(';')}"` : '';
   return `<div class="${classes}" data-key="${escapeHtml(field.key)}" data-row="${escapeHtml(
     row.id
-  )}"${col}${rowIndex}${style} tabindex="-1">${renderCell(field, value, ctx)}</div>`;
+  )}"${col}${rowIndex}${style} tabindex="-1">${renderCell(field, value, { ...ctx, solidPill: true })}</div>`;
 }
 
 export function buildRow(row, fields, index) {
