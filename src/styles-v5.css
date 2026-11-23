@@ -246,7 +246,12 @@ body[data-skin="v4"] .sh-cell.is-wrap .ft-inline-input.is-multiline {
   align-self: auto !important;
   height: auto !important;
   max-height: 100% !important;
-  overflow: auto !important;
+  /* 曾经是 overflow:auto —— 于是「普通行（没 clamp）+ 换行列」的编辑器
+     被 styles.css 的 nowrap 压成一行后，长文字直接变成一条原生横向滚动条
+     画在格子里（用户截图那条灰条）。编辑器里永远不该出现滚动条：
+     内容超出就藏起来，光标跟不跟得上由 JS 负责（fieldTypes.js 末尾输入时贴底）。 */
+  overflow: hidden !important;
+  scrollbar-width: none !important;
 }
 
 /* 编辑器必须「看起来不存在」——这一条以前漏了，于是单行输入框带着
@@ -2715,4 +2720,42 @@ body[data-ui="v3"] button.sh-lightbox-close .wr-icon {
   height: 16px !important;
   stroke-width: 2 !important;
   color: #fff !important;
+}
+
+/* =========================================================================
+   固定行高 + 双击编辑：编辑器不许把行顶开、不许露原生滚动条（2026-11-23）
+   -------------------------------------------------------------------------
+   用户报「行高固定的条件下双击编辑，体验很差」，截图里是一条原生横向滚动条
+   加半截被裁掉的文字。探针量到的真身：
+
+     tr 的 height 在表格里只是**下限**，td 又是 height:100%（相对一个由内容
+     决定的 tr 高度）→ 循环依赖。textarea 按内容长到 129.6px，整行从 43px
+     被顶到 139.6px；max-height:100% 在这个循环里解析不出值，形同失效；
+     overflow:auto 于是把溢出的内容变成滚动条，画在格子里。
+
+   所以高度不能交给 CSS 百分比，得由 JS 钉死（fieldTypes.js 的
+   fixedRowEditorHeight：量静态文字块多高，编辑器就多高 —— 固定行高下这块
+   已经被 clamp 成 n 行）。这一节只负责把盒子摆回文字原位并堵住滚动条：
+
+   - margin/padding 归零：上面那组 -9px/-12px 是给「跟随单元格内边距」用的，
+     高度钉死之后再负边距会把盒子顶到格外、文字左移 12px；
+   - overflow:hidden：超出的内容藏起来（光标由 fieldTypes.js 在末尾输入时贴底）；
+   - field-sizing:fixed：禁掉按内容长高，否则行照样被顶开；
+   - ::-webkit-scrollbar 一并隐藏，老内核（不识别 scrollbar-width）也不露馅。
+   ========================================================================= */
+body[data-skin="v4"] .sh-table .sh-row[style] > .sh-td > .sh-cell.is-wrap > .ft-inline-input.is-row-capped {
+  margin: 0 !important;
+  padding: 0 !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  align-self: auto !important;
+  overflow: hidden !important;
+  scrollbar-width: none !important;
+  field-sizing: fixed !important;
+}
+
+body[data-skin="v4"] .sh-table .sh-row[style] > .sh-td > .sh-cell.is-wrap > .ft-inline-input.is-row-capped::-webkit-scrollbar {
+  display: none !important;
 }

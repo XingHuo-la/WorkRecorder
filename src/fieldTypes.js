@@ -352,16 +352,39 @@ function unmarkEditing(cellEl) {
   cellEl.classList.remove('ft-cell-editing');
 }
 
+// 固定行高的行（tr 带 inline height），编辑器的合法高度 = 静态文字块的高度。
+//
+// 为什么不能靠 CSS 的 max-height:100%：tr 的 height 在表格里只是「下限」，
+// td 又是 height:100%（相对于一个由内容决定的 tr 高度），成了循环依赖 ——
+// 实测 42px 的行会被 textarea 顶到 139px，同时 max-height 解析不出值而失效，
+// 格子里反而冒出原生滚动条（用户截图里的那条灰色横条）。
+//
+// 固定行高的格子已经把文字 clamp 成 n 行，静态文字块多高、编辑器就该多高：
+// 高度一致 ⇒ 行撑不开、首行落点不跳、多出来的内容交给 overflow:hidden。
+// 返回 0 表示「不是固定行高」，仍按 field-sizing:content 随内容长高。
+function fixedRowEditorHeight(cellEl) {
+  if (!cellEl.closest('.sh-row[style]')) return 0;
+  // 量「格子里那块内容」的高度：有字时是 .ft-text（固定行高下已被 clamp 成 n 行），
+  // 空格子时是占位符那一个 span。不能用整格高度 —— 空格子的占位符是一行居中，
+  // 编辑器却会在整格里顶格排，文字照样跳（实测高行空格差 84px）。
+  const block = cellEl.firstElementChild;
+  const measured = block ? block.getBoundingClientRect().height : 0;
+  if (measured > 0) return Math.ceil(measured);
+  return 22;
+}
+
 // ---- 文本：单行内嵌输入 ----
 function openTextEditor(cellEl, field, value, actions) {
   const original = value == null ? '' : String(value);
   markEditing(cellEl);
+  // 换行的列用多行输入：单行 input 装不下两三行文字，编辑时只能看到末尾
+  const multiline = cellEl.classList.contains('is-wrap');
+  // 必须在清空内容之前量：静态文字块的高度正是编辑器的目标高度
+  const capHeight = multiline ? fixedRowEditorHeight(cellEl) : 0;
   // 关键：把原内容收起来再放输入框。
   // 否则 flex 布局会把 input 排在原文字后面，变成「文字 + 旁边一个小框」。
   const restore = cellEl.innerHTML;
   cellEl.innerHTML = '';
-  // 换行的列用多行输入：单行 input 装不下两三行文字，编辑时只能看到末尾
-  const multiline = cellEl.classList.contains('is-wrap');
   const input = document.createElement(multiline ? 'textarea' : 'input');
   if (!multiline) input.type = 'text';
   input.className = `ft-inline-input${multiline ? ' is-multiline' : ''}`;
@@ -369,7 +392,16 @@ function openTextEditor(cellEl, field, value, actions) {
   input.spellcheck = false;
   cellEl.appendChild(input);
 
-  if (multiline) {
+  if (capHeight) {
+    // 固定行高：把高度钉死，配合 styles-v5 的 .is-row-capped 规则
+    input.classList.add('is-row-capped');
+    input.style.setProperty('height', `${capHeight}px`, 'important');
+    // 盒子只有 n 行高，内容一多就超出可视区。overflow:hidden 时浏览器不一定
+    // 替我们把光标滚进视野，所以在末尾输入时手动贴底（Enter 是提交，输入几乎都发生在末尾）。
+    input.addEventListener('input', () => {
+      if (input.selectionStart === input.value.length) input.scrollTop = input.scrollHeight;
+    });
+  } else if (multiline) {
     input.rows = 1;
     // 优先用 CSS 的 field-sizing: content（浏览器自己按内容算高度，最准）。
     // 老内核不支持时退回手动量 scrollHeight —— 但要等一帧，否则量到的是空内容。
