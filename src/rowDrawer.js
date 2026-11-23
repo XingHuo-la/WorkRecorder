@@ -652,6 +652,14 @@ function layoutItems(fields, layout) {
     .sort(compareLayoutItems);
 }
 
+// 抽屉里所有字段值都走这一条：同一个值在表格和详情里必须**同色**。
+// 之前抽屉用的是 fieldTypes 的「安静」分支（styles-v4 把 .ft-pill 压成透明底灰字），
+// 于是表格里「月报」是淡蓝标签、点开详情却变成一行纯文字 —— 用户以为丢了信息。
+// solidPill 这个开关在 fieldTypes 里就是「值标签上色」（名字是历史包袱，
+// 它同时管着「配了色 → 实心」「内置 tone → 粉彩」「没配色 → hash 淡底」三档）。
+const drawValue = (field, value, extra = {}) =>
+  renderCell(field, value, { solidPill: true, ...extra });
+
 function fieldsHtml(gridFields, row, layout, allHidden = false) {
   if (!gridFields.length) {
     // 两种空：用户自己收起来了（要告诉他怎么捞回来），或者这个表只有一列而它的值
@@ -666,7 +674,7 @@ function fieldsHtml(gridFields, row, layout, allHidden = false) {
       const size = cfg.size || 'md';
       return `<div class="sh-detail-field" data-size="${escapeHtml(size)}">
         <div class="sh-detail-label">${escapeHtml(blockLabel(field, cfg))}</div>
-        <div class="sh-detail-cell sh-cell" data-key="${escapeHtml(field.key)}" data-row="${escapeHtml(row?.id ?? '')}" tabindex="-1">${renderCell(
+        <div class="sh-detail-cell sh-cell" data-key="${escapeHtml(field.key)}" data-row="${escapeHtml(row?.id ?? '')}" tabindex="-1">${drawValue(
           field,
           row?.values?.[field.key],
           { placeholder: field.type === 'attachment' ? '点击添加附件' : '点击填写' }
@@ -691,7 +699,7 @@ function bodySlotInner(ctx) {
   const field = ctx.slotBodyField;
   if (!field) return '';
   return `<div class="sh-detail-cell sh-cell rd-body-cell" data-key="${escapeHtml(field.key)}"
-       data-row="${escapeHtml(ctx.row?.id ?? '')}" tabindex="-1">${renderCell(field, ctx.row?.values?.[field.key], {
+       data-row="${escapeHtml(ctx.row?.id ?? '')}" tabindex="-1">${drawValue(field, ctx.row?.values?.[field.key], {
          placeholder: '写点什么…',
        })}</div>`;
 }
@@ -731,7 +739,7 @@ function renderHeadline(ctx) {
     items.push(`<div class="rd-hl-item" data-hl-field="${escapeHtml(field.key)}">
       <span class="rd-hl-label">${escapeHtml(blockLabel(field, cfg))}</span>
       <div class="sh-detail-cell sh-cell rd-hl-cell" data-key="${escapeHtml(field.key)}"
-           data-row="${escapeHtml(ctx.row?.id ?? '')}" tabindex="-1">${renderCell(field, ctx.row?.values?.[field.key], {
+           data-row="${escapeHtml(ctx.row?.id ?? '')}" tabindex="-1">${drawValue(field, ctx.row?.values?.[field.key], {
              placeholder: '点击填写',
            })}</div>
     </div>`);
@@ -2667,7 +2675,7 @@ function openInlineTitleInput(ctx, titleEl) {
         const cell = [...(ctx.el?.querySelectorAll('.sh-detail-cell') || [])].find(
           el => el.dataset.key === ctx.titleField.key
         );
-        if (cell) cell.innerHTML = renderCell(ctx.titleField, next, { placeholder: '点击填写' });
+        if (cell) cell.innerHTML = drawValue(ctx.titleField, next, { placeholder: '点击填写' });
         // 就地改行对象（不要换成新对象）：预置表那边 state.rows 里的就是这一个引用，
         // 换了引用网格上的那一格就永远读不到新值。宿主再负责把它画出来。
         if (ctx.row) {

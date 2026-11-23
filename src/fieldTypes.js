@@ -191,44 +191,48 @@ function selectColor(option) {
   return optionColor(option.value ?? option.label);
 }
 
+// ctx.solidPill = 「这个值要用彩色标签画」。
+// 名字是历史包袱（最早只在表格里用），现在覆盖三处：表格单元格、字段面板预览、
+// 记录详情抽屉 —— 同一个值在这几处必须同色，否则用户会以为是两条数据。
+// 留空的（卡片、看板、视图列表）仍是安静文字。
 function renderSelectCell(field, value, ctx) {
   if (value == null || value === '') return renderEmpty(ctx);
   const option = resolveOption(field, String(value), ctx);
-  const inTable = ctx?.solidPill === true;
+  const colored = ctx?.solidPill === true;
 
   // 带 tone 的选项（内置状态类字段）默认渲染为「圆点 + 文字」——
-  // 但在表格里它也得是一块看得见的颜色：预置表的「状态」走的就是 tone，
+  // 但要上色时它也得是一块看得见的颜色：预置表的「状态」走的就是 tone，
   // 全用圆点的话同一张表里「我配了色的列」和「内置状态列」长得像两个产品。
-  // 所以表格语境下 tone 交给 pill，底色取主题粉彩（--pill-*），
+  // 所以上色语境下 tone 交给 pill，底色取主题粉彩（--pill-*），
   // 字色取配对的 -ink —— 深色主题下这对 token 会自动换成半透明底 + 亮字。
   if (option.tone && TONE_VARS[option.tone]) {
-    if (inTable) return renderPill(option.label, TONE_VARS[option.tone], '', true);
+    if (colored) return renderPill(option.label, TONE_VARS[option.tone], '', true);
     // 状态 = 圆点（粉彩底色）+ 文字（ink，深浅主题都可读，见设计层 10）
     return `<span class="ft-status" style="${pillStyle(TONE_VARS[option.tone])}"><span class="ft-status-dot"></span>${escapeHtml(option.label)}</span>`;
   }
 
-  // 表格里的三层强弱：用户配的色 → 实心饱和块；没配色的 → hash 稳定色淡底标签。
+  // 上色时的三层强弱：用户配的色 → 实心饱和块；没配色的 → hash 稳定色淡底标签。
   // 淡底这一档不能省：预置表的「主分类」来自标签库（tags 表里根本没有颜色列），
   // 全是灰字就等于没有分类信息，v4 之前本来就是靠这层淡色区分的。
-  if (inTable) {
+  if (colored) {
     return hasExplicitColor(option)
       ? renderPill(option.label, option.color, '', true)
       : renderPill(option.label, selectColor(option), 'is-tinted');
   }
-  // 详情页、看板保持 v4 的安静基调，不跟着变彩色。
+  // 卡片 / 看板 / 视图列表保持 v4 的安静基调，不跟着变彩色。
   return renderPill(option.label, selectColor(option));
 }
 
 function renderMultiSelectCell(field, value, ctx) {
   const values = normalizeMulti(value);
   if (!values.length) return renderEmpty(ctx);
-  const inTable = ctx?.solidPill === true;
+  const colored = ctx?.solidPill === true;
   return `<span class="ft-pill-group">${values
     .map(item => {
       const option = resolveOption(field, item, ctx);
       // 多选里混着 tone 选项也要上色，判断与单选同源
-      const solid = inTable && (hasExplicitColor(option) || Boolean(option.tone && TONE_VARS[option.tone]));
-      const extra = solid ? '' : inTable ? 'is-tinted' : '';
+      const solid = colored && (hasExplicitColor(option) || Boolean(option.tone && TONE_VARS[option.tone]));
+      const extra = solid ? '' : colored ? 'is-tinted' : '';
       return renderPill(option.label, selectColor(option), extra, solid);
     })
     .join('')}</span>`;

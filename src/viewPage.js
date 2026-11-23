@@ -155,7 +155,9 @@ function editCellInDrawer(field, cellEl, row, ctx) {
     }
     row.values = values;
     cellEl.classList.remove('ft-cell-editing');
-    cellEl.innerHTML = renderCell(field, value, { placeholder: '点击填写' });
+    // 抽屉里的值标签要和表格同色（solidPill），否则「改完就变回灰字」，
+    // 看起来像没保存成功。
+    cellEl.innerHTML = renderCell(field, value, { placeholder: '点击填写', solidPill: true });
     ctx.onChanged?.();
   };
 
