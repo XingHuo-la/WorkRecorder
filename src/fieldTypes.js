@@ -96,7 +96,7 @@ function readableInk(hex) {
 
 // 把底色与 ink 拼进 inline style。ink 为空串时输出与旧版完全一致。
 // solid = 表格语境：底色是用户显式配的 hex，要画成实心色块，
-// 所以順带算一个可读的 ink（见 styles-v5.css 里 .ft-pill.is-solid）。
+// 所以顺带算一个可读的 ink（见 styles-v5.css 里 .ft-pill.is-solid）。
 function pillStyle(color, solid = false) {
   const ink = pillInkVar(color) || (solid && /^#[0-9a-f]{6}$/i.test(color) ? readableInk(color) : '');
   return ink ? `--pill:${color};--pill-ink:${ink}` : `--pill:${color}`;
