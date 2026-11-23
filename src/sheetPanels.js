@@ -985,14 +985,24 @@ export function openImagePreview(src, name = '', gallery = null) {
 
   const wrap = document.createElement('div');
   wrap.className = 'sh-lightbox';
+  // 箭头必须挂在「图片自己的盒子」（.sh-lightbox-stage）里，不能挂在 .sh-lightbox 上：
+  // 后者是 position:fixed 的整屏容器，top:50% 算的是视口中心，而 figure 底下还有一行
+  // figcaption（gap 10 + 行高 18 = 28px），图片中心比视口中心高 14px —— 箭头就跟着偏 14px。
+  // 挂进 stage 之后「图片中心」就是 stage 中心，两边都不用再猜。
   wrap.innerHTML = `
     <figure class="sh-lightbox-figure">
-      <img class="sh-lightbox-img" src="${escapeHtml(items[index].src)}" alt="${escapeHtml(items[index].name || '')}" />
+      <div class="sh-lightbox-stage">
+        <img class="sh-lightbox-img" src="${escapeHtml(items[index].src)}" alt="${escapeHtml(items[index].name || '')}" />
+        ${items.length > 1 ? `
+          <button type="button" class="sh-lightbox-nav is-prev" data-nav="-1" aria-label="上一张">
+            <svg class="wr-icon" aria-hidden="true"><use href="#ic-chevron-right"/></svg>
+          </button>
+          <button type="button" class="sh-lightbox-nav is-next" data-nav="1" aria-label="下一张">
+            <svg class="wr-icon" aria-hidden="true"><use href="#ic-chevron-right"/></svg>
+          </button>` : ''}
+      </div>
       <figcaption class="sh-lightbox-cap"></figcaption>
     </figure>
-    ${items.length > 1 ? `
-      <button type="button" class="sh-lightbox-nav is-prev" data-nav="-1" aria-label="上一张">‹</button>
-      <button type="button" class="sh-lightbox-nav is-next" data-nav="1" aria-label="下一张">›</button>` : ''}
     <button type="button" class="sh-lightbox-close" aria-label="关闭">
       <svg class="wr-icon" aria-hidden="true"><use href="#ic-close"/></svg>
     </button>`;

@@ -2597,3 +2597,122 @@ body[data-skin="v4"] .sh-attmenu-kbd {
   font-size: 11px !important;
   letter-spacing: .02em !important;
 }
+
+/* =========================================================================
+   大图预览：左右翻页箭头（2026-11-23）
+   -------------------------------------------------------------------------
+   用户报「换图时箭头定位有问题，而且看不清」，探针量到的两个独立病因：
+
+   1) 定位偏 14px —— 箭头原本是 .sh-lightbox 的子元素，而 .sh-lightbox 是
+      position:fixed 的整屏容器，top:50% 落在「视口」中心；figure 底下还有
+      一行 figcaption（gap 10 + 行高 18 = 28px），图片中心比视口中心高 14px。
+      ⇒ 结构改成 .sh-lightbox-stage 包住 img 与两个箭头（sheetPanels.js），
+        箭头相对图片盒子定位，偏移天然为 0，竖图也不会再飘。
+
+   2) 几乎隐形 —— styles-v3.css:420 的 `body[data-ui="v3"] button`（0,1,2）
+      压过了 styles.css 的 .sh-lightbox-nav（0,1,0）：底色被换成 6% 文字色、
+      字色变 --text-secondary、字号 12px、圆角 8px。实测用户截图里右箭头
+      像素级消失、左箭头只剩 7 个像素。
+      ⇒ 本节选择器一律写 `body[data-ui="v3"] button.xxx`（0,2,2），hover 写
+        (0,3,2)，才压得住 v3 的 button / button:hover / button:active。
+
+   底衬用深色半透明块而不是白色：图片本身多为白底截图，白底衬+白字必然糊在一起。
+   ========================================================================= */
+
+/* 图片自己的盒子：宽高跟着 img 走（flex 下是 fit-content），箭头才有「图片中心」可对齐。
+   min-width 是给小图留的走位：图比 148px 还窄时，箭头落在图片两侧的空白里，不压图。 */
+.sh-lightbox-figure > .sh-lightbox-stage {
+  position: relative !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  max-width: 92vw !important;
+  max-height: 84vh !important;
+  min-width: 148px !important;
+}
+
+body[data-ui="v3"] button.sh-lightbox-nav {
+  position: absolute !important;
+  top: 50% !important;
+  left: auto !important;
+  right: auto !important;
+  transform: translateY(-50%) !important;
+  width: 40px !important;
+  height: 40px !important;
+  min-height: 0 !important;
+  padding: 0 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  border: 1px solid rgba(255, 255, 255, .32) !important;
+  border-radius: 50% !important;
+  background: rgba(10, 13, 18, .72) !important;
+  color: #fff !important;
+  font-size: 0 !important;
+  line-height: 1 !important;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, .45) !important;
+  backdrop-filter: blur(6px) !important;
+  -webkit-backdrop-filter: blur(6px) !important;
+  cursor: pointer !important;
+  z-index: 2 !important;
+  transition: background .15s ease, border-color .15s ease !important;
+}
+
+/* 离图片边 10px：旧层是 26px（相对视口），图一宽就跨在图片边缘上，一半白底一半遮罩 */
+body[data-ui="v3"] button.sh-lightbox-nav.is-prev { left: 10px !important; }
+body[data-ui="v3"] button.sh-lightbox-nav.is-next { right: 10px !important; }
+
+body[data-ui="v3"] button.sh-lightbox-nav .wr-icon {
+  width: 20px !important;
+  height: 20px !important;
+  stroke-width: 2.2 !important;
+  color: #fff !important;
+}
+
+/* 左箭头直接镜像右箭头，省一个 symbol */
+body[data-ui="v3"] button.sh-lightbox-nav.is-prev .wr-icon {
+  transform: scaleX(-1) !important;
+}
+
+/* hover 必须重申 translateY：v3 的 button:hover 带 transform:none，清掉位移后箭头会掉半个按钮高 */
+body[data-ui="v3"] button.sh-lightbox-nav:hover,
+body[data-ui="v3"] button.sh-lightbox-nav:focus-visible {
+  transform: translateY(-50%) !important;
+  border-color: rgba(255, 255, 255, .55) !important;
+  background: rgba(10, 13, 18, .88) !important;
+  color: #fff !important;
+}
+
+body[data-ui="v3"] button.sh-lightbox-nav:active {
+  transform: translateY(-50%) scale(.94) !important;
+  background: rgba(10, 13, 18, .94) !important;
+}
+
+/* 关闭按钮同一个病（底色被 v3 冲成 6% 淡面，压在图上就没了），一起换成深色块 */
+body[data-ui="v3"] button.sh-lightbox-close {
+  width: 34px !important;
+  height: 34px !important;
+  min-height: 0 !important;
+  padding: 0 !important;
+  border: 1px solid rgba(255, 255, 255, .3) !important;
+  border-radius: 50% !important;
+  background: rgba(10, 13, 18, .72) !important;
+  color: #fff !important;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, .45) !important;
+  backdrop-filter: blur(6px) !important;
+  -webkit-backdrop-filter: blur(6px) !important;
+  z-index: 3 !important;
+}
+
+body[data-ui="v3"] button.sh-lightbox-close:hover {
+  border-color: rgba(255, 255, 255, .55) !important;
+  background: rgba(10, 13, 18, .88) !important;
+  color: #fff !important;
+}
+
+body[data-ui="v3"] button.sh-lightbox-close .wr-icon {
+  width: 16px !important;
+  height: 16px !important;
+  stroke-width: 2 !important;
+  color: #fff !important;
+}
