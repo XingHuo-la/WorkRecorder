@@ -2358,6 +2358,8 @@ let fillHandle = null;
 // querySelectorAll（几千格时明显卡）。
 let cellEls = new Map();
 let dragSel = null;
+// 整行 / 整列的拖选状态（按住列头横拖、按住行号竖拖）
+let lineSel = null;
 let suppressClick = false;
 
 function rebuildCellIndex() {
@@ -2811,6 +2813,80 @@ function onSelectPointerUp() {
   dragSel = null;
 }
 
+// ---- 整行 / 整列拖选 -------------------------------------------------------
+//
+// 单击列头选一列、单击行号选一行，这本来就有；缺的是「按住横向拖出 5 列」
+// 「按住竖向拖出 20 行」—— 一张 30 列的表要点 30 下才能选完，还不能按住 Shift
+// 连点（没人想得到）。这里按 Excel 的手势补上：
+//   · pointerdown 立刻选定起始那一条（否则 extendRows 找不到起点）
+//   · 移动超过 5px 才算拖，之后每帧按指针下表头/行号扩展
+//   · 松手时吃掉那一下 click，不然它会把刚拖出来的整片选区打回一条
+
+/** 指针下面是第几列 / 第几行。擦到格子上也认，避免手抖一格就卡住不动。 */
+function lineIndexUnder(axis, el) {
+  if (!el) return null;
+  if (axis === 'col') {
+    const head = el.closest?.('.sh-th-btn');
+    const key = head?.dataset.key;
+    if (key) return colsInView().findIndex(item => item.key === key);
+    const col = el.closest?.('.sh-cell')?.dataset.col;
+    return col == null ? null : Number(col);
+  }
+  const num = el.closest?.('.sh-rownum');
+  if (num) {
+    const list = rowsInView();
+    return list.findIndex(item => String(item.id) === String(num.dataset.row));
+  }
+  const r = el.closest?.('.sh-cell')?.dataset.rowindex;
+  return r == null ? null : Number(r);
+}
+
+function startLineDrag(axis, index, event) {
+  if (!Number.isInteger(index) || index < 0) return;
+  const instance = ensureGrid();
+  const snap = instance.sel.snapshot();
+  const sameAxis = snap.mode === (axis === 'row' ? 'rows' : 'cols');
+  instance.selectLine({
+    axis,
+    index,
+    additive: Boolean(event.ctrlKey || event.metaKey),
+    extend: Boolean(event.shiftKey) && sameAxis,
+  });
+  lineSel = { axis, index, x: event.clientX, y: event.clientY, moved: false, last: index };
+  document.addEventListener('pointermove', onLineSelectMove);
+  document.addEventListener('pointerup', onLineSelectUp, { once: true });
+}
+
+function onLineSelectMove(event) {
+  if (!lineSel || !grid) return;
+  if (!lineSel.moved) {
+    if (Math.abs(event.clientX - lineSel.x) < 5 && Math.abs(event.clientY - lineSel.y) < 5) return;
+    lineSel.moved = true;
+    document.body.classList.add('sh-selecting');
+  }
+  const el = document.elementFromPoint(event.clientX, event.clientY);
+  const index = lineIndexUnder(lineSel.axis, el);
+  if (index == null || index < 0 || index === lineSel.last) return;
+  lineSel.last = index;
+  if (lineSel.raf) return;
+  lineSel.raf = requestAnimationFrame(() => {
+    lineSel.raf = 0;
+    if (!lineSel || !grid) return;
+    grid.selectLine({ axis: lineSel.axis, index: lineSel.last, extend: true });
+  });
+}
+
+function onLineSelectUp() {
+  document.removeEventListener('pointermove', onLineSelectMove);
+  document.body.classList.remove('sh-selecting');
+  if (lineSel?.raf) {
+    cancelAnimationFrame(lineSel.raf);
+    if (grid) grid.selectLine({ axis: lineSel.axis, index: lineSel.last, extend: true });
+  }
+  if (lineSel?.moved) suppressClick = true;
+  lineSel = null;
+}
+
 // ==========================================
 // 填充柄 / 行高拖拽（与基础表同一套手势层）
 // ==========================================
@@ -2942,6 +3018,20 @@ function onHostPointerDown(event) {
   if (event.target.closest('.sh-cell.ft-cell-editing')) return;
   const handle = event.target.closest('.sh-col-resizer');
   if (!handle) {
+    // 列头 / 行号：按住拖 = 连续多列 / 多行（必须在单元格之前判，
+    // 否则拖到格子上就被框选逻辑接管了）
+    const colHead = event.target.closest('.sh-th-btn');
+    if (colHead) {
+      const key = colHead.dataset.key;
+      startLineDrag('col', colsInView().findIndex(item => item.key === key), event);
+      return;
+    }
+    const rowHead = event.target.closest('.sh-rownum');
+    if (rowHead) {
+      const list = rowsInView();
+      startLineDrag('row', list.findIndex(item => String(item.id) === String(rowHead.dataset.row)), event);
+      return;
+    }
     // 单元格拖选：记下起点，移动超过 5px 才算框选（否则仍然是单击编辑）
     const cell = event.target.closest('.sh-cell');
     if (cell && cell.dataset.rowindex != null && !event.target.closest('input, textarea, button')) {

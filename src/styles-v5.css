@@ -2767,3 +2767,66 @@ body[data-skin="v4"] .sh-table .sh-row[style] > .sh-td > .sh-cell.is-wrap > .ft-
 body[data-skin="v4"] .sh-table .sh-row[style] > .sh-td > .sh-cell.is-wrap > .ft-inline-input.is-row-capped::-webkit-scrollbar {
   display: none !important;
 }
+
+/* ==================================================================
+   抽屉里的就地编辑器（.sh-detail-cell）
+   ------------------------------------------------------------------
+   两个病，一个修法：
+
+   ① 展示两行、点开只剩一行。
+      编辑器原来是 <input>（单行），因为「是不是多行」只看了 .is-wrap，
+      而抽屉格子从来没这个类。改成 .sh-detail-cell 一律 textarea 之后，
+      还差「长得像不存在」这一层 —— 表格那组 border/background 重置是
+      挂在 .sh-table / .wr-cell 下的，抽屉一个都没沾到，于是 textarea 会
+      带着表单控件那套 1px 边框 + 8px 圆角冒出来。这里补上。
+
+   ② 文字跳动。
+      .sh-detail-cell 的内边距是 8px 10px（styles.css:11887），
+      .rd-body-cell 也是 8px 10px（本文件 2041）——
+      负 margin 吃掉、同等 padding 补回，落点与静态态逐像素重合。
+
+   align-self 不写 stretch：格子靠 min-height:40px 撑开，拉满会让单行文字
+   贴到顶端；auto 跟随单元格自己的对齐方式，和表格那边同一条规矩。
+   ================================================================== */
+body[data-skin="v4"] .sh-detail-cell .ft-inline-input {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  background-color: transparent !important;
+  box-shadow: none !important;
+  outline: none !important;
+  transition: none !important;
+  min-height: 0 !important;
+  width: auto !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  flex: 1 1 auto !important;
+  margin: -8px -10px !important;
+  padding: 8px 10px !important;
+  align-self: auto !important;
+  height: auto !important;
+  max-height: none !important;
+  resize: none !important;
+  overflow: hidden !important;
+  scrollbar-width: none !important;
+  color: var(--v4-text) !important;
+  font-family: inherit !important;
+  caret-color: var(--color-primary) !important;
+}
+
+/* 字号必须跟着静态态的 .ft-text 走：抽屉 13.5（styles.css:11898），
+   正文槽位 15（本文件 2046）。差 1.5px 就会让光标比文字高出一截。 */
+body[data-skin="v4"] .sh-detail-cell .ft-inline-input {
+  font-size: 13.5px !important;
+  line-height: 1.55 !important;
+}
+
+body[data-skin="v4"] .rd-body-cell .ft-inline-input {
+  font-size: 15px !important;
+  line-height: 1.75 !important;
+  white-space: pre-wrap !important;
+}
+
+body[data-skin="v4"] .sh-detail-cell .ft-inline-input::-webkit-scrollbar {
+  display: none !important;
+}

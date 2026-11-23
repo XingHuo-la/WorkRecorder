@@ -381,10 +381,27 @@ function fixedRowEditorHeight(cellEl) {
 function openTextEditor(cellEl, field, value, actions) {
   const original = value == null ? '' : String(value);
   markEditing(cellEl);
-  // 换行的列用多行输入：单行 input 装不下两三行文字，编辑时只能看到末尾
-  const multiline = cellEl.classList.contains('is-wrap');
+  // 换行的列用多行输入：单行 input 装不下两三行文字，编辑时只能看到末尾。
+  // 抽屉里的格子（.sh-detail-cell）**永远**按多行处理 —— 它在展示态会按列宽
+  // 换行成两三行，编辑态若退回单行 input，用户就只能看见最后一行：
+  // 截图里的「展示两行、点开变一行」就是这一条造成的。
+  const inDrawer = cellEl.classList.contains('sh-detail-cell');
+  const multiline = inDrawer || cellEl.classList.contains('is-wrap');
   // 必须在清空内容之前量：静态文字块的高度正是编辑器的目标高度
   const capHeight = multiline ? fixedRowEditorHeight(cellEl) : 0;
+  // 抽屉里的字号/行高是被好几层样式叠出来的（.ft-text 13.5/1.55、正文格 15/1.75、
+  // 不同 data-size 还会改），写死任何一组都对不上。直接量静态内容那一个块，
+  // 把 font-size / line-height / 字距抄给输入框 —— 以后再加样式层也不会跳。
+  // 同样必须在清空之前量。
+  const staticMetrics = inDrawer && cellEl.firstElementChild
+    ? ((style) => ({
+      fontSize: style.fontSize,
+      lineHeight: style.lineHeight,
+      letterSpacing: style.letterSpacing,
+      fontFamily: style.fontFamily,
+      textIndent: style.textIndent,
+    }))(getComputedStyle(cellEl.firstElementChild))
+    : null;
   // 关键：把原内容收起来再放输入框。
   // 否则 flex 布局会把 input 排在原文字后面，变成「文字 + 旁边一个小框」。
   const restore = cellEl.innerHTML;
@@ -394,6 +411,17 @@ function openTextEditor(cellEl, field, value, actions) {
   input.className = `ft-inline-input${multiline ? ' is-multiline' : ''}`;
   input.value = original;
   input.spellcheck = false;
+  if (staticMetrics) {
+    input.style.setProperty('font-size', staticMetrics.fontSize, 'important');
+    input.style.setProperty('line-height', staticMetrics.lineHeight, 'important');
+    input.style.setProperty('font-family', staticMetrics.fontFamily, 'important');
+    if (staticMetrics.letterSpacing && staticMetrics.letterSpacing !== 'normal') {
+      input.style.setProperty('letter-spacing', staticMetrics.letterSpacing, 'important');
+    }
+    if (staticMetrics.textIndent && staticMetrics.textIndent !== '0px') {
+      input.style.setProperty('text-indent', staticMetrics.textIndent, 'important');
+    }
+  }
   cellEl.appendChild(input);
 
   if (capHeight) {
@@ -407,20 +435,33 @@ function openTextEditor(cellEl, field, value, actions) {
     });
   } else if (multiline) {
     input.rows = 1;
-    // 优先用 CSS 的 field-sizing: content（浏览器自己按内容算高度，最准）。
-    // 老内核不支持时退回手动量 scrollHeight —— 但要等一帧，否则量到的是空内容。
-    const supportsFieldSizing = window.CSS?.supports?.('field-sizing', 'content');
-    if (!supportsFieldSizing) {
-      const grow = () => {
-        // 必须带 important：styles-v5 里换行列的编辑器统一写的是 height:auto !important
-        //（为了「文字原地不动」，不能让输入框拉满整格），普通 inline 高度压不过它，
-        // 结果就是多行文字永远只显示第一行。
+    if (inDrawer) {
+      // 抽屉：同步把高度撑到内容高度。
+      // 走不了 rAF（后台标签页 / headless 下会被饿死，量出来永远只有一行），
+      // 也不能只靠 field-sizing:content（老内核没这个属性）。
+      // 读 scrollHeight 会强制一次同步布局，拿到的就是当前内容的真实高度。
+      const fit = () => {
         input.style.setProperty('height', 'auto', 'important');
         input.style.setProperty('height', `${input.scrollHeight}px`, 'important');
       };
-      input.addEventListener('input', grow);
-      requestAnimationFrame(grow);
-      setTimeout(grow, 30);
+      input.addEventListener('input', fit);
+      fit();
+    } else {
+      // 优先用 CSS 的 field-sizing: content（浏览器自己按内容算高度，最准）。
+      // 老内核不支持时退回手动量 scrollHeight —— 但要等一帧，否则量到的是空内容。
+      const supportsFieldSizing = window.CSS?.supports?.('field-sizing', 'content');
+      if (!supportsFieldSizing) {
+        const grow = () => {
+          // 必须带 important：styles-v5 里换行列的编辑器统一写的是 height:auto !important
+          //（为了「文字原地不动」，不能让输入框拉满整格），普通 inline 高度压不过它，
+          // 结果就是多行文字永远只显示第一行。
+          input.style.setProperty('height', 'auto', 'important');
+          input.style.setProperty('height', `${input.scrollHeight}px`, 'important');
+        };
+        input.addEventListener('input', grow);
+        requestAnimationFrame(grow);
+        setTimeout(grow, 30);
+      }
     }
   }
 
@@ -439,7 +480,10 @@ function openTextEditor(cellEl, field, value, actions) {
 
   input.addEventListener('keydown', event => {
     if (isImeKey(event)) return;
-    // Shift+Enter 在多行模式里换行，其余情况 Enter 直接提交
+    // Shift+Enter 在多行模式里换行，其余情况 Enter 直接提交。
+    // 抽屉里也是这条规矩（calendar-probe 的「回车提交后编辑器收起」在守着它）——
+    // 想改之前先想清楚：抽屉关掉时 textarea 被移除，blur 不一定会触发，
+    // 把提交从 Enter 挪走就等于给「改完直接关抽屉」留了一条丢数据的路。
     if (event.key === 'Enter' && !(multiline && event.shiftKey)) { event.preventDefault(); finish(true); }
     else if (event.key === 'Escape') { event.preventDefault(); finish(false); }
   });
