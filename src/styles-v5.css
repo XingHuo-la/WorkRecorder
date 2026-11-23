@@ -2485,36 +2485,53 @@ body[data-skin="v4"] .custom-modal.is-capture #global-modal-cancel {
 }
 
 /* ==================================================================
-   选项颜色：让「配了色的选项」在表格里真的看得见
+   选项颜色：让「选项的颜色」在表格里真的看得见
    ------------------------------------------------------------------
    styles-v4.css:402 起把 .ft-pill 压成了「透明底 + 灰字」（那一层的意图
-   是让标签退成一行安静的文字）。可用户在图表面板里给选项配了颜色，表格
-   里却跟没配一样 —— 配了等于没配，这就是要修的。
+   是让标签退成一行安静的文字）。可用户在面板里配的颜色、内置状态色、
+   分类的兜底色，全被这一条抹平了 —— 配了等于没配。
 
-   这里只恢复**显式配色的那些**：fieldTypes 只在 option.color 是 #rrggbb
-   且处在表格语境（ctx.solidPill）时才打 is-solid，并按底色亮度算好
-   --pill-ink（暗底白字 / 亮底深字，见 fieldTypes.readableInk）。
-   没配色的选项仍走 hash 兜底色、保持安静 —— 否则每张表都会变成一片彩色，
-   反而看不出哪个是用户真的标过的。
+   表格里现在有三档，强弱从「一眼看到」到「有但不抢」：
+     ① is-solid  + option.color  → 用户指定的色，实心饱和块 + 自动对比字
+     ② is-solid  + option.tone   → 内置状态（预置表的「状态」列），粉彩实心
+     ③ is-tinted + hash 兜底色    → 主分类/标签这类没有颜色数据的，淡底标签
+   字段值都要经过 fieldTypes；这里只负责把形状和配色还回来。
 
    形状对齐 WPS 智能表格的选项标签：实心色块 + 收得比较紧的小圆角，
    不是胶囊（胶囊在 42px 行高里会显得过圆、像按钮）。
    ================================================================== */
 body[data-skin="v4"] .sh-table .ft-pill.is-solid,
-body[data-skin="v4"] .sh-preview .ft-pill.is-solid {
+body[data-skin="v4"] .sh-preview .ft-pill.is-solid,
+body[data-skin="v4"] .sh-table .ft-pill.is-tinted,
+body[data-skin="v4"] .sh-preview .ft-pill.is-tinted {
   padding: 2px 10px !important;
   border: 0 !important;
   border-radius: 8px !important;
-  background: var(--pill) !important;
-  color: var(--pill-ink, #fff) !important;
   font-weight: 500 !important;
   /* styles.css:16401 给 .ft-pill 的内高光是为「粉彩淡底」准备的，
-     盖在实心色块上会变成一条白边，这里收掉。 */
+     盖在色块上会变成一条白边，这里收掉。 */
   box-shadow: none !important;
 }
 
-/* 多选：v4 的 nowrap 会把第二个值挤到格子外面（style.css:10239 本来就允许换行）。
-   实心之后一挤就露馅，换回 wrap。 */
+/* ① ② 实心：底色就是 --pill，字色用 paired ink（暗底白字 / 亮底深字，
+   由 fieldTypes.readableInk 按 WCAG 亮度算好写进 inline style）。 */
+body[data-skin="v4"] .sh-table .ft-pill.is-solid,
+body[data-skin="v4"] .sh-preview .ft-pill.is-solid {
+  background: var(--pill) !important;
+  color: var(--pill-ink, #fff) !important;
+}
+
+/* ③ 淡底：没有颜色数据的分类值。底色压到 15%，字色取 62% 的色 + 正文色，
+   保证在浅底/深底主题下都读得清，又不至于像实心块那样抢眼睛。 */
+body[data-skin="v4"] .sh-table .ft-pill.is-tinted,
+body[data-skin="v4"] .sh-preview .ft-pill.is-tinted {
+  background: color-mix(in srgb, var(--pill) 15%, transparent) !important;
+  color: color-mix(in srgb, var(--pill) 62%, var(--v4-text)) !important;
+  font-weight: 450 !important;
+}
+
+/* 多选：v4 的 nowrap 会把第二个值挤到格子外面（styles.css:10239 本来就允许换行）。
+   上色之后一挤就露馅，换回 wrap。 */
 body[data-skin="v4"] .sh-table .ft-pill-group,
 body[data-skin="v4"] .sh-preview .ft-pill-group {
   flex-wrap: wrap !important;

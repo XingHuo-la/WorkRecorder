@@ -49,22 +49,24 @@ const pick = (html, re) => (html.match(re) || [])[0] || '';
   ok('亮色：不再给白字', !html.includes('--pill-ink:#ffffff'), html);
 }
 
-// ---- 3. 没配色 + 表格语境 → 保持安静（hash 兜底色，不画色块）----
+// ---- 3. 没配色 + 表格语境 → 淡底标签（有颜色但不抢眼）----
 {
   const field = selectField({ value: 'a', label: '武大' });
   const html = renderCell(field, 'a', { solidPill: true });
 
   ok('无配色：不打 is-solid', !html.includes('is-solid'), html);
-  ok('无配色：不塞 ink', !html.includes('--pill-ink'), html);
-  ok('无配色：仍渲染 pill', html.includes('class="ft-pill"'), html);
+  ok('无配色：给淡底 is-tinted', html.includes('is-tinted'), html);
+  ok('无配色：不塞 ink（淡底自己算字色）', !html.includes('--pill-ink'), html);
+  ok('无配色：仍渲染 pill', html.includes('class="ft-pill'), html);
 }
 
-// ---- 4. 不在表格语境（详情页 / 看板）→ 即使配了色也不实心 ----
+// ---- 4. 不在表格语境（详情页 / 看板）→ 既不是实心也不是淡底 ----
 {
   const field = selectField({ value: 'a', label: '已解决', color: '#2ab427' });
   const html = renderCell(field, 'a', {});
 
   ok('详情页：不打 is-solid', !html.includes('is-solid'), html);
+  ok('详情页：也不打 is-tinted', !html.includes('is-tinted'), html);
   ok('详情页：不塞 ink', !html.includes('--pill-ink'), html);
 }
 
@@ -91,15 +93,24 @@ const pick = (html, re) => (html.match(re) || [])[0] || '';
   ok('多选：蓝底给白字', html.includes('--pill-ink:#ffffff'), html);
 }
 
-// ---- 6. 内置 tone（状态类）不受影响：仍是圆点 + 粉彩 ----
+// ---- 6. 内置 tone（状态类）：表格里上色，详情页仍是圆点 + 文字 ----
 {
   const field = selectField({ value: 'done', label: '已完成', tone: 'done' });
-  const html = renderCell(field, 'done', { solidPill: true });
 
-  ok('tone：走 ft-status', html.includes('class="ft-status"'), html);
-  ok('tone：不生成 pill', !html.includes('class="ft-pill'), html);
-  ok('tone：不实心', !html.includes('is-solid'), html);
-  ok('tone：用主题 token', html.includes('--pill:var(--pill-green)'), html);
+  // 表格语境：预置表的「状态」列走这条 —— 要和「配了色的列」长得一样
+  const inTable = renderCell(field, 'done', { solidPill: true });
+  ok('tone·表格里是 pill', inTable.includes('class="ft-pill'), inTable);
+  ok('tone·表格里实心', inTable.includes('is-solid'), inTable);
+  ok('tone·底色用主题 token', inTable.includes('--pill:var(--pill-green)'), inTable);
+  ok('tone·字色用配对的 ink', inTable.includes('--pill-ink:var(--pill-green-ink)'), inTable);
+  ok('tone·表格里不再画圆点', !inTable.includes('ft-status-dot'), inTable);
+
+  // 详情页 / 看板：保持 v4 的圆点 + 文字
+  const inDrawer = renderCell(field, 'done', {});
+  ok('tone·详情页仍走 ft-status', inDrawer.includes('class="ft-status"'), inDrawer);
+  ok('tone·详情页不生成 pill', !inDrawer.includes('class="ft-pill'), inDrawer);
+  ok('tone·详情页不实心', !inDrawer.includes('is-solid'), inDrawer);
+  ok('tone·详情页保留圆点', inDrawer.includes('ft-status-dot'), inDrawer);
 }
 
 // ---- 7. 脏颜色不能进 style（沿用 renderPill 的白名单）----
