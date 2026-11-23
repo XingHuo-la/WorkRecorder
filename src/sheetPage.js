@@ -12,6 +12,18 @@ import { mountFillHandle, mountRowResizer } from './gridGestures.js';
 import { undoStack } from './undoCore.js';
 import { renderCell, openCellEditor, renderFieldIcon, FIELD_TYPE_LABELS } from './fieldTypes.js';
 import { pickAttachmentItems, storeImageFile, setAttachmentNotifier } from './attachmentOps.js';
+// 剪贴板表格：解析在 clipboardTable（纯函数，可单测），预览与落库在 clipboardImport。
+// 分两层是因为「HTML → 矩阵」与「矩阵 → 库」的失败模式完全不同：
+// 前者是格式问题（要能单独测），后者是写库问题（要能回滚）。
+import { parseClipboardPayload } from './clipboardTable.js';
+import {
+  snapshotClipboard,
+  looksTabular,
+  buildBlockChanges,
+  openImportPreview,
+  openPasteCapture,
+  isCapturing,
+} from './clipboardImport.js';
 import { buildColgroup, buildHead, buildRow, tableWidth, autoFitWidth, fieldWidth, visibleOf, cellFormat, fieldFormat, isHexColor } from './sheetTable.js';
 import { openDatePicker } from './datePicker.js';
 import {
@@ -1580,19 +1592,8 @@ async function applyPastedContent(field, row, cellEl, { files = [], text = '' })
   return true;
 }
 
-function filesFromDataTransfer(dt) {
-  if (!dt) return { files: [], text: '' };
-  const files = [...(dt.files || [])];
-  if (!files.length && dt.items) {
-    for (const item of dt.items) {
-      if (item.kind === 'file') {
-        const file = item.getAsFile();
-        if (file) files.push(file);
-      }
-    }
-  }
-  return { files, text: dt.getData ? dt.getData('text/plain') || '' : '' };
-}
+// 剪贴板内容的读取统一走 attachmentOps.filesFromDataTransfer（经 clipboardImport 的快照），
+// 本文件不再自带一份 —— 两份实现漂移过：截图粘贴在其中一份里读不到 items。
 
 // 菜单里点「粘贴（覆盖）」：走异步剪贴板 API，拿不到就提示用 Ctrl+V
 async function pasteFromClipboard(field, row, cellEl) {
@@ -1657,9 +1658,7 @@ async function pasteTSVAt(cellEl, text) {
 
   const rows = rowsInView();
   const cols = visibleOf(state.fields);
-  const touched = new Map();
   const changes = [];
-  let filled = 0;
   let skipped = 0;
 
   for (let i = 0; i < matrix.length; i += 1) {
@@ -1669,17 +1668,64 @@ async function pasteTSVAt(cellEl, text) {
       if (!row || !field) { skipped += 1; continue; }
       const value = coercePasteValue(field, matrix[i][j]);
       if (value === null) { skipped += 1; continue; }
-      const before = row.values[field.key];
-      row.values[field.key] = value;
-      changes.push({ row, field, before, after: value });
-      const target = host.querySelector(`.sh-cell[data-rowindex="${anchorR + i}"][data-col="${anchorC + j}"]`);
-      if (target) target.innerHTML = renderCell(field, value, cellCtx(field));
-      touched.set(String(row.id), row);
-      filled += 1;
+      changes.push({ row, field, before: row.values[field.key], after: value });
     }
   }
+  return applyPastedChanges(changes, '粘贴', skipped);
+}
 
-  if (!filled) { toast('没有可粘贴的内容', 'info'); return false; }
+/**
+ * 带 HTML 结构的一块（可能含图片）→ 原地铺开。
+ * 图先落地成附件项，再按单元格类型拼值 —— 顺序不能反：
+ * coerceImportValue 要拿「src → 本地附件项」这张表。
+ */
+async function pasteModelAt(cellEl, model) {
+  const anchorR = Number(cellEl.dataset.rowindex);
+  const anchorC = Number(cellEl.dataset.col);
+  if (Number.isNaN(anchorR) || Number.isNaN(anchorC)) return false;
+
+  const rows = rowsInView();
+  const cols = visibleOf(state.fields);
+  const totalImages = model.imageCount;
+  let result;
+  markSaving();
+  try {
+    result = await buildBlockChanges({
+      model,
+      fields: cols,
+      rows,
+      anchorRow: anchorR,
+      anchorCol: anchorC,
+      onProgress: totalImages
+        ? progress => setSaveHint(`保存图片 ${progress.done}/${progress.total}…`)
+        : null,
+    });
+  } catch (error) {
+    markSaved();
+    toast(`粘贴失败：${error?.message || error}`, 'danger');
+    return false;
+  }
+  return applyPastedChanges(result.changes, '粘贴', result.skipped, result.failedImages);
+}
+
+/**
+ * 一批单元格改动 = 一次写库 + 一步撤销。
+ * 粘贴（文本/图片）与以后可能的批量操作都走这里，避免「图片走得通、文本走另一套」
+ * 那种两套语义 —— 撤销深度、提示文案、失败回滚必须完全一致。
+ */
+async function applyPastedChanges(changes, label, skipped = 0, failedImages = 0) {
+  if (!changes.length) {
+    toast(
+      failedImages ? `${failedImages} 张图片没能保存` : '没有可粘贴的内容',
+      failedImages ? 'danger' : 'info'
+    );
+    markSaved();
+    return false;
+  }
+
+  for (const change of changes) change.row.values[change.field.key] = change.after;
+  const touched = new Map();
+  for (const change of changes) touched.set(String(change.row.id), change.row);
 
   const sheetId = state.sheet?.id;
   markSaving();
@@ -1687,7 +1733,7 @@ async function pasteTSVAt(cellEl, text) {
     for (const row of touched.values()) await writeRow(row);
     await touchSheet(state.sheet.id);
     markSaved();
-    registerCellUndo(changes, `粘贴 ${filled} 格`, sheetId);
+    registerCellUndo(changes, `${label} ${changes.length} 格`, sheetId);
   } catch (error) {
     markSaved();
     toast(`粘贴失败：${error?.message || error}`, 'danger');
@@ -1696,8 +1742,83 @@ async function pasteTSVAt(cellEl, text) {
     return false;
   }
 
-  toast(skipped ? `已粘贴 ${filled} 格，跳过 ${skipped} 格` : `已粘贴 ${filled} 格`);
+  // 整表重绘而不是只改受影响的格子：附件列要重新渲染缩略图，
+  // 单格 innerHTML 换不掉图片节点（renderCell 会重建 img，但尺寸/折叠角标要重算）。
+  renderSheet();
+  const bits = [`已粘贴 ${changes.length} 格`];
+  if (skipped) bits.push(`跳过 ${skipped} 格`);
+  if (failedImages) bits.push(`${failedImages} 张图片没能保存`);
+  toast(bits.join('，'), failedImages ? 'info' : 'success');
   return true;
+}
+
+/** 保存状态那一行临时改文案：几十张图下载时总得有进度。 */
+function setSaveHint(text) {
+  const el = host?.querySelector('[data-save-state]');
+  if (el) el.textContent = String(text);
+}
+
+/**
+ * 没有落点的导入（空表 / 没选中格 / 块比表宽）。
+ * 先弹预览：列名、类型、要不要新建列都得让用户看一眼 ——
+ * 靠猜列类型建出来的表，改起来比重新导一遍还贵。
+ */
+function openBlockImport(snapshot, context = {}) {
+  const table = context.table || state.sheet;
+  if (!table) return;
+  const model = parseClipboardPayload(snapshot);
+  if (!model.rows.length) { toast('剪贴板里没有可导入的表格', 'info'); return; }
+
+  openImportPreview({
+    table,
+    fields: context.fields || state.fields,
+    rows: context.rows || state.rows,
+    model,
+    toast,
+    onDone: async result => {
+      if (state.sheet && String(state.sheet.id) === String(table.id)) {
+        await reloadFields();
+        await reloadRows();
+        renderSheet({ resetScroll: true });
+      } else {
+        await refreshSheets();
+      }
+      registerImportUndo(table, result);
+    },
+  });
+}
+
+/**
+ * 整批导入登记成**一步**撤销。
+ * 只做 undo 不做 redo：导入会新建列，redo 要重建列并还原每一格的 key，
+ * 做不到「按一下就回来」的程度，给个半吊子的重做反而会让人以为数据丢了。
+ */
+function registerImportUndo(table, result) {
+  const rowIds = [...(result.createdRows || [])];
+  const fieldIds = (result.createdFields || []).map(field => field.id);
+  const hiddenIds = (result.hiddenFields || []).map(field => field.id);
+  if (!rowIds.length && !fieldIds.length && !hiddenIds.length) return;
+
+  undoStack.push({
+    label: result.label || `导入 ${result.rowCount} 行`,
+    undo: async () => {
+      for (const id of rowIds) {
+        try { await deleteRow(id); } catch (error) { /* 尽力回滚 */ }
+      }
+      for (const id of fieldIds) {
+        try { await deleteTableField(table, id); } catch (error) { /* 尽力回滚 */ }
+      }
+      for (const id of hiddenIds) {
+        try { await patchTableField(table, id, { visible: 1 }); } catch (error) { /* 尽力回滚 */ }
+      }
+      if (state.sheet && String(state.sheet.id) === String(table.id)) {
+        await reloadFields();
+        await reloadRows();
+        renderSheet();
+      }
+      toast('已撤销导入', 'info');
+    },
+  });
 }
 
 async function insertRows(row, count, side) {
@@ -2032,6 +2153,9 @@ function openSheetMenu(anchorEl, target = null) {
       <button type="button" class="sh-menu-item" data-sheet-act="task">
         <svg class="wr-icon" aria-hidden="true"><use href="#ic-tag"/></svg>改所属任务
       </button>
+      <button type="button" class="sh-menu-item" data-sheet-act="import">
+        <svg class="wr-icon" aria-hidden="true"><use href="#ic-copy"/></svg>从剪贴板导入…
+      </button>
       <div class="sh-colmenu-sep"></div>
       <button type="button" class="sh-menu-item is-danger" data-sheet-act="delete">
         <svg class="wr-icon" aria-hidden="true"><use href="#ic-trash"/></svg>删除表格
@@ -2078,6 +2202,28 @@ function openSheetMenu(anchorEl, target = null) {
           toast('已更新归属');
           return true;
         }, { btnText: '保存' });
+      }
+      if (action === 'import') {
+        // 从表库的卡片菜单进来时这张表可能没被打开：字段和行要现查，
+        // 不能拿 state 里那张表的数据凑（会把内容导进错误的表）。
+        const isOpen = state.sheet && String(state.sheet.id) === String(sheet.id);
+        openPasteCapture({
+          toast,
+          onSnapshot: async snapshot => {
+            let fields = isOpen ? state.fields : [];
+            let rows = isOpen ? state.rows : [];
+            if (!isOpen) {
+              try {
+                fields = await readTableFields(sheet);
+                rows = await readTableRows(sheet);
+              } catch (error) {
+                fields = [];
+                rows = [];
+              }
+            }
+            openBlockImport(snapshot, { table: sheet, fields, rows });
+          },
+        });
       }
       if (action === 'delete') {
         // 行数优先用列表摘要里的 row_count：从表库删表时这张表没被打开过，state.rows 是空的
@@ -3204,6 +3350,11 @@ export async function initSheetPage() {
       if (key !== 'c' && key !== 'v' && key !== 'x') return;
       const typing = document.activeElement?.closest?.('input, textarea, select, [contenteditable="true"]');
       if (typing || document.querySelector('.ft-cell-editing')) return;
+      // 导入弹层开着时，内部剪贴板的 Ctrl+V 会把内容粘到弹层背后的表格上 ——
+      // 用户明明是在等「把剪贴板里的表格导进来」。所有全局弹层一律让路。
+      if (isCapturing()) return;
+      const modalOverlay = document.getElementById('global-modal-overlay');
+      if (modalOverlay && modalOverlay.style.display === 'flex') return;
 
       if (key === 'c') {
         if (String(window.getSelection() || '')) return; // 有文本选区 → 交给原生复制
@@ -3242,26 +3393,53 @@ export async function initSheetPage() {
       event.preventDefault();
       pasteCellFromClipboard(field, row, cell);
     }, true);
-    // Ctrl+V：选中单元格（非编辑态）时直接粘贴，图片覆盖原内容
+    // Ctrl+V：整块表格优先「导入」，单格内容才走「覆盖这一格」。
+    //
+    // 以前这里第一件事就是找 .sh-cell.is-active，找不到直接 return ——
+    // 于是「新建的空表按 Ctrl+V 毫无反应」，而这恰好是导入最常用的入口。
+    // 现在按内容分派：
+    //   有结构（HTML 表格 / TSV）+ 有落点 + 放得下 → 原地铺开（Excel 语义）
+    //   其余情况都要建列或追加行 → 弹预览确认列结构
     document.addEventListener('paste', event => {
       if (state.view !== 'sheet' || !host) return;
+      // 捕获弹层开着的时候由它自己处理（它监听的是同一个 document）
+      if (isCapturing()) return;
+      // 任何全局弹层开着都不该往表里粘：重命名、删表、导入预览都一样，
+      // 否则「在输入框外面按一下 Ctrl+V」会把内容直接灌进底下的表格
+      const overlay = document.getElementById('global-modal-overlay');
+      if (overlay && overlay.style.display === 'flex') return;
       const typing = document.activeElement?.closest?.('input, textarea, select, [contenteditable="true"]');
       if (typing) return; // 正在输入 → 交给原生粘贴
       if (document.querySelector('.ft-cell-editing')) return;
+
+      const snapshot = snapshotClipboard(event.clipboardData);
+      if (!looksTabular(snapshot) && !snapshot.files.length && !snapshot.text) return;
+
       const cell = host.querySelector('.sh-cell.is-active');
-      if (!cell) return;
-      const field = state.fields.find(item => item.key === cell.dataset.key);
-      const row = state.rows.find(item => String(item.id) === String(cell.dataset.row));
-      if (!field || !row) return;
-      const { files, text } = filesFromDataTransfer(event.clipboardData);
-      if (!files.length && !text) return;
-      event.preventDefault();
-      // 从 Excel / WPS 复制过来的是 TSV：带 tab 或换行就按二维块铺，不再当单格长文本
-      if (!files.length && /\t|\n/.test(text)) {
-        pasteTSVAt(cell, text);
+
+      // 单格：图片 / 纯文本 —— 保持「覆盖这一格」的原语义
+      if (!looksTabular(snapshot)) {
+        if (!cell) return;
+        const field = state.fields.find(item => item.key === cell.dataset.key);
+        const row = state.rows.find(item => String(item.id) === String(cell.dataset.row));
+        if (!field || !row) return;
+        event.preventDefault();
+        applyPastedContent(field, row, cell, snapshot);
         return;
       }
-      applyPastedContent(field, row, cell, { files, text });
+
+      const model = parseClipboardPayload(snapshot);
+      if (!model.rows.length) return;
+      event.preventDefault();
+
+      const cols = visibleOf(state.fields);
+      const anchorC = cell ? Number(cell.dataset.col) : -1;
+      const fits = cell && state.rows.length && state.fields.length
+        && !Number.isNaN(anchorC) && anchorC >= 0
+        && model.cols <= cols.length - anchorC;
+      if (fits) { pasteModelAt(cell, model); return; }
+
+      openBlockImport(snapshot);
     }, true);
 
     // 搜索：只重建表格行，不重建整个页面。

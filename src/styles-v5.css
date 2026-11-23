@@ -2227,3 +2227,259 @@ body[data-skin="v4"] .rd-fieldcfg-drop:hover:not(:disabled) {
   background: color-mix(in srgb, #e5484d 14%, transparent) !important;
   color: #e5484d !important;
 }
+
+/* ============================================================
+   从剪贴板导入（.sh-imp-*）
+   ------------------------------------------------------------
+   这一层只服务「WPS / Excel 整块复制 → 新建表」这一个场景。
+   为什么单独放一段而不是复用 .sh-modal：
+   预览里的列配置是**一张两维表**（列名 / 类型 / 动作 / 样例），
+   复用弹层那套竖排 label 会挤成三行，扫一眼看不出「第几列对应什么」。
+   宽度也得单独放开：默认 .custom-modal 是 500px，12 列塞不下。
+   ============================================================ */
+body[data-skin="v4"] .custom-modal.sh-imp-modal {
+  width: 800px !important;
+  max-width: 94vw !important;
+  padding: 20px 22px !important;
+}
+body[data-skin="v4"] .custom-modal.sh-imp-modal.is-capture {
+  width: 480px !important;
+}
+
+body[data-skin="v4"] .sh-imp {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+/* ---- 顶部：行×列 + 首行表头开关 ---- */
+body[data-skin="v4"] .sh-imp-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+body[data-skin="v4"] .sh-imp-sum {
+  font-size: 12.5px;
+  color: var(--v4-text-2);
+}
+body[data-skin="v4"] .sh-imp-sum strong {
+  color: var(--v4-text);
+  font-size: 14px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+body[data-skin="v4"] .sh-imp-imgs {
+  color: var(--color-primary);
+}
+body[data-skin="v4"] .sh-imp-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--v4-text-2);
+  cursor: pointer;
+  user-select: none;
+}
+body[data-skin="v4"] .sh-imp-check input {
+  width: 14px !important;
+  height: 14px !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  accent-color: var(--color-primary);
+  cursor: pointer;
+}
+
+/* ---- 结构提示：这张表会新建几列 / 隐藏几个空列 ---- */
+body[data-skin="v4"] .sh-imp-tip {
+  padding: 7px 10px;
+  border: 1px solid var(--v4-line);
+  border-radius: 8px;
+  background: var(--v4-surface-2);
+  color: var(--v4-text-2);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+/* ---- 列配置：一行一列，扫得出「第几列 → 什么类型」 ---- */
+body[data-skin="v4"] .sh-imp-cols {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 268px;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--v4-line);
+  border-radius: 8px;
+  background: var(--v4-surface);
+}
+body[data-skin="v4"] .sh-imp-col {
+  display: grid;
+  /* 列名 1fr 但有上限：不封顶时它会吃掉整行，样例被挤成省略号；
+     「动作」给到 140px 是因为「复用「截止日期」」这种文案真的装不下会更难读。 */
+  grid-template-columns: 20px minmax(108px, 240px) 92px 140px minmax(96px, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 3px 6px;
+  border-radius: 6px;
+}
+body[data-skin="v4"] .sh-imp-col:hover {
+  background: var(--v4-surface-2);
+}
+body[data-skin="v4"] .sh-imp-col.is-skip {
+  opacity: 0.45;
+}
+body[data-skin="v4"] .sh-imp-idx {
+  color: var(--v4-text-3);
+  font-size: 11px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+body[data-skin="v4"] .sh-imp-name,
+body[data-skin="v4"] .sh-imp-type,
+body[data-skin="v4"] .sh-imp-act {
+  width: 100% !important;
+  height: 26px !important;
+  min-height: 0 !important;
+  padding: 0 7px !important;
+  border: 1px solid var(--v4-line) !important;
+  border-radius: 6px !important;
+  background: var(--v4-surface) !important;
+  color: var(--v4-text) !important;
+  font-family: var(--v4-sans);
+  font-size: 12px !important;
+  line-height: 24px !important;
+  box-shadow: none !important;
+  outline: none !important;
+}
+body[data-skin="v4"] .sh-imp-name:focus,
+body[data-skin="v4"] .sh-imp-type:focus,
+body[data-skin="v4"] .sh-imp-act:focus {
+  border-color: var(--color-primary) !important;
+}
+body[data-skin="v4"] .sh-imp-name:disabled,
+body[data-skin="v4"] .sh-imp-type:disabled {
+  background: var(--v4-surface-2) !important;
+  color: var(--v4-text-2) !important;
+  cursor: default;
+}
+body[data-skin="v4"] .sh-imp-sample {
+  overflow: hidden;
+  color: var(--v4-text-3);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- 数据预览：只看前 6 行，够判断「哪一列是标题」就行 ---- */
+body[data-skin="v4"] .sh-imp-data {
+  max-height: 208px;
+  overflow: auto;
+  border: 1px solid var(--v4-line);
+  border-radius: 8px;
+  background: var(--v4-surface);
+}
+body[data-skin="v4"] .sh-imp-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11.5px;
+}
+body[data-skin="v4"] .sh-imp-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 5px 9px !important;
+  border: 0 !important;
+  border-bottom: 1px solid var(--v4-line) !important;
+  background: var(--v4-surface-2) !important;
+  color: var(--v4-text-2) !important;
+  font-weight: 500 !important;
+  text-align: left;
+  white-space: nowrap;
+}
+body[data-skin="v4"] .sh-imp-table td {
+  max-width: 180px;
+  padding: 4px 9px !important;
+  border: 0 !important;
+  border-bottom: 1px solid var(--v4-line-2, var(--v4-line)) !important;
+  color: var(--v4-text) !important;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+body[data-skin="v4"] .sh-imp-table tr:last-child td {
+  border-bottom: 0 !important;
+}
+body[data-skin="v4"] .sh-imp-th-idx,
+body[data-skin="v4"] .sh-imp-td-idx {
+  width: 26px;
+}
+body[data-skin="v4"] .sh-imp-img {
+  display: inline-block;
+  margin-right: 5px;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--color-primary) 14%, transparent);
+  color: var(--color-primary);
+  font-size: 10.5px;
+  line-height: 15px;
+}
+body[data-skin="v4"] .sh-imp-more {
+  color: var(--v4-text-3);
+  font-style: normal;
+}
+
+/* ---- 底部说明：图片会落到本地 ---- */
+body[data-skin="v4"] .sh-imp-note {
+  color: var(--v4-text-3);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+/* ---- 捕获弹层：让用户在这里按 Ctrl+V ---- */
+body[data-skin="v4"] .sh-imp-capture {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 40px 20px;
+  border: 2px dashed var(--v4-line);
+  border-radius: 12px;
+  background: var(--v4-surface-2);
+  outline: none;
+  cursor: text;
+}
+body[data-skin="v4"] .sh-imp-capture:focus {
+  border-color: var(--color-primary);
+}
+body[data-skin="v4"] .sh-imp-capture-title {
+  color: var(--v4-text);
+  font-size: 15px;
+  font-weight: 500;
+}
+body[data-skin="v4"] .sh-imp-capture-desc {
+  color: var(--v4-text-3);
+  font-size: 12px;
+  line-height: 1.7;
+  text-align: center;
+}
+body[data-skin="v4"] .sh-imp-capture kbd {
+  display: inline-block;
+  min-width: 18px;
+  padding: 1px 5px;
+  border: 1px solid var(--v4-line);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--v4-surface);
+  color: var(--v4-text-2);
+  font-family: var(--v4-sans);
+  font-size: 11.5px;
+}
+
+/* 捕获弹层只有一个出路（关闭）：再来一个「取消」是同一件事写两遍。
+   display 不加 !important —— 这个按钮没有别的显示态需要跟 JS 抢。 */
+body[data-skin="v4"] .custom-modal.is-capture #global-modal-cancel {
+  display: none;
+}

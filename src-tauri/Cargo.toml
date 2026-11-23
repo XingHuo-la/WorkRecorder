@@ -27,6 +27,18 @@ tauri-plugin-dialog = "2.6.0"
 tauri-plugin-process = "2"
 rusqlite = { version = "0.31.0", features = ["bundled"] }
 tauri-plugin-single-instance = "2"
+# 剪贴板导入时要把 WPS 放在 kdocs 上的图下载回来（那些链接有时效，存 URL 等于没存）。
+# reqwest 本来就在依赖树里（updater 拉的，默认 feature `rustls-tls` 已经给它开了
+# `rustls-no-provider`），这里只显式用上它，不重复开 feature。
+#
+# ⚠️ 不要在 reqwest 上加 `rustls` feature：0.13 的 `rustls` 会带进 aws-lc-rs
+# （锁文件里没有，还得现编 C）。TLS 由 updater 那条 `rustls-no-provider` 提供，
+# provider 由下面的 rustls 依赖在下载命令里自己装（updater 只在检查更新时装，
+# 指望不上）。
+reqwest = { version = "0.13", default-features = false }
+# 只为了 install_default()：http 源直接下，https 源要有 provider 才能握手。
+# 版本与 feature 跟 updater 那条保持一致（0.23 + ring），不引入新的编译单元。
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2"

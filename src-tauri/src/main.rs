@@ -1069,6 +1069,24 @@ fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+/// 图片资源目录：<数据目录>/assets/sheets/YYYYMM
+///
+/// 三条写图的命令（base64 / 本地文件 / 网络下载）共用这一处，
+/// 否则「按月分目录」这条规则迟早有一边改一边忘。
+fn sheet_asset_dir() -> Result<PathBuf, String> {
+    let db_path = PathBuf::from(get_db_file_path());
+    let base_dir = db_path
+        .parent()
+        .ok_or_else(|| "无法识别数据目录".to_string())?
+        .to_path_buf();
+    let dir = base_dir
+        .join("assets")
+        .join("sheets")
+        .join(Local::now().format("%Y%m").to_string());
+    fs::create_dir_all(&dir).map_err(|e| format!("创建图片目录失败: {}", e))?;
+    Ok(dir)
+}
+
 /// 把前端粘贴/选择的图片写进数据目录，返回绝对路径。
 ///
 /// 图片不进数据库：单元格只存路径，DB 体积不会随截图膨胀，
@@ -1095,16 +1113,7 @@ async fn save_sheet_asset(data: String, ext: String) -> Result<String, String> {
         _ => "png",
     };
 
-    let db_path = PathBuf::from(get_db_file_path());
-    let base_dir = db_path
-        .parent()
-        .ok_or_else(|| "无法识别数据目录".to_string())?
-        .to_path_buf();
-    let dir = base_dir
-        .join("assets")
-        .join("sheets")
-        .join(Local::now().format("%Y%m").to_string());
-    fs::create_dir_all(&dir).map_err(|e| format!("创建图片目录失败: {}", e))?;
+    let dir = sheet_asset_dir()?;
 
     let file_name = format!(
         "{}-{}.{}",
@@ -1145,16 +1154,7 @@ async fn save_sheet_asset_from_path(source: String) -> Result<serde_json::Value,
         return Err(format!("图片过大（{} MB），上限 12 MB", meta.len() / 1024 / 1024));
     }
 
-    let db_path = PathBuf::from(get_db_file_path());
-    let base_dir = db_path
-        .parent()
-        .ok_or_else(|| "无法识别数据目录".to_string())?
-        .to_path_buf();
-    let dir = base_dir
-        .join("assets")
-        .join("sheets")
-        .join(Local::now().format("%Y%m").to_string());
-    fs::create_dir_all(&dir).map_err(|e| format!("创建图片目录失败: {}", e))?;
+    let dir = sheet_asset_dir()?;
 
     let file_name = format!(
         "{}-{}.{}",
@@ -1174,6 +1174,96 @@ async fn save_sheet_asset_from_path(source: String) -> Result<serde_json::Value,
         "path": dest.to_string_lossy(),
         "name": name,
         "size": meta.len(),
+    }))
+}
+
+/// 下载剪贴板里的「云图」，写进资源目录，返回本地绝对路径。
+///
+/// 为什么要下载而不是直接存链接：WPS 智能表格复制出来的图挂在
+/// `http://www.kdocs.cn/api/v3/office/copy/...` 这类**有时效**的地址上，
+/// 直接把 URL 写进单元格，过几天就是一片空白 —— 那不叫「完整粘贴」。
+///
+/// 失败时如实返回错误：前端会丢掉这一张、把失败数统计进导入结果
+/// （「N 张图片没能保存」），而不是静默变成空白格 —— 让人以为存上了才最糟。
+#[tauri::command]
+async fn download_sheet_asset(url: String) -> Result<serde_json::Value, String> {
+    use std::sync::OnceLock;
+    use std::time::Duration;
+
+    const MAX_BYTES: usize = 12 * 1024 * 1024;
+    let link = url.trim().to_string();
+    if !(link.starts_with("http://") || link.starts_with("https://")) {
+        return Err("不是 http(s) 链接".to_string());
+    }
+
+    // 一次导入常有几十张图：连接复用能把 TLS 握手从 58 次降到 1 次。
+    // provider 必须在这里装：updater 只在「检查更新」时才装它，
+    // 用户直接粘贴时那条路径根本没跑过，https 源会报
+    // 「no process-level CryptoProvider available」。
+    static CRYPTO: OnceLock<()> = OnceLock::new();
+    CRYPTO.get_or_init(|| {
+        if rustls::crypto::CryptoProvider::get_default().is_none() {
+            let _ = rustls::crypto::ring::default_provider().install_default();
+        }
+    });
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    let client = CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(20))
+            .connect_timeout(Duration::from_secs(8))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    });
+
+    let resp = client
+        .get(&link)
+        .send()
+        .await
+        .map_err(|e| format!("下载失败: {}", e))?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(format!("下载失败: HTTP {}", status.as_u16()));
+    }
+    let mime = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let ext = if mime.contains("jpeg") || mime.contains("jpg") {
+        "jpg"
+    } else if mime.contains("webp") {
+        "webp"
+    } else if mime.contains("gif") {
+        "gif"
+    } else if mime.contains("bmp") {
+        "bmp"
+    } else {
+        "png"
+    };
+
+    let bytes = resp.bytes().await.map_err(|e| format!("读取图片失败: {}", e))?;
+    if bytes.is_empty() {
+        return Err("图片内容为空".to_string());
+    }
+    if bytes.len() > MAX_BYTES {
+        return Err(format!("图片过大（{} MB），上限 12 MB", bytes.len() / 1024 / 1024));
+    }
+
+    let dir = sheet_asset_dir()?;
+    let file_name = format!(
+        "{}-{}.{}",
+        Local::now().format("%Y%m%d%H%M%S%3f"),
+        std::process::id(),
+        ext
+    );
+    let path = dir.join(file_name);
+    fs::write(&path, &bytes).map_err(|e| format!("写入图片失败: {}", e))?;
+
+    Ok(json!({
+        "path": path.to_string_lossy(),
+        "size": bytes.len(),
+        "mime": mime,
     }))
 }
 
@@ -1275,6 +1365,7 @@ fn main() {
             read_asset_text,
             save_sheet_asset,
             save_sheet_asset_from_path,
+            download_sheet_asset,
             reveal_path,
             open_path_with_dialog,
             notes_fs::notes_ensure_root,

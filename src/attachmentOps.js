@@ -143,3 +143,119 @@ export function filesFromDataTransfer(data) {
   }
   return { files, text: data.getData ? data.getData('text/plain') || '' : '' };
 }
+
+// ==========================================
+// 从 HTML 里带回来的图片
+//
+// 与「用户选文件 / 粘贴截图」不是一回事：这里的图片是**别人文档里的引用**
+// （WPS 智能表格复制出来的是 http://www.kdocs.cn/api/v3/office/copy/... ，有时效），
+// 存链接等于没存，必须落地成本地文件。
+// ==========================================
+
+function base64ToBytes(payload) {
+  const binary = atob(payload);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+/** data:image/png;base64,... → File */
+function dataUrlToFile(dataUrl, name) {
+  const match = /^data:([^;,]*)(;base64)?,([\s\S]*)$/i.exec(String(dataUrl));
+  if (!match) throw new Error('图片数据格式无法识别');
+  const mime = String(match[1] || 'image/png').toLowerCase();
+  const ext = MIME_IMAGE_EXT[mime] || 'png';
+  const bytes = match[2] ? base64ToBytes(match[3] || '') : new TextEncoder().encode(decodeURIComponent(match[3] || ''));
+  if (!bytes.length) throw new Error('图片内容为空');
+  return new File([bytes], name || `粘贴的图片.${ext}`, { type: mime });
+}
+
+/** file:///C:/a.png → C:/a.png */
+function fileUrlToPath(url) {
+  let text = String(url || '').replace(/^file:\/\//i, '');
+  if (/^\/[a-zA-Z]:/.test(text)) text = text.slice(1);
+  try { text = decodeURIComponent(text); } catch (error) { /* 保持原样 */ }
+  return text;
+}
+
+/**
+ * 任意来源的图片 → 本地附件项。
+ *
+ * 四个分支，顺序不能乱：
+ *   data:      内嵌（剪贴板里的小图 / 预览壳）
+ *   blob:      剪贴板里现生成的 Blob URL
+ *   file:      本机文件（用户从资源管理器复制过来）
+ *   http(s):   远程引用 —— 必须下载，链接会过期
+ * @returns {Promise<{path:string,name:string,size:number,w:number,h:number}>}
+ */
+export async function importImageSource(src, { name = '' } = {}) {
+  const url = String(src || '').trim();
+  if (!url) throw new Error('图片地址为空');
+
+  if (/^data:/i.test(url)) {
+    return storeImageFile(dataUrlToFile(url, name));
+  }
+  if (/^blob:/i.test(url)) {
+    const blob = await (await fetch(url)).blob();
+    const file = new File([blob], name || '粘贴的图片', { type: blob.type || 'image/png' });
+    return storeImageFile(file);
+  }
+  if (/^file:\/\//i.test(url)) {
+    return imageItemFromPath(fileUrlToPath(url));
+  }
+  if (/^https?:\/\//i.test(url)) {
+    const saved = await invoke('download_sheet_asset', { url });
+    const dims = await imageDims(convertSrc(saved.path));
+    return {
+      path: saved.path,
+      name: name || nameOfPath(saved.path),
+      size: saved.size || 0,
+      w: dims.w || 0,
+      h: dims.h || 0,
+    };
+  }
+  // 没有 scheme：按本地绝对路径处理（Excel 有时会把图存成相对路径）
+  return imageItemFromPath(url);
+}
+
+/**
+ * 批量落地，同一个 src 只下一次。
+ *
+ * 并发 6：58 张图串行要等半分钟，全开又会把对端打限流 /
+ * 让主线程的进度回调排队。失败不抛 —— 一张图挂了不该毁掉整批导入，
+ * 调用方拿 failures 去提示「N 张没存下来」。
+ *
+ * @param {string[]} sources
+ * @param {{concurrency?:number, onProgress?:(p:{done:number,total:number,src:string})=>void}} options
+ * @returns {Promise<{items:Map<string,object>, failures:Array<{src:string,reason:string}>}>}
+ */
+export async function importImageSources(sources, { concurrency = 6, onProgress } = {}) {
+  const unique = [...new Set((Array.isArray(sources) ? sources : []).map(src => String(src || '').trim()).filter(Boolean))];
+  const items = new Map();
+  const failures = [];
+  const total = unique.length;
+  let cursor = 0;
+  let done = 0;
+
+  if (!total) return { items, failures };
+
+  const worker = async () => {
+    for (;;) {
+      const index = cursor;
+      cursor += 1;
+      if (index >= unique.length) return;
+      const src = unique[index];
+      try {
+        items.set(src, await importImageSource(src));
+      } catch (error) {
+        failures.push({ src, reason: String(error?.message || error) });
+      }
+      done += 1;
+      try { onProgress?.({ done, total, src }); } catch (error) { /* 进度回调自己的错不该中断导入 */ }
+    }
+  };
+
+  await Promise.all(Array.from({ length: Math.min(Math.max(1, concurrency), total) }, worker));
+  return { items, failures };
+}
+
