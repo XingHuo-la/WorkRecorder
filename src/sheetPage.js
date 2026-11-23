@@ -1094,10 +1094,11 @@ function openAttachmentEditor(cellEl, field, row) {
 // 简化版浮层：不依赖 sheetPanels 的 anchor 逻辑（锚点是单元格，带滚动偏移）
 // 导出给宿主用（视图页签的 ⋯ 菜单）：全局只有一套浮层状态，
 // 各自再造一个会互相压不住、关不掉。
-export function openPopoverSimple(anchorEl, html) {
+// panelClass 默认沿用附件面板那套宽度；小菜单传 'sh-attmenu' 就只吃 .sh-pop 的基础样式。
+export function openPopoverSimple(anchorEl, html, panelClass = 'sh-imgpanel') {
   closeAllPanels();
   const el = document.createElement('div');
-  el.className = 'sh-pop sh-imgpanel';
+  el.className = panelClass ? `sh-pop ${panelClass}` : 'sh-pop';
   el.innerHTML = html;
   document.body.appendChild(el);
 
@@ -1597,32 +1598,101 @@ async function applyPastedContent(field, row, cellEl, { files = [], text = '' })
 // 剪贴板内容的读取统一走 attachmentOps.filesFromDataTransfer（经 clipboardImport 的快照），
 // 本文件不再自带一份 —— 两份实现漂移过：截图粘贴在其中一份里读不到 items。
 
+// 读剪贴板（异步 API）。WebView 里可能没有权限、也可能压根不支持 ——
+// 这里只负责「读到了什么」，降级提示交给调用方，两条路径不要各写一份。
+async function readClipboardContent() {
+  const files = [];
+  let text = '';
+  if (navigator.clipboard?.read) {
+    const items = await navigator.clipboard.read();
+    for (const item of items) {
+      const imageType = item.types.find(type => type.startsWith('image/'));
+      if (imageType) {
+        const blob = await item.getType(imageType);
+        files.push(new File([blob], `粘贴的图片-${Date.now()}.png`, { type: imageType }));
+        continue;
+      }
+      if (item.types.includes('text/plain')) {
+        text = await (await item.getType('text/plain')).text();
+      }
+    }
+  }
+  if (!files.length && !text) text = (await navigator.clipboard?.readText?.()) || '';
+  return { files, text };
+}
+
 // 菜单里点「粘贴（覆盖）」：走异步剪贴板 API，拿不到就提示用 Ctrl+V
 async function pasteFromClipboard(field, row, cellEl) {
   try {
-    const files = [];
-    let text = '';
-    if (navigator.clipboard?.read) {
-      const items = await navigator.clipboard.read();
-      for (const item of items) {
-        const imageType = item.types.find(type => type.startsWith('image/'));
-        if (imageType) {
-          const blob = await item.getType(imageType);
-          files.push(new File([blob], `粘贴的图片-${Date.now()}.png`, { type: imageType }));
-          continue;
-        }
-        if (item.types.includes('text/plain')) {
-          text = await (await item.getType('text/plain')).text();
-        }
-      }
-    }
-    if (!files.length && !text) text = (await navigator.clipboard?.readText?.()) || '';
+    const { files, text } = await readClipboardContent();
     if (!files.length && !text) { toast('剪贴板里没有可粘贴的内容', 'info'); return false; }
     return applyPastedContent(field, row, cellEl, { files, text });
   } catch (error) {
     toast('无法读取剪贴板，请选中单元格后按 Ctrl+V', 'info');
     return false;
   }
+}
+
+// 附件格「＋」→「从剪贴板粘贴」：追加语义（和加号的本意一致，不清空已有附件）。
+// 与 pasteFromClipboard 的区别只在落库方式：那边是「覆盖一格」。
+async function appendFromClipboard(field, row, cellEl) {
+  let content;
+  try {
+    content = await readClipboardContent();
+  } catch (error) {
+    toast('读不到剪贴板，选中这一格后按 Ctrl+V 也能粘', 'info');
+    return;
+  }
+  const images = content.files.filter(file => file?.type?.startsWith('image/'));
+  if (!images.length) {
+    toast('剪贴板里没有图片', 'info');
+    return;
+  }
+  const added = [];
+  try {
+    for (const file of images) {
+      // 顺序落盘：并发写同一个目录时文件名会撞
+      added.push(await storeImageFile(file));
+    }
+  } catch (error) {
+    toast(`图片保存失败：${error?.message || error}`, 'danger');
+    return;
+  }
+  const base = Array.isArray(row.values[field.key]) ? [...row.values[field.key]] : [];
+  await commitCell(field, row, cellEl, [...base, ...added]);
+  clearSelection();
+  renderSheet();
+  toast(`已添加 ${added.length} 张图片`);
+}
+
+// 附件格右下角「＋」的入口菜单：先选来源，再动手。
+// 以前这里直接弹系统文件框 —— 可截图已经在剪贴板里，多走一趟「存成文件再选」
+// 完全是白费功夫，而 Ctrl+V 其实一直能用，只是没人知道要点哪儿。
+async function openAttachmentAddMenu(anchorEl, field, row, cellEl) {
+  // 点开菜单即视为选中这一格：不论走哪条路，落点都和 Ctrl+V 一致
+  if (cellEl && !cellEl.classList.contains('is-active')) selectFromCell(cellEl);
+
+  const menu = openPopoverSimple(anchorEl, `
+    <button type="button" class="sh-attmenu-item" data-act="clipboard">
+      <svg class="wr-icon" aria-hidden="true"><use href="#ic-copy"/></svg>
+      <span class="sh-attmenu-label">从剪贴板粘贴</span>
+      <kbd class="sh-attmenu-kbd">Ctrl V</kbd>
+    </button>
+    <button type="button" class="sh-attmenu-item" data-act="file">
+      <svg class="wr-icon" aria-hidden="true"><use href="#ic-type-attachment"/></svg>
+      <span class="sh-attmenu-label">选择文件…</span>
+      <span class="sh-attmenu-kbd"></span>
+    </button>`, 'sh-attmenu');
+
+  menu.addEventListener('click', async event => {
+    const act = event.target.closest('[data-act]')?.dataset.act;
+    if (!act) return;
+    // 先收菜单：读剪贴板可能是异步的，菜单挂在屏幕上会挡住结果
+    closeAllPanels();
+    if (act === 'file') { appendAttachments(field, row, cellEl); return; }
+    await appendFromClipboard(field, row, cellEl);
+  });
+  return menu;
 }
 
 /** Excel 粘进来的都是纯文本，按字段类型收一下，别把 "1,234" 直接塞进数字列 */
@@ -2981,8 +3051,9 @@ function onHostDblClick(event) {
     if (field.type === 'attachment') {
       const items = Array.isArray(row.values[field.key]) ? row.values[field.key].filter(item => item && item.path) : [];
       if (!items.length) {
-        // 空附件格：双击直接弹系统选择框（图片嵌入、其他存链接）
-        appendAttachments(field, row, cell);
+        // 空附件格：双击也先问来源 —— 和右下角「＋」用同一套，
+        // 否则同一个「加附件」动作，一个入口问、一个入口不问。
+        openAttachmentAddMenu(cell, field, row, cell);
         return;
       }
       const imgs = [...cell.querySelectorAll('img.ft-att-thumb')];
@@ -3107,13 +3178,13 @@ function onHostClick(event) {
     return;
   }
 
-  // 附件格右下角的「＋」：追加图片或链接文件（不清空已有内容）
+  // 附件格右下角的「＋」：先选来源（剪贴板 / 文件），再落进这一格
   const addAtt = event.target.closest('.ft-att-add');
   if (addAtt) {
     const cellEl = addAtt.closest('.sh-cell');
     const field = cellEl && state.fields.find(item => item.key === cellEl.dataset.key);
     const row = cellEl && state.rows.find(item => String(item.id) === String(cellEl.dataset.row));
-    if (field && row) appendAttachments(field, row, cellEl);
+    if (field && row) openAttachmentAddMenu(addAtt, field, row, cellEl);
     return;
   }
 

@@ -2538,3 +2538,62 @@ body[data-skin="v4"] .sh-preview .ft-pill-group {
   gap: 4px !important;
   row-gap: 3px !important;
 }
+
+/* ==================================================================
+   附件格「＋」的来源菜单
+   ------------------------------------------------------------------
+   加号以前直接弹系统文件框。可截图本来就在剪贴板里，为了插一张图得先
+   存成文件再翻目录找回来 —— 白绕一圈。现在先问来源，两项等宽平铺。
+
+   只管尺寸与排布：底色/描边/阴影/进出动画都在 .sh-pop 上（styles.css:11334），
+   这里通过 openPopoverSimple(anchor, html, 'sh-attmenu') 换掉 .sh-imgpanel 的 292px 宽。
+   ================================================================== */
+body[data-skin="v4"] .sh-attmenu {
+  min-width: 208px !important;
+  padding: 5px !important;
+}
+
+body[data-skin="v4"] .sh-attmenu-item {
+  display: flex !important;
+  align-items: center !important;
+  gap: 9px !important;
+  width: 100% !important;
+  height: 32px !important;
+  padding: 0 8px !important;
+  border: 0 !important;
+  border-radius: 6px !important;
+  background: transparent !important;
+  color: var(--v4-text) !important;
+  font-family: var(--v4-sans) !important;
+  font-size: 12.5px !important;
+  line-height: 1 !important;
+  text-align: left !important;
+  cursor: pointer !important;
+}
+
+body[data-skin="v4"] .sh-attmenu-item:hover,
+body[data-skin="v4"] .sh-attmenu-item:focus-visible {
+  background: var(--v4-surface-2) !important;
+  outline: none !important;
+}
+
+body[data-skin="v4"] .sh-attmenu-item .wr-icon {
+  flex: none !important;
+  width: 14px !important;
+  height: 14px !important;
+  color: var(--v4-text-3) !important;
+}
+
+body[data-skin="v4"] .sh-attmenu-label {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+}
+
+/* 右侧快捷键提示：只是「告诉你还有这条路」，不是真按钮，别做成 chip */
+body[data-skin="v4"] .sh-attmenu-kbd {
+  flex: none !important;
+  color: var(--v4-text-3) !important;
+  font-family: var(--v4-sans) !important;
+  font-size: 11px !important;
+  letter-spacing: .02em !important;
+}

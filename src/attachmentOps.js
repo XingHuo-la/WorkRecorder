@@ -60,11 +60,23 @@ export function fileToDataUrl(file) {
 }
 
 // 读图片原始尺寸：行高按比例算，光有路径不够。
+// 必须有超时兜底 —— onload/onerror 不是必达的（坏图、被中断的 data URL、
+// 极端情况下的解码失败都会让它悬着），而调用方是 await 的：
+// 一旦悬住，「添加附件」就永久卡在无反馈的状态，连失败提示都出不来。
+// 尺寸只影响行高，拿不到就当 0，绝不能拖住落盘。
 export function imageDims(src) {
   return new Promise(resolve => {
     const img = new Image();
-    img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight });
-    img.onerror = () => resolve({});
+    let settled = false;
+    const finish = dims => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(dims);
+    };
+    const timer = setTimeout(() => finish({}), 2500);
+    img.onload = () => finish({ w: img.naturalWidth, h: img.naturalHeight });
+    img.onerror = () => finish({});
     img.src = src;
   });
 }

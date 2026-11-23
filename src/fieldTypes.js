@@ -270,8 +270,8 @@ function renderAttachmentCell(value, ctx) {
   // 两类附件：图片（嵌入到数据目录，可缩略预览）与普通文件（只存路径链接）
   const images = items.filter(item => item.kind !== 'file');
   const files = items.filter(item => item.kind === 'file');
-  // 有内容的附件格右下角给一个「＋」：点它追加图片/文件（空格的添加走双击）
-  const addBtn = '<span class="ft-att-add" data-add-att="1" title="追加图片或文件">＋</span>';
+  // 有内容的附件格右下角给一个「＋」：点它选来源（剪贴板 / 文件），空格双击也能加
+  const addBtn = '<span class="ft-att-add" data-add-att="1" title="添加附件（剪贴板或文件）">＋</span>';
   return `${images.length ? renderImagePart(images) : ''}${files.length ? renderFilePart(files, images.length > 0) : ''}${addBtn}`;
 }
 
