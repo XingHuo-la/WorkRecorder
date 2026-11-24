@@ -736,7 +736,9 @@ function openSelectPanel(cellEl, field, value, actions, { multiple = false } = {
   const renderList = () => {
     const filtered = options.filter(item => !keyword || String(item.label).toLowerCase().includes(keyword));
     if (!filtered.length) {
-      listEl.innerHTML = '<div class="ft-dropdown-empty">没有匹配的选项</div>';
+      listEl.innerHTML = options.length
+        ? '<div class="ft-dropdown-empty">没有匹配的选项</div>'
+        : '<div class="ft-dropdown-empty">这一列还没有选项 —— 输入内容后回车即可新建</div>';
     } else {
       listEl.innerHTML = filtered.map(item => {
         const active = multiple ? selectedValues.includes(String(item.value)) : String(item.value) === singleValue;
@@ -832,6 +834,17 @@ function openSelectPanel(cellEl, field, value, actions, { multiple = false } = {
   document.addEventListener('keydown', onKey, true);
   // 窗口拉大/缩小后，单元格的视口坐标就变了，面板得跟着贴回去
   window.addEventListener('resize', placePanel);
+
+  // 这一列一个选项都没有、这一格却有值：把当前值填进搜索框，
+  // 「＋ 新建「主设备诊断」」立刻就在眼前，回车即成。
+  // 不这么做的话，用户看到的是一个空空的下拉 + 「没有匹配的选项」，
+  // 明明格子里就写着字，却像是「这一列坏了」。
+  const currentText = multiple ? '' : String(value ?? '').trim();
+  if (!options.length && currentText && searchInput) {
+    keyword = currentText.toLowerCase();
+    searchInput.value = currentText;
+    searchInput.select();
+  }
 
   renderList();
   searchInput?.focus();

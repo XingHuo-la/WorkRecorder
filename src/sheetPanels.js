@@ -681,8 +681,10 @@ export function openFieldPanel({ field = null, sheetName, tables = [], selfTable
   // 以前这里在「选项为空」时凭空塞两个「选项 A / 选项 B」。那是最糟的一种默认：
   // 用户以为自己的值丢了（面板里一个都不认识），而一旦点保存，这两个假选项就被写进库，
   // 把一列真实数据变成「全是未知值」。现在改成：**空选项就从这一列的真实值里长出来**。
+  let seeded = false;
   if (!state.options.length && (state.type === 'select' || state.type === 'multi_select') && stats.length) {
     state.options = optionsFromValues(stats.map(item => item.value), [], COLOR_SWATCHES);
+    seeded = true;
   }
   // 一张表都读不到（调试壳 / 刚删完）：选择器会是个空下拉，保存必然指向 0。
   // 不给「保存」留一条造脏数据的路。
@@ -693,7 +695,7 @@ export function openFieldPanel({ field = null, sheetName, tables = [], selfTable
 
   const drawer = openDrawer({
     title: isEdit ? '编辑字段' : '新建字段',
-    subtitle: sheetName ? `${sheetName} · ${isEdit ? '修改会立即生效' : '字段类型决定单元格怎么填'}` : '',
+    subtitle: sheetName ? `${sheetName} · ${isEdit ? '改完点「保存字段」生效' : '字段类型决定单元格怎么填'}` : '',
     width: 404,
     body: '<div class="sh-fieldpanel"></div>',
     footer: `
@@ -805,7 +807,12 @@ export function openFieldPanel({ field = null, sheetName, tables = [], selfTable
                  )
                  .join('')}
              </div>
-             <button type="button" class="sh-add-option" data-add-option>＋ 添加选项</button>`;
+             <button type="button" class="sh-add-option" data-add-option>＋ 添加选项</button>
+             ${
+               seeded
+                 ? `<div class="sh-hint is-pending">这 ${state.options.length} 个选项是从这一列已有的值补出来的 —— 点「保存字段」后才生效，格子上的红角标那时才消失。</div>`
+                 : ''
+             }`;
             })()
           : ''
       }

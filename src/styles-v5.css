@@ -3364,7 +3364,9 @@ body[data-skin="v4"] .ft-mismatch > .ft-bad {
   font-weight: 800 !important;
   line-height: 11px !important;
   text-align: center !important;
-  pointer-events: none !important;
+  /* 能点：点它就是「把这个值加为选项」（sheetPage 的 openMismatchFix） */
+  pointer-events: auto !important;
+  cursor: pointer !important;
   z-index: 1 !important;
 }
 

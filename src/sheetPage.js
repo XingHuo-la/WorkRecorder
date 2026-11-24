@@ -2402,22 +2402,66 @@ function maybeAdoptPastedOptions(changes) {
   panel.querySelector('[data-adopt-no]')?.addEventListener('click', () => closeFloats());
   panel.querySelector('[data-adopt-yes]')?.addEventListener('click', async () => {
     closeFloats();
-    let changed = 0;
-    for (const entry of entries) {
-      const field = entry.field;
-      const next = optionsFromValues([...entry.values], fieldOptionsList(field));
-      try {
-        await patchField(field.id, { options: mergeFieldOptions(field, { source: 'custom', options: next }) });
-        field.options = mergeFieldOptions(field, { source: 'custom', options: next });
-        changed += entry.values.size;
-      } catch (error) {
-        toast(`加为选项失败：${error?.message || error}`, 'danger');
-      }
-    }
-    if (changed) {
-      renderSheet();
-      toast(`已加为选项 ${changed} 个`, 'success');
-    }
+    for (const entry of entries) await adoptValuesIntoField(entry.field, [...entry.values]);
+  });
+}
+
+/**
+ * 把若干个值补成这条字段的选项（立即写库并重画）。
+ * 粘贴浮层、红角标、字段面板三条路共用这一份，免得「在哪儿加」行为不一样。
+ * @returns {Promise<number>} 真加进去几个
+ */
+async function adoptValuesIntoField(field, values) {
+  if (!field || !Array.isArray(values) || !values.length) return 0;
+  const next = optionsFromValues(values, fieldOptionsList(field));
+  const before = fieldOptionsList(field).length;
+  if (next.length === before) return 0; // 全都有同名选项了，不用写库
+  const optionsJson = mergeFieldOptions(field, { source: 'custom', options: next });
+  try {
+    await patchField(field.id, { options: optionsJson });
+  } catch (error) {
+    toast(`加为选项失败：${error?.message || error}`, 'danger');
+    return 0;
+  }
+  // 就地更新内存里的字段，再整表重绘：红角标是按选项现算的，选项一变就没了
+  field.options = optionsJson;
+  const added = next.length - before;
+  renderSheet();
+  toast(`已加为选项 ${added} 个`, 'success');
+  return added;
+}
+
+/**
+ * 点单元格左上角那个红角标 = 把这个值加为选项。
+ *
+ * 之前角标只是个「说明」，用户看到红点却不知道下一步做什么 ——
+ * 而补选项的入口在「字段」面板里，隔着三层。这里直接给一条一厘米的路。
+ */
+function openMismatchFix(cellEl) {
+  const row = state.rows.find(item => String(item.id) === String(cellEl?.dataset.row));
+  const field = state.fields.find(item => item.key === cellEl?.dataset.key);
+  if (!row || !field) return;
+  const bad = unmatchedTokens(field, row.values[field.key], fieldOptionsList(field));
+  if (!bad.length) return;
+  const preview = bad.slice(0, 3).map(value => `「${escapeHtml(value)}」`).join(' ');
+  const more = bad.length > 3 ? ` 等 ${bad.length} 个` : '';
+  const panel = openPopoverSimple(
+    cellEl,
+    `<div class="sh-adopt">
+       <div class="sh-adopt-h">加到「${escapeHtml(field.label)}」的选项里？</div>
+       <div class="sh-adopt-b">${preview}${more}</div>
+       <div class="sh-adopt-actions">
+         <button type="button" class="sh-btn is-primary" data-adopt-yes>加为选项</button>
+         <button type="button" class="sh-btn" data-adopt-no>先不管</button>
+       </div>
+       <div class="sh-adopt-hint">加完之后这一列的下拉里就能选到它了。</div>
+     </div>`,
+    'sh-adopt-pop'
+  );
+  panel.querySelector('[data-adopt-no]')?.addEventListener('click', () => closeFloats());
+  panel.querySelector('[data-adopt-yes]')?.addEventListener('click', async () => {
+    closeFloats();
+    await adoptValuesIntoField(field, bad);
   });
 }
 
@@ -3940,6 +3984,15 @@ function onHostMouseDown(event) {
 
 function onHostClick(event) {
   if (suppressClick) { suppressClick = false; return; }
+
+  // 红角标（值不在选项里）：点它就是「把这个值加为选项」。
+  // 必须排在「点单元格 = 开始编辑」之前 —— 否则点角标只是弹出一个还没有选项的下拉，
+  // 用户看到红点、点了、还是什么都没有。
+  const badEl = event.target.closest('.ft-bad');
+  if (badEl) {
+    const cellEl = badEl.closest('.sh-cell');
+    if (cellEl) { openMismatchFix(cellEl); return; }
+  }
 
   const soon = event.target.closest('[data-soon]');
   if (soon) { toast(soon.dataset.soon, 'info'); return; }
