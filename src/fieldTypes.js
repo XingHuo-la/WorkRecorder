@@ -8,13 +8,16 @@
 // 复用；数据读写全部走调用方注入的 actions，模块自身不触碰 Tauri / 数据库。
 
 import { escapeHtml } from './htmlUtils.js';
+import { placeDropdown } from './dropdownPlace.js';
+import { renderRelationCell, openRelationPicker, relationConfig } from './relationField.js';
 
 // ==========================================
 // 常量与工具
 // ==========================================
 
 // 类型展示顺序（列头菜单的「字段类型」面板按此排列，对齐设计稿③）
-export const FIELD_TYPE_ORDER = ['text', 'number', 'select', 'multi_select', 'date', 'checkbox', 'attachment'];
+// relation 放最后：它是「指向别的表」的列，与前面那些「本表内的值」不是一类。
+export const FIELD_TYPE_ORDER = ['text', 'number', 'select', 'multi_select', 'date', 'checkbox', 'attachment', 'relation'];
 
 export const FIELD_TYPE_LABELS = {
   text: '文本',
@@ -24,6 +27,7 @@ export const FIELD_TYPE_LABELS = {
   date: '日期',
   checkbox: '复选框',
   attachment: '图片 / 附件',
+  relation: '关联记录',
 };
 
 const TYPE_ICON_IDS = {
@@ -34,6 +38,7 @@ const TYPE_ICON_IDS = {
   date: 'ic-type-date',
   checkbox: 'ic-type-checkbox',
   attachment: 'ic-type-attachment',
+  relation: 'ic-connector',
 };
 
 // 选项没有存储自定义色（第一版），按文本 hash 取稳定色：
@@ -364,6 +369,8 @@ export function renderCell(field, value, ctx = {}) {
     case 'date': return renderDateCell(value, ctx);
     case 'checkbox': return renderCheckboxCell(value, ctx);
     case 'attachment': return renderAttachmentCell(value, ctx);
+    // 关联的文案来自别的表，渲染层不查库：宿主把「被引 id → 标题」查好塞进 ctx
+    case 'relation': return renderRelationCell(value, ctx);
     case 'text':
     default: return renderTextCell(value, ctx);
   }
@@ -664,35 +671,9 @@ function openSelectPanel(cellEl, field, value, actions, { multiple = false } = {
   const createBtn = panel.querySelector('.ft-dropdown-create');
 
   // 定位：先量真实高度，再决定朝下还是朝上。
-  // 以前是「96 + 选项数 × 32」估的 —— 估得比实际高就无缘无故上翻：
-  // 选项被搜索过滤掉一半、标签很短、下面明明还有一整屏空间，它也会翻到单元格上方。
-  // 现在按 offsetHeight 量（.ft-dropdown-list 自带 max-height，超出的内部滚动，量出来就是最终高度）。
-  panel.style.top = '0px';
-  panel.style.visibility = 'hidden';
-
-  function placePanel() {
-    const GAP = 4;   // 与单元格留 4px，鼠标不用横跳
-    const PAD = 8;   // 离窗口边缘至少 8px
-    const anchor = cellEl.getBoundingClientRect();  // 每次现取：面板开着时窗口可能被拉大
-    const panelWidth = Math.min(Math.max(anchor.width, 200), window.innerWidth - 16);
-    panel.style.width = `${panelWidth}px`;
-    panel.style.left = `${Math.max(PAD, Math.min(anchor.left, window.innerWidth - panelWidth - PAD))}px`;
-    const below = window.innerHeight - PAD - (anchor.bottom + GAP);
-    const above = anchor.top - GAP - PAD;
-    // 量之前先放开限高，否则上一次算出的 maxHeight 会把这次的结果算小
-    panel.style.maxHeight = '';
-    const natural = panel.offsetHeight;
-    // 下面放得下就永远朝下；只有下面真放不下、上面更宽裕时才上翻
-    const openUp = natural > below && above > below;
-    const room = Math.max(120, openUp ? above : below);
-    if (natural > room) panel.style.maxHeight = `${room}px`;
-    const height = Math.min(natural, room);
-    const top = openUp
-      ? Math.max(PAD, anchor.top - GAP - height)
-      : Math.min(anchor.bottom + GAP, window.innerHeight - PAD - height);
-    panel.style.top = `${Math.round(top)}px`;
-    panel.style.visibility = '';
-  }
+  // 规则与记录选择器（relationField）共用一份 —— dropdownPlace.js。
+  // 以前这里是「96 + 选项数 × 32」估的，估得比实际高就无缘无故上翻。
+  const placePanel = () => placeDropdown(panel, cellEl, { minWidth: 200 });
 
   let selectedValues = multiple ? normalizeMulti(value) : [];
   let singleValue = multiple ? '' : String(value ?? '');
@@ -856,6 +837,7 @@ export function openCellEditor(cellEl, field, value, actions) {
     case 'date': openDateEditor(cellEl, field, value, actions); break;
     case 'checkbox': openCheckboxEditor(cellEl, field, value, actions); break;
     case 'attachment': openAttachmentEditor(cellEl, field, value, actions); break;
+    case 'relation': openRelationPicker(cellEl, field, value, actions); break;
     case 'text':
     default: openTextEditor(cellEl, field, value, actions); break;
   }

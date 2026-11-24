@@ -28,6 +28,15 @@ function optionOf(field, value) {
   return fieldOptionsList(field).find(item => String(item.value) === String(value)) || null;
 }
 
+// 关联列的标题表：由宿主（main.js 的 loadViewData）在每张表加载后灌进来。
+// 为什么不逐层往下传：卡片 / 列表 / 抽屉三条渲染路径都要它，而它是「整张表一次查好」
+// 的东西，不是单条记录的参数 —— 一路传参会把每个中间函数都染上一个可选参数。
+let relationTitles = new Map();
+
+export function setViewRelationTitles(map) {
+  relationTitles = map instanceof Map ? map : new Map();
+}
+
 // 视图里所有「值 → 可读文本」都走这里。
 // 单选要显示 label 而不是 value（'doing' → '进行中'），不然卡片上全是英文键名。
 function displayOf(field, value) {
@@ -46,6 +55,13 @@ function displayOf(field, value) {
     case 'attachment': {
       const list = Array.isArray(value) ? value : [];
       return list.length ? `${list.length} 个附件` : '';
+    }
+    case 'relation': {
+      const ids = Array.isArray(value) ? value : [value];
+      return ids
+        .map(id => relationTitles.get(String(id))?.title || `#${id}`)
+        .filter(Boolean)
+        .join('、');
     }
     case 'date':
       return String(value).slice(0, 10);
@@ -159,7 +175,7 @@ function editCellInDrawer(field, cellEl, row, ctx) {
     cellEl.classList.remove('ft-cell-editing');
     // 抽屉里的值标签要和表格同色（solidPill），否则「改完就变回灰字」，
     // 看起来像没保存成功。
-    cellEl.innerHTML = renderCell(field, value, { placeholder: '点击填写', solidPill: true });
+    cellEl.innerHTML = renderCell(field, value, { placeholder: '点击填写', solidPill: true, relationTitles });
     ctx.onChanged?.();
   };
 
@@ -210,7 +226,7 @@ function openCard(row, ctx) {
         await ctx.saveRow(row, values);
         row.values = values;
         cellEl.classList.remove('ft-cell-editing');
-        cellEl.innerHTML = renderCell(field, next, { placeholder: '点击添加附件', solidPill: true });
+        cellEl.innerHTML = renderCell(field, next, { placeholder: '点击添加附件', solidPill: true, relationTitles });
         ctx.onChanged?.();
       };
       openAttachmentSourceMenu(anchorEl, {

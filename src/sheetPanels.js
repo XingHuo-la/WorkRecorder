@@ -646,7 +646,7 @@ export function openCellFormatPanel(anchor, { field, columnFormat = {}, cellForm
 
 const COLOR_SWATCHES = ['#60a5fa', '#2fbf71', '#f5a524', '#e5484d', '#a78bfa', '#22d3ee', '#f472b6', '#94a3b8'];
 
-export function openFieldPanel({ field = null, sheetName, onSave, onDelete, onClose }) {
+export function openFieldPanel({ field = null, sheetName, tables = [], selfTableId = null, onSave, onDelete, onClose }) {
   const isEdit = Boolean(field);
   const config = (() => {
     try {
@@ -663,12 +663,22 @@ export function openFieldPanel({ field = null, sheetName, onSave, onDelete, onCl
     wrap: config.wrap === true,
     dateOnly: config.dateOnly === true,
     options: Array.isArray(config.options) ? config.options.map(item => ({ ...item })) : [],
+    // 关联字段：指向哪张表 + 单选/多选。默认指向「当前这张表」——
+    // 最常见的是「这条任务的父任务」「同一批里的上一条」，指自己那张表。
+    targetSheetId: Number(config.targetSheetId) > 0 ? Number(config.targetSheetId) : Number(selfTableId) || 0,
+    multiple: config.multiple === true,
   };
   if (!state.options.length && (state.type === 'select' || state.type === 'multi_select')) {
     state.options = [
       { value: 'a', label: '选项 A', color: COLOR_SWATCHES[0] },
       { value: 'b', label: '选项 B', color: COLOR_SWATCHES[1] },
     ];
+  }
+  // 一张表都读不到（调试壳 / 刚删完）：选择器会是个空下拉，保存必然指向 0。
+  // 不给「保存」留一条造脏数据的路。
+  const tableChoices = (Array.isArray(tables) ? tables : []).filter(item => item && item.id != null);
+  if (state.type === 'relation' && !state.targetSheetId && tableChoices.length) {
+    state.targetSheetId = Number(tableChoices[0].id);
   }
 
   const drawer = openDrawer({
@@ -725,6 +735,29 @@ export function openFieldPanel({ field = null, sheetName, onSave, onDelete, onCl
       }
 
       ${
+        state.type === 'relation'
+          ? `<div class="sh-label sh-label-gap">关联到哪张表</div>
+             ${
+               tableChoices.length
+                 ? `<select class="sh-select" data-target-table>
+                      ${tableChoices
+                        .map(
+                          table => `<option value="${escapeHtml(table.id)}" ${Number(table.id) === state.targetSheetId ? 'selected' : ''}>${escapeHtml(String(table.name ?? '').trim() || `表 #${table.id}`)}</option>`
+                        )
+                        .join('')}
+                    </select>`
+                 : '<div class="sh-hint is-warn">还没有可关联的表。先新建一张表，再回来配这一列。</div>'
+             }
+             <div class="sh-label sh-label-gap">能选几条</div>
+             <div class="sh-seg" data-seg="rel-multiple">
+               <button type="button" class="sh-seg-item${state.multiple ? '' : ' is-on'}" data-rel-multiple="0">一条</button>
+               <button type="button" class="sh-seg-item${state.multiple ? ' is-on' : ''}" data-rel-multiple="1">多条</button>
+             </div>
+             <div class="sh-hint">单元格里显示对方那一行的标题。对方被删掉时留一个灰色的「已删除」，不静默消失。</div>`
+          : ''
+      }
+
+      ${
         needsOptions()
           ? `<div class="sh-label sh-label-gap">选项 <span class="sh-label-hint">颜色决定单元格标签配色</span></div>
              <div class="sh-options" data-options>
@@ -750,14 +783,20 @@ export function openFieldPanel({ field = null, sheetName, onSave, onDelete, onCl
     ;
 
     const previewCell = host.querySelector('[data-preview]');
-    previewCell.innerHTML = renderCell(previewField(), sampleValue(), { placeholder: '（空）', solidPill: true });
+    previewCell.innerHTML = renderCell(previewField(), sampleValue(), previewCtx());
   };
 
   // 预览要有东西可看：日期给个样例、数字给 42，不然永远是「（空）」
   const previewField = () => ({
     key: 'preview',
     type: state.type,
-    options: JSON.stringify({ source: 'custom', options: state.options, dateOnly: state.dateOnly }),
+    options: JSON.stringify({
+      source: 'custom',
+      options: state.options,
+      dateOnly: state.dateOnly,
+      targetSheetId: state.targetSheetId,
+      multiple: state.multiple,
+    }),
   });
 
   const sampleValue = () => {
@@ -768,14 +807,25 @@ export function openFieldPanel({ field = null, sheetName, onSave, onDelete, onCl
       case 'select':
       case 'multi_select': return state.options[0]?.value ?? '';
       case 'attachment': return [];
+      // 关联的预览不查库：给两个假 id + 假标题，让用户看清「标题 + 胶囊」长什么样
+      case 'relation': return state.multiple ? [1, 2] : [1];
       default: return '示例文本';
     }
   };
 
+  const previewCtx = () => ({
+    placeholder: '（空）',
+    solidPill: true,
+    relationTitles: new Map([
+      ['1', { title: '示例记录', deleted: false }],
+      ['2', { title: '另一条记录', deleted: false }],
+    ]),
+  });
+
   const repaintPreview = () => {
     const previewCell = host.querySelector('[data-preview]');
     if (!previewCell) return;
-    previewCell.innerHTML = renderCell(previewField(), sampleValue(), { placeholder: '（空）', solidPill: true });
+    previewCell.innerHTML = renderCell(previewField(), sampleValue(), previewCtx());
   };
 
   paint();
@@ -806,10 +856,24 @@ export function openFieldPanel({ field = null, sheetName, onSave, onDelete, onCl
     }
   });
 
+  host.addEventListener('change', event => {
+    const tableSelect = event.target.closest('[data-target-table]');
+    if (tableSelect) {
+      state.targetSheetId = Number(tableSelect.value) || 0;
+      repaintPreview();
+    }
+  });
+
   host.addEventListener('click', event => {
     const wrapBtn = event.target.closest('[data-wrap]');
     if (wrapBtn) {
       state.wrap = wrapBtn.dataset.wrap === '1';
+      paint();
+      return;
+    }
+    const relMultiBtn = event.target.closest('[data-rel-multiple]');
+    if (relMultiBtn) {
+      state.multiple = relMultiBtn.dataset.relMultiple === '1';
       paint();
       return;
     }
@@ -858,6 +922,12 @@ export function openFieldPanel({ field = null, sheetName, onSave, onDelete, onCl
       host.querySelector('[data-name]')?.focus();
       return;
     }
+    // 关联列没有目标表就是一条「指向空表」的列：能建出来、能点开，但永远选不到东西。
+    // 这种半成品比报错更难理解，所以卡在保存这一步。
+    if (state.type === 'relation' && !state.targetSheetId) {
+      if (!tableChoices.length) return;
+      state.targetSheetId = Number(tableChoices[0].id);
+    }
     if (needsOptions()) {
       state.options = state.options
         .map((option, index) => ({
@@ -873,6 +943,9 @@ export function openFieldPanel({ field = null, sheetName, onSave, onDelete, onCl
       options: needsOptions() ? state.options : [],
       wrap: state.type === 'text' ? state.wrap : false,
       dateOnly: state.type === 'date' ? state.dateOnly : false,
+      // 只有关联类型才带这两个；其余类型传 null，由 mergeFieldOptions 删掉旧配置
+      targetSheetId: state.type === 'relation' ? state.targetSheetId : null,
+      multiple: state.type === 'relation' ? state.multiple : null,
     });
     closeAllPanels();
   });

@@ -24,10 +24,13 @@ import {
   saveTableRow,
   insertTableRow,
   getDefaultTableId,
+  listRecordBriefs,
   VIEW_FORMS,
   viewFormLabel,
 } from './sheetStore.js';
-import { renderView } from './viewPage.js';
+// 关联列在卡片/列表上也要显示「对方标题」，不能是 #12 —— 与表格用同一套归一
+import { normalizeRelationIds } from './relationField.js';
+import { renderView, setViewRelationTitles } from './viewPage.js';
 import { setSheetAdapter } from './sheetStore.js';
 import { setTableAdapter, initTablePage, setTableFilter } from './tablePage.js';
 import { setRecordAdapter } from './recordStore.js';
@@ -832,7 +835,23 @@ function setupRecordsView() {
     if (viewData.tableId === String(table.id)) return viewData;
     const fields = await readTableFields(table);
     const rows = await readTableRows(table);
-    viewData = { tableId: String(table.id), fields, rows };
+    // 关联列的标题：卡片 / 列表 / 抽屉单元格渲染都是同步的，
+    // 所以在这层（唯一知道「这次要用哪些行」的地方）一次性查好。
+    const relationTitles = new Map();
+    const relationFields = fields.filter(field => field.type === 'relation');
+    if (relationFields.length) {
+      const ids = new Set();
+      for (const row of rows) {
+        for (const field of relationFields) {
+          for (const id of normalizeRelationIds(row.values?.[field.key])) ids.add(id);
+        }
+      }
+      if (ids.size) {
+        const briefs = await listRecordBriefs([...ids]).catch(() => new Map());
+        briefs.forEach((value, key) => relationTitles.set(key, value));
+      }
+    }
+    viewData = { tableId: String(table.id), fields, rows, relationTitles };
     return viewData;
   };
 
@@ -870,11 +889,14 @@ function setupRecordsView() {
 
     if (!tableForm) {
       const data = await loadViewData(table);
+      // 卡片 / 列表 / 抽屉里的关联列要显示标题，而不是 #12
+      setViewRelationTitles(data.relationTitles);
       renderView(viewApp, {
         table,
         view,
         fields: data.fields,
         rows: data.rows,
+        relationTitles: data.relationTitles,
         // 写回：预置表落真列、自建表落 custom JSON。这一层只在 sheetStore 里分叉，
         // 视图自己永远不知道 record 长什么样。
         saveRow: (row, values) => saveTableRow(table, row, values),

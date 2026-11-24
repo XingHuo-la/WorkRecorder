@@ -54,10 +54,25 @@ CREATE TABLE record (
 CREATE TABLE sheet (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
+    -- v15 起 sheet 分两类：preset = 预置表（行不挂 sheet_id），table = 自建表。
+    -- 夹具必须与真库一致：deleteRecord 靠这一列判断「这条记录属于哪张表」。
+    kind TEXT DEFAULT 'table',
     task_id INTEGER,
     created_at TEXT,
     updated_at TEXT,
     sort INTEGER DEFAULT 0
+);
+CREATE TABLE field_def (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity TEXT NOT NULL,
+    key TEXT NOT NULL,
+    label TEXT NOT NULL,
+    type TEXT NOT NULL,
+    options TEXT,
+    sort INTEGER DEFAULT 0,
+    visible INTEGER DEFAULT 1,
+    builtin INTEGER DEFAULT 0,
+    UNIQUE(entity, key)
 );
 CREATE TABLE sheet_field (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -243,6 +258,31 @@ console.log('\n[9] searchRecords：标题 LIKE、id 等值（不许 %12% 命中 
 
   // 返回列只用 id/title/kind（不带 body/custom，避免拖大字段）
   eq('返回列固定为 id,title,kind', Object.keys(byId[0]).sort(), ['id', 'kind', 'title']);
+}
+
+console.log('\n[10] deleteRecord：预置表里的关联自引用也要清（T08）');
+{
+  // 预置表 = sheet 里 kind='preset' 的那一行；它的行不挂 sheet_id，全靠 kind='log' 认。
+  db.exec("INSERT INTO sheet (name, kind, sort) VALUES ('主表', 'preset', 3)");
+  const presetId = db.prepare('SELECT MAX(id) AS id FROM sheet').get().id;
+  db.prepare(
+    "INSERT INTO field_def (entity, key, label, type, options, sort, visible, builtin) VALUES ('log', 'f_prev', '上一条', 'relation', ?, 9, 1, 0)"
+  ).run(JSON.stringify({ targetSheetId: presetId }));
+  db.exec("INSERT INTO record (kind, title, custom, deleted_at) VALUES ('log', '夹一', '{}', '')");
+  db.exec("INSERT INTO record (kind, title, custom, deleted_at) VALUES ('log', '夹二', '{}', '')");
+  const a = db.prepare("SELECT id FROM record WHERE title = '夹一'").get().id;
+  const b = db.prepare("SELECT id FROM record WHERE title = '夹二'").get().id;
+  // 夹二 指向 夹一；夹一 也指向 夹一（自引）
+  db.prepare("UPDATE record SET custom = ? WHERE id = ?").run(JSON.stringify({ f_prev: [a] }), String(b));
+  db.prepare("UPDATE record SET custom = ? WHERE id = ?").run(JSON.stringify({ f_prev: [a] }), String(a));
+
+  const result = await deleteRecord(a);
+  // 两行都指向 a（夹二 → 夹一，夹一 → 自己），所以两行都要摘
+  eq('预置表里清掉两处引用', result.clearedRefs, 2);
+  eq('夹二 的关联被摘干净', JSON.parse(db.prepare('SELECT custom FROM record WHERE id = ?').get(String(b)).custom).f_prev, []);
+  // 自己那条也顺手摘掉自引：一条已删除的记录不该留着「指向自己」的悬空 id
+  eq('夹一 的自引被摘掉', JSON.parse(db.prepare('SELECT custom FROM record WHERE id = ?').get(String(a)).custom).f_prev, []);
+  eq('夹一 仍被软删', db.prepare('SELECT kind FROM record WHERE id = ?').get(String(a)).kind, 'log#deleted');
 }
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);

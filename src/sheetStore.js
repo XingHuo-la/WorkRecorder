@@ -16,6 +16,9 @@
 // 不直接碰 window.__TAURI__，这样调试壳可以换成本地假数据。
 
 import { FIELD_TYPE_LABELS } from './fieldTypes.js';
+// 关联字段的值解析只有一份（relationField），别在这里抄第二份：
+// 「单选也存数组」这条如果两处不一致，读回来就会是 [3] 与 3 混着用。
+import { relationConfig, normalizeRelationIds } from './relationField.js';
 
 let adapter = null;
 
@@ -58,6 +61,8 @@ export const FIELD_DEFAULT_WIDTH = {
   date: 132,
   checkbox: 92,
   attachment: 112,
+  // 关联：标题 + 第二个胶囊要放得下，比多选宽一点
+  relation: 200,
 };
 
 export function defaultWidthFor(type) {
@@ -109,6 +114,11 @@ export function serializeOptions(configOrList) {
   const payload = { source: 'custom', options: Array.isArray(config.options) ? config.options : [] };
   if (config.wrap) payload.wrap = true;
   if (config.dateOnly) payload.dateOnly = true;
+  // 关联字段的两个开关：指向哪张表、能不能选多个。
+  // 不加这两行的话，serializeOptions 会把它们当「未知键」丢掉 ——
+  // 表现是「选完目标表、保存后字段变成指向空表」，而且没有任何报错。
+  if (Number(config.targetSheetId) > 0) payload.targetSheetId = Number(config.targetSheetId);
+  if (config.multiple) payload.multiple = true;
   // 列级默认格式（底色/对齐/换行），单元格级覆盖存在行数据里
   if (config.format && typeof config.format === 'object' && Object.keys(config.format).length) {
     payload.format = config.format;
@@ -853,11 +863,12 @@ export async function saveTableRow(table, row, values) {
   // 不写这一步的后果是：字段面板里加得出「关联」列，界面上改得动，
   // 一刷新全部变空 —— 而且零报错，看起来像渲染 bug。
   Object.assign(custom, presetCustomOf(values));
-  // 格式跟值一起存；全清掉时要真的删键，否则「取消格式」刷新后又回来了
-  if (values?.__fmt && typeof values.__fmt === 'object' && Object.keys(values.__fmt).length) {
-    custom.__fmt = values.__fmt;
-  } else {
-    delete custom.__fmt;
+  // 格式跟值一起存；全清掉时要真的删键，否则「取消格式」刷新后又回来了。
+  // 只有调用方**提到过** __fmt 才动它：局部更新（只给了几个字段）不该顺手清格式。
+  if (values && '__fmt' in values) {
+    const fmt = values.__fmt;
+    if (fmt && typeof fmt === 'object' && Object.keys(fmt).length) custom.__fmt = fmt;
+    else delete custom.__fmt;
   }
   await db().dbExecute(
     `UPDATE record SET title = ?, body = ?, tag = ?, sub_tag = ?,
@@ -1178,6 +1189,172 @@ function displayTitleOf(row) {
 export async function setSheetCollapsed(sheetId, ids) {
   const list = Array.from(new Set((ids || []).map(Number).filter(id => Number.isInteger(id) && id > 0)));
   await writeSetting(`sheet_collapsed:${sheetId}`, JSON.stringify(list));
+}
+
+// ==========================================
+// 关联字段（T08）
+//
+// 值住在 record.custom[field.key]，形状永远是 id 数组（单选也存 [3]）。
+// 这里只解决「库里的 id 怎么变成人能读的东西」：
+//   · listRelationTargets —— 选择器里的候选（某张表的所有行）
+//   · listRecordBriefs   —— 单元格里那几个胶囊的标题 / 是否已删
+//   · findBacklinks      —— 抽屉里的「被引用于」
+//
+// 两个都很容易写成「N+1 查询」：一次查 id、再逐条查标题。这里刻意都是 IN 一条 SQL，
+// 因为表格里一次要画几百个单元格，每条一个来回会把界面拖住。
+// ==========================================
+
+/** 预置表的 sheet.id（没有预置表时 null）。关联字段要按表算，预置表也得有 id。 */
+export async function getPresetSheetId() {
+  const rows = await db().dbQuery('SELECT id FROM sheet WHERE kind = ? ORDER BY id LIMIT 1', [TABLE_KIND_PRESET]);
+  return rows?.[0]?.id ?? null;
+}
+
+/** 某张表里的行（关联选择器的候选）。已删除的不出现。 */
+export async function listRelationTargets(tableId) {
+  const table = await loadTable(tableId);
+  if (!table) return [];
+  const isPreset = table.kind === TABLE_KIND_PRESET;
+  // 预置表的行是 kind='log' 且不挂 sheet_id；自建表是 sheet_row + sheet_id。
+  // 两套口径不能混：混了会把「移入某张表的记录」同时算进预置表。
+  const where = isPreset
+    ? "kind = 'log' AND deleted_at = '' AND (sheet_id IS NULL OR sheet_id = 0)"
+    : "kind = 'sheet_row' AND deleted_at = '' AND sheet_id = ?";
+  const rows = await db().dbQuery(
+    `SELECT id, title, custom FROM record WHERE ${where} ORDER BY sort, id`,
+    isPreset ? [] : [table.id]
+  );
+  return (Array.isArray(rows) ? rows : []).map(row => ({ id: Number(row.id), title: displayTitleOf(row) }));
+}
+
+/**
+ * 一批记录 id → 显示名 + 是否已删除。关系胶囊与抽屉里的引用都靠它。
+ * 查不到的 id 也会有一条 `{title:'#id', deleted:true}` —— 渲染层不用再判空。
+ */
+export async function listRecordBriefs(ids) {
+  const list = Array.from(new Set((ids || []).map(Number).filter(n => Number.isInteger(n) && n > 0)));
+  const map = new Map();
+  if (!list.length) return map;
+  const rows = await db().dbQuery(
+    `SELECT id, title, custom, kind, deleted_at FROM record WHERE id IN (${list.map(() => '?').join(',')})`,
+    list
+  );
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const deleted = String(row.deleted_at ?? '').trim() !== '' || String(row.kind ?? '').includes('#deleted');
+    map.set(String(row.id), { title: displayTitleOf(row), deleted });
+  }
+  for (const id of list) {
+    if (!map.has(String(id))) map.set(String(id), { title: `#${id}`, deleted: true });
+  }
+  return map;
+}
+
+/**
+ * 全库的关联字段清单（含它属于哪张表、指向哪张表）。
+ * 「被引用于」和「删行时清引用」都从这里取范围，避免各写一遍 SQL 各漏一张表。
+ */
+export async function listRelationFieldDefs() {
+  const out = [];
+  const presetId = await getPresetSheetId();
+  if (presetId != null) {
+    const presetName = (await db().dbQuery('SELECT name FROM sheet WHERE id = ?', [presetId]))?.[0]?.name || '';
+    const rows = await db().dbQuery(
+      "SELECT key, label, options FROM field_def WHERE entity = 'log' AND type = 'relation' ORDER BY sort, id"
+    );
+    for (const row of Array.isArray(rows) ? rows : []) {
+      out.push({
+        tableId: Number(presetId),
+        tableName: String(presetName || ''),
+        isPreset: true,
+        // custom 里的键是剥掉老前缀之后的形态（与 readTableFields 同一条规则）
+        key: customKeyOf(row.key),
+        label: String(row.label ?? ''),
+        targetSheetId: relationConfig({ options: row.options }).targetSheetId,
+      });
+    }
+  }
+  const rows = await db().dbQuery(
+    `SELECT f.key, f.label, f.options, s.id AS table_id, s.name AS table_name
+       FROM sheet_field f JOIN sheet s ON s.id = f.sheet_id
+      WHERE f.type = 'relation' ORDER BY s.sort, s.id, f.sort, f.id`
+  );
+  for (const row of Array.isArray(rows) ? rows : []) {
+    out.push({
+      tableId: Number(row.table_id),
+      tableName: String(row.table_name ?? ''),
+      isPreset: false,
+      key: String(row.key ?? ''),
+      label: String(row.label ?? ''),
+      targetSheetId: relationConfig({ options: row.options }).targetSheetId,
+    });
+  }
+  return out;
+}
+
+/** 一条记录属于哪张表（关联的「目标表」口径）。预置表的行不挂 sheet_id，要靠 kind 认。 */
+async function tableIdOfRecord(record) {
+  const sheetId = Number(record?.sheet_id);
+  if (Number.isInteger(sheetId) && sheetId > 0) return sheetId;
+  return String(record?.kind ?? '').startsWith('log') ? getPresetSheetId() : null;
+}
+
+/**
+ * 「谁引用了我」：扫所有「目标表 = 我这条记录所在表」的关联字段，
+ * 找出值里含我 id 的行。
+ *
+ * 只扫目标表匹配的字段 —— 一个关联列只会指向一张表，扫全库是浪费。
+ * 跨表悬空引用**不清理**（见 recordStore.deleteRecord 的注释），
+ * 所以这里可能扫到指向已删记录的 id，那属于预期，不影响结论。
+ */
+export async function findBacklinks(recordId) {
+  const id = Number(recordId);
+  if (!Number.isInteger(id) || id <= 0) return [];
+  const rows = await db().dbQuery('SELECT id, sheet_id, kind FROM record WHERE id = ?', [id]);
+  const target = Array.isArray(rows) ? rows[0] : null;
+  if (!target) return [];
+  const targetTableId = await tableIdOfRecord(target);
+  if (targetTableId == null) return [];
+
+  const fields = (await listRelationFieldDefs()).filter(
+    field => Number(field.targetSheetId) === Number(targetTableId)
+  );
+  if (!fields.length) return [];
+
+  // 按表分组：一张表只扫一遍，而不是一个字段扫一遍
+  const byTable = new Map();
+  for (const field of fields) {
+    const list = byTable.get(field.tableId) || [];
+    list.push(field);
+    byTable.set(field.tableId, list);
+  }
+
+  const out = [];
+  for (const [tableId, list] of byTable) {
+    const isPreset = list[0].isPreset === true;
+    const where = isPreset
+      ? "kind = 'log' AND deleted_at = '' AND (sheet_id IS NULL OR sheet_id = 0)"
+      : "kind = 'sheet_row' AND deleted_at = '' AND sheet_id = ?";
+    const tableRows = await db().dbQuery(
+      `SELECT id, title, custom FROM record WHERE ${where}`,
+      isPreset ? [] : [tableId]
+    );
+    for (const row of Array.isArray(tableRows) ? tableRows : []) {
+      const custom = parseRowData({ data: row.custom });
+      for (const field of list) {
+        const ids = normalizeRelationIds(custom[field.key]);
+        if (!ids.includes(id)) continue;
+        out.push({
+          tableId,
+          tableName: field.tableName,
+          rowId: Number(row.id),
+          rowTitle: displayTitleOf(row),
+          fieldKey: field.key,
+          fieldLabel: field.label,
+        });
+      }
+    }
+  }
+  return out;
 }
 
 /**

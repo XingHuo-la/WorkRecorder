@@ -36,6 +36,10 @@ import {
   normalizeRecordIds,
 } from './notesStore.js';
 import { renderMarkdown, extractExcerpt } from './markdown.js';
+// 关联字段的读法（哪些 id、怎么归一）只认 relationField 一份；
+// 标题与被引用关系走 sheetStore 的批量查询（一条 IN SQL，不在渲染里逐格查库）。
+import { normalizeRelationIds, relationConfig } from './relationField.js';
+import { listRecordBriefs, findBacklinks } from './sheetStore.js';
 import { logToFile } from './logger.js';
 
 /**
@@ -248,6 +252,9 @@ export function openRowDrawer(opts = {}) {
     noteMoving: null,
     // 面板打开时挂的 window 捕获 Esc 监听器
     noteKeyCapture: null,
+    // 关联字段：被引 id → {title, deleted}。与 notes 同理 ——
+    // 渲染是同步的，标题必须先在手上；异步补进来之后只重画那几格（不整块重排）。
+    relationTitles: new Map(),
     // 新建中的防连点闸
     noteCreating: false,
     // 成功类提示条的自动收起定时器（关抽屉时必须清掉）
@@ -359,7 +366,8 @@ export function openRowDrawer(opts = {}) {
             ctx.fieldLayout,
             ctx.visibleFields.length > 0 &&
               ctx.visibleFields.every(field => ctx.fieldLayout.get(field.key)?.hidden),
-            ctx.notes
+            ctx.notes,
+            ctx.relationTitles
           )}
         </div>
         <div class="rd-fieldcfg" data-fieldcfg hidden></div>
@@ -546,6 +554,9 @@ function normalizeHandlers(options) {
     onTitleSaved: pick('onTitleSaved'),
     // 字段显示参数变了（隐藏 / 顺序 / 大小），宿主负责落库
     onFieldLayoutChange: pick('onFieldLayoutChange'),
+    // 点关联胶囊 /「被引用于」条目。宿主接管 = 它自己管跳转栈（T09）；
+    // 不接管时抽屉内部兜底跳转（openLinkedRecordDrawer），不会点了没反应。
+    onOpenRecord: pick('onOpenRecord'),
     onClose: pick('onClose'),
     actions,
   };
@@ -760,7 +771,7 @@ function layoutItems(fields, layout) {
 const drawValue = (field, value, extra = {}) =>
   renderCell(field, value, { solidPill: true, ...extra });
 
-function fieldsHtml(gridFields, row, layout, allHidden = false, notes = null) {
+function fieldsHtml(gridFields, row, layout, allHidden = false, notes = null, relationTitles = null) {
   if (!gridFields.length) {
     // 两种空：用户自己收起来了（要告诉他怎么捞回来），或者这个表只有一列而它的值
     // 已经写在大标题上了（没什么可补的，给一句实话，别留一片空白让「字段」这个标题悬着）。
@@ -777,7 +788,7 @@ function fieldsHtml(gridFields, row, layout, allHidden = false, notes = null) {
         <div class="sh-detail-cell sh-cell" data-key="${escapeHtml(field.key)}" data-row="${escapeHtml(row?.id ?? '')}" tabindex="-1">${drawValue(
           field,
           row?.values?.[field.key],
-          { placeholder: field.type === 'attachment' ? '点击添加附件' : '点击填写', notes }
+          { placeholder: field.type === 'attachment' ? '点击添加附件' : '点击填写', notes, relationTitles }
         )}</div>
       </div>`;
     })
@@ -816,6 +827,7 @@ function bodyBlocksHtml(ctx) {
         data-row="${escapeHtml(ctx.row?.id ?? '')}" tabindex="-1">${drawValue(field, ctx.row?.values?.[field.key], {
           placeholder: '写点什么…',
           notes: ctx.notes,
+          relationTitles: ctx.relationTitles,
         })}</div>`;
     })
     .join('');
@@ -884,6 +896,7 @@ function renderHeadline(ctx) {
            data-row="${escapeHtml(ctx.row?.id ?? '')}" tabindex="-1">${drawValue(field, ctx.row?.values?.[field.key], {
              placeholder: '点击填写',
              notes: ctx.notes,
+             relationTitles: ctx.relationTitles,
            })}</div>
     </div>`);
   };
@@ -1357,7 +1370,7 @@ function renderFieldGrid(ctx) {
     const cfg = ctx.fieldLayout.get(field.key);
     return cfg && !cfg.hidden && !cfg.off;
   });
-  host.innerHTML = fieldsHtml(ctx.gridFields, ctx.row, ctx.fieldLayout, !anyShown, ctx.notes);
+  host.innerHTML = fieldsHtml(ctx.gridFields, ctx.row, ctx.fieldLayout, !anyShown, ctx.notes, ctx.relationTitles);
 }
 
 /**
@@ -1465,6 +1478,8 @@ async function hydrate(ctx, token) {
     loadChildren(ctx, token),
     loadChildSheets(ctx, token),
     loadNotes(ctx, token),
+    loadRelations(ctx, token),
+    loadBacklinks(ctx, token),
   ];
 
   const results = await Promise.allSettled(jobs);
@@ -1599,6 +1614,80 @@ async function loadChildSheets(ctx, token) {
     .join('');
   sub.hidden = !ctx.structSheets.length;
   updateStructure(ctx);
+}
+
+/**
+ * 关联列：id → 标题，然后只重画那几格。
+ * 首帧没有标题（ctx.relationTitles 为空），所以那几格先画成 #id —— 不能先画「已删除」，
+ * 那是假信息。查完再只重画这几格。
+ */
+async function loadRelations(ctx, token) {
+  const fields = (ctx.fields || []).filter(field => field.type === 'relation');
+  if (!fields.length) return;
+  const ids = new Set();
+  for (const field of fields) {
+    for (const id of normalizeRelationIds(ctx.row?.values?.[field.key])) ids.add(id);
+  }
+  if (!ids.size) return;
+  let briefs = null;
+  try {
+    briefs = await listRecordBriefs([...ids]);
+  } catch (error) {
+    console.warn('[rowDrawer] 关联标题读取失败', error);
+  }
+  if (!alive(token)) return;
+  if (!briefs) return; // 失败就保持 #id 形态，别把每一格都标成已删除
+  ctx.relationTitles = briefs;
+  repaintRelationFields(ctx);
+}
+
+function repaintRelationFields(ctx) {
+  if (!ctx?.el) return;
+  ctx.el.querySelectorAll('.sh-detail-cell[data-key]').forEach(cell => {
+    if (cell.classList.contains('ft-cell-editing')) return;
+    if (cell.querySelector('.ft-cell-editing')) return;
+    const field = (ctx.fields || []).find(item => item.key === cell.dataset.key);
+    if (!field || field.type !== 'relation') return;
+    cell.innerHTML = drawValue(field, ctx.row?.values?.[field.key], {
+      placeholder: '点击填写',
+      relationTitles: ctx.relationTitles,
+    });
+  });
+}
+
+/**
+ * 「被引用于」：有谁的表里，某个关联列指着我。
+ *
+ * 空就整块不出现（不留「暂无引用」占位）：这一节是补充信息，
+ * 没有它的时候用户根本不该知道它存在。
+ */
+async function loadBacklinks(ctx, token) {
+  let list = [];
+  try {
+    list = await findBacklinks(ctx.recordId);
+  } catch (error) {
+    console.warn('[rowDrawer] 读取被引用失败', error);
+  }
+  if (!alive(token)) return;
+  const block = section(ctx, 'backlinks');
+  const host = block?.querySelector('[data-list="backlinks"]');
+  if (!block || !host) return;
+  const items = Array.isArray(list) ? list : [];
+  block.hidden = items.length === 0;
+  if (!items.length) {
+    host.innerHTML = '';
+    return;
+  }
+  host.innerHTML = items
+    .map(
+      item => `<button type="button" class="rd-backlink" data-rel-open="${escapeHtml(item.rowId)}"
+        title="${escapeHtml(`${item.tableName || '表'} · ${item.fieldLabel || '关联'} · ${item.rowTitle}`)}">
+        <svg class="wr-icon" aria-hidden="true"><use href="#ic-connector"/></svg>
+        <span class="rd-backlink-title">${escapeHtml(item.rowTitle)}</span>
+        <span class="rd-backlink-meta">${escapeHtml(`${item.tableName || ''}${item.tableName && item.fieldLabel ? ' · ' : ''}${item.fieldLabel || ''}`)}</span>
+      </button>`
+    )
+    .join('');
 }
 
 async function renderBody(ctx, rawBody) {
@@ -1863,6 +1952,19 @@ function onBodyClick(ctx, event) {
     return;
   }
 
+  // ④.5 关联胶囊 / 「被引用于」条目 → 跳到那条记录。
+  //     芯片在单元格内部，所以必须排在任何「点单元格」的逻辑之前。
+  const relOpen = event.target.closest('[data-rel-open]');
+  if (relOpen) {
+    const targetId = toId(relOpen.dataset.relOpen);
+    if (targetId !== null) {
+      // 宿主想自己管（T09 的跳转栈）就走宿主；没有就就地跳，绝不「点了没反应」
+      if (typeof ctx.handlers.onOpenRecord === 'function') ctx.handlers.onOpenRecord(targetId);
+      else openLinkedRecordDrawer(ctx, targetId);
+    }
+    return;
+  }
+
   // ⑤ 子项 → 打开该子项的抽屉
   const child = event.target.closest('[data-child-id]');
   if (child) {
@@ -2053,6 +2155,22 @@ function openChildDrawer(ctx, childId) {
   openRowDrawer({
     recordId: childId,
     subtitle: '子项',
+    handlers: {
+      onClose: ctx.handlers.onClose,
+    },
+  });
+}
+
+/**
+ * 关联记录 / 被引用条目的默认跳转。
+ * 与 openChildDrawer 同一套做法（不带 fields），差别只在副标题说的是「关联」。
+ * T09 会把它换成「入栈 + Esc 回退并定位来源格」，在那之前这就是一条能用的路：
+ * 点标题 → 看到那一条 → 关掉回到原处（原抽屉被替换，关掉后回到表格）。
+ */
+function openLinkedRecordDrawer(ctx, recordId) {
+  openRowDrawer({
+    recordId,
+    subtitle: '关联记录',
     handlers: {
       onClose: ctx.handlers.onClose,
     },

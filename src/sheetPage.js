@@ -87,10 +87,14 @@ import {
   rowTitle,
   listRecordNotes,
   listAnchorTitles,
+  // 关联字段（T08）：候选行 / 被引用的标题 / 谁引用了我
+  listRelationTargets,
+  listRecordBriefs,
   getSheetCollapsed,
   setSheetCollapsed,
   setRowParent,
 } from './sheetStore.js';
+import { relationConfig, normalizeRelationIds, relationText } from './relationField.js';
 
 const CHUNK = 60;
 const ROW_LIMIT_HINT = 5000;
@@ -116,6 +120,9 @@ const state = {
   collapsedSheetId: null,
   rowsToken: 0, // 换行数据时 +1，用来失效层级缓存
   anchorTitles: new Map(), // 挂载点 id → 显示名（挂载点可能是一行而不是 todo）
+  // 关联字段：被引记录 id → {title, deleted}。渲染是同步的，所以整表一次性查好；
+  // 查不到（含已删）由 listRecordBriefs 补成 deleted:true，渲染层不必再判空。
+  relationTitles: new Map(),
   fieldIndex: new Map(), // sheetId → [{label, type}]，库视图卡片上展示字段摘要
 };
 
@@ -282,11 +289,55 @@ function cellCtx(field, row = null) {
   // solidPill：表格里配了色的选项要画成实心色块（编辑提交后重渲染也走这里，
   // 漏标就会「一改完又变回灰字」）。
   // notes：附件列要把本行挂着的笔记画成附件项（纯数据，同步渲染）。
+  // relationTitles：关联列把 id 画成标题，同样必须同步可用（见 reloadRelationTitles）。
   return {
     placeholder: field.type === 'text' ? '未命名' : '—',
     solidPill: true,
     notes: notesForRecord(row?.id),
+    relationTitles: state.relationTitles,
   };
+}
+
+/**
+ * 跳到某条记录（关联胶囊、被引用条目）。
+ *
+ * 不带 fields：目标行通常属于另一张表，拿本表的字段集去画会把「关联」列
+ * 画成目标表的列名，全错。抽屉自己会走「记录信息 + 正文 + 笔记 + 被引用于」那一套。
+ * 现在的形态是「替换当前抽屉」；T09 的跳转栈会把它换成入栈 + Esc 回退。
+ */
+function openLinkedRecord(recordId) {
+  const id = Number(recordId);
+  if (!Number.isInteger(id) || id <= 0) return;
+  openRowDrawer({
+    recordId: id,
+    subtitle: '关联记录',
+    onClose: refreshAfterPeek,
+  });
+}
+
+// 从别处回来（关掉关联记录的抽屉）时，表格上那几格可能已经变了：
+// 对方删了、改了标题。只刷关联列与附件列，不整表重排 —— 重排会丢掉滚动位置和选区。
+function refreshAfterPeek() {
+  void (async () => {
+    await reloadRecordNotes();
+    await reloadRelationTitles();
+    repaintAttachmentCells();
+    repaintRelationCells();
+  })();
+}
+
+function repaintRelationCells() {
+  if (!host) return;
+  const relationFields = state.fields.filter(field => field.type === 'relation');
+  if (!relationFields.length) return;
+  host.querySelectorAll('.sh-cell[data-row][data-key]').forEach(cellEl => {
+    if (cellEl.classList.contains('ft-cell-editing')) return;
+    const field = relationFields.find(item => item.key === cellEl.dataset.key);
+    if (!field) return;
+    const row = state.rows.find(item => String(item.id) === String(cellEl.dataset.row));
+    if (!row) return;
+    cellEl.innerHTML = renderCell(field, row.values?.[field.key], cellCtx(field, row));
+  });
 }
 
 /** 某条记录挂着的笔记。没加载到就返回 undefined —— 渲染层会当「没有」。 */
@@ -308,6 +359,9 @@ async function reloadRecordNotes() {
 
 function displayValue(field, value) {
   if (value == null || value === '') return '';
+  // 关联：复制/导出/排序都该看到「对方那一行的标题」，不是一个孤零零的 id。
+  // 标题在 state.relationTitles 里（整表一次性查好），所以这里不用查库。
+  if (field?.type === 'relation') return relationText(value, { relationTitles: state.relationTitles });
   if (Array.isArray(value)) return value.map(item => (typeof item === 'object' ? item.name || item.path || '' : item)).join('、');
   if (field.type === 'checkbox') return value === true || value === 'true' ? '是' : '否';
   return String(value);
@@ -337,6 +391,10 @@ function searchTextOf(field, value) {
   }
   if (field.type === 'attachment') {
     return (Array.isArray(value) ? value : []).map(item => `${item?.name || ''} ${item?.path || ''}`).join(' ');
+  }
+  // 关联：搜「标题」才搜得到。按 id 搜是开发者的直觉，不是用户的。
+  if (field.type === 'relation') {
+    return relationText(value, { relationTitles: state.relationTitles });
   }
   return String(value);
 }
@@ -695,6 +753,8 @@ function renderBodyRows(reset) {
     .map((row, offset) =>
       buildRow(row, state.fields, start + offset + 1, {
         notes: notesForRecord(row.id),
+        // 关联列：整表一次性查好的 id → 标题（见 reloadRelationTitles）
+        relationTitles: state.relationTitles,
         tree: treeMetaOf(row),
       })
     )
@@ -860,6 +920,38 @@ async function reloadFields() {
 async function reloadRows() {
   state.rows = await readTableRows(state.sheet);
   state.rowsToken += 1;
+  await reloadRelationTitles();
+}
+
+/**
+ * 关联列的胶囊要写「对方那一行的标题」，而目标行通常不在本表里。
+ * 必须在整表渲染之前一次性查好（一条 IN SQL）：渲染是同步的，
+ * 逐格 await 会把表格画成一片「加载中」，而先画 #id 再补标题会闪。
+ */
+async function reloadRelationTitles() {
+  const relationFields = state.fields.filter(field => field.type === 'relation');
+  if (!relationFields.length) {
+    state.relationTitles = new Map();
+    return;
+  }
+  const ids = new Set();
+  for (const row of state.rows) {
+    for (const field of relationFields) {
+      for (const id of normalizeRelationIds(row.values?.[field.key])) ids.add(id);
+    }
+  }
+  if (!ids.size) {
+    state.relationTitles = new Map();
+    return;
+  }
+  try {
+    state.relationTitles = await listRecordBriefs([...ids]);
+  } catch (error) {
+    // 读不出标题不该把表格带崩，也不该把每一格都画成「已删除」：
+    // 退化成 #id，人还能认出是哪条，点进去照样能看。
+    console.warn('[sheetPage] 读取关联标题失败', error);
+    state.relationTitles = new Map([...ids].map(id => [String(id), { title: `#${id}`, deleted: false }]));
+  }
 }
 
 // ==========================================
@@ -1020,6 +1112,9 @@ function startCellEdit(field, row, cellEl, opts = {}) {
     toast,
     placeholder: cellCtx(field).placeholder,
     onSettled: () => focusIfIdle(cellEl),
+    // 关联字段：候选行来自「字段配置里指向的那张表」，点开面板时才查 ——
+    // 表格本身不需要这份数据，提前拉一遍等于每次滚动都多打一次库。
+    loadTargets: () => listRelationTargets(relationConfig(field).targetSheetId),
   });
 
   // Excel 的「直接敲字覆盖」：选中一格后打第一个字符，编辑器起来时里面只有这个字符，
@@ -2062,6 +2157,10 @@ function coercePasteValue(field, raw) {
     }
     case 'attachment':
       return null; // 文本粘不进附件列
+    case 'relation':
+      // 关联列的值是「另一张表里的行 id」，一段纯文本对不上任何一行。
+      // 硬塞进去只会得到一串渲染成空白的脏值（用户以为粘成功了），所以跳过并计数。
+      return null;
     default:
       return text;
   }
@@ -2434,6 +2533,10 @@ function openFieldPanelFor(field, { mode = 'edit', sort = null } = {}) {
   openFieldPanel({
     field: mode === 'edit' ? field : null,
     sheetName: state.sheet?.name || '',
+    // 关联字段要选「指向哪张表」：表清单来自已加载的 state.sheets（含预置表），
+    // 现值告诉面板「默认指自己这张表」。
+    tables: state.sheets.map(item => ({ id: item.id, name: item.name, kind: item.kind })),
+    selfTableId: state.sheet?.id ?? null,
     onSave: async payload => {
       try {
         const hasOptions = payload.type === 'select' || payload.type === 'multi_select';
@@ -2445,6 +2548,10 @@ function openFieldPanelFor(field, { mode = 'edit', sort = null } = {}) {
           // 类型换了就把不再适用的开关显式清掉，别留一个看不见的 wrap/dateOnly
           wrap: payload.type === 'text' ? (payload.wrap ? true : null) : null,
           dateOnly: payload.type === 'date' ? (payload.dateOnly ? true : null) : null,
+          // 关联的两个开关同理：类型换走就删，否则「改回文本」还会留着 targetSheetId，
+          // 以后有人按它算引用范围就会算错。
+          targetSheetId: payload.type === 'relation' ? Number(payload.targetSheetId) || null : null,
+          multiple: payload.type === 'relation' && payload.multiple ? true : null,
         });
         if (mode === 'edit' && field) {
           await patchField(field.id, {
@@ -3758,6 +3865,14 @@ function onHostClick(event) {
   const noteChip = event.target.closest('[data-note-open]');
   if (noteChip) {
     void openNoteFromTable(noteChip.dataset.noteOpen);
+    return;
+  }
+
+  // 关联胶囊：点标题 = 去看那一条记录（和笔记胶囊同一层语义：格子里的小链接）。
+  // 必须在「点单元格 → 选中」之前判，否则一次点击会先把格子选中、再被取消掉。
+  const relChip = event.target.closest('[data-rel-open]');
+  if (relChip) {
+    openLinkedRecord(relChip.dataset.relOpen);
     return;
   }
 

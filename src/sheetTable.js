@@ -151,6 +151,8 @@ export function buildRow(row, fields, index, rowCtx = {}) {
           rowHeight,
           // 附件列里要画的笔记胶囊（record_id → 笔记），由页面按行传进来
           notes: rowCtx.notes,
+          // 关联列要画的「对方标题」（id → {title, deleted}），同样由页面整表查好传进来
+          relationTitles: rowCtx.relationTitles,
           // 层级只装饰第一列
           tree: colIndex === 0 ? tree : null,
         })}</td>`
@@ -182,6 +184,9 @@ function measure(text, font) {
 }
 
 export function autoFitWidth(field, rows, options = []) {
+  // 关联列不按内容量：格子里是**别的表**的标题，长度与本表数据无关，
+  // 量出来会是个刚好塞下「1,2」的窄列，标题全被截断。给一个固定舒服的宽度。
+  if (field?.type === 'relation') return 200;
   let widest = measure(String(field.label || ''), '600 11.5px system-ui, sans-serif') + 54; // 标签 + 类型图标 + 内边距
   const labelOf = value => {
     const hit = options.find(item => String(item.value) === String(value));

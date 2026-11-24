@@ -15,6 +15,10 @@ import {
   insertTableRow,
   customKeyOf,
   PRESET_COLUMN_KEYS,
+  getPresetSheetId,
+  listRelationTargets,
+  listRecordBriefs,
+  findBacklinks,
 } from '../src/sheetStore.js';
 
 const db = new DatabaseSync(':memory:');
@@ -72,6 +76,15 @@ CREATE TABLE sheet_field (
     sort INTEGER DEFAULT 0,
     visible INTEGER DEFAULT 1,
     UNIQUE(sheet_id, key)
+);
+-- listTables 会数视图：没有这张表，任何一次 loadTable 都会炸在「no such table」
+CREATE TABLE view_def (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    table_id INTEGER NOT NULL,
+    name TEXT DEFAULT '',
+    form TEXT DEFAULT 'table',
+    config TEXT DEFAULT '{}',
+    sort INTEGER DEFAULT 0
 );
 `);
 
@@ -241,6 +254,79 @@ async function main() {
   eq('清空多选写空数组', customOf(rowId)[fieldKey], []);
   rows = await readTableRows(PRESET);
   eq('清空后读回空数组', rows[0].values[fieldKey], []);
+
+  // ---------------------------------------------------------------
+  // 8) 关联字段（T08）：预置表上的关联列 + 被引用
+  // ---------------------------------------------------------------
+  // 预置表那一行（kind='preset'）必须先存在：关联的「目标表」是按 sheet.id 认的，
+  // 预置表的行不挂 sheet_id，全靠这一行才能被指到。
+  db.prepare("INSERT INTO sheet (id, name, kind) VALUES (1, '主表', 'preset')").run();
+  db.prepare("INSERT INTO sheet (id, name, kind) VALUES (2, '任务表', 'table')").run();
+  eq('getPresetSheetId 认得预置表', await getPresetSheetId(), 1);
+
+  // 主表上的关联列（指向自己）—— 走 field_def
+  db.prepare(
+    "INSERT INTO field_def (entity, key, label, type, options, sort, visible, builtin) VALUES ('log', 'f_parent', '上一条', 'relation', ?, 9, 1, 0)"
+  ).run(JSON.stringify({ targetSheetId: 1, multiple: false }));
+
+  // 任务表上的关联列（指向主表）—— 走 sheet_field，被引用就靠它
+  db.prepare("INSERT INTO sheet_field (sheet_id, key, label, type, options, sort, visible) VALUES (2, 'f_task', '相关记录', 'relation', ?, 0, 1)")
+    .run(JSON.stringify({ targetSheetId: 1 }));
+
+  // 主表三行（其中一行软删）
+  const ids = [];
+  for (const title of ['甲', '乙', '丙']) {
+    db.prepare(
+      "INSERT INTO record (kind, title, custom, created_at, updated_at, deleted_at) VALUES ('log', ?, '{}', '', '', '')"
+    ).run(title);
+    ids.push(Number(db.prepare('SELECT MAX(id) AS id FROM record').get().id));
+  }
+  const [jia, yi, bing] = ids;
+  db.prepare("UPDATE record SET deleted_at = '2026-11-24 10:00:00', kind = 'log#deleted' WHERE id = ?").run(String(bing));
+
+  const targets = await listRelationTargets(1);
+  eq('候选里没有已删除的行', targets.some(item => item.id === bing), false);
+  // 前面几节也往主表插过行，所以按库里的活行数对，不写死 2
+  const liveCount = Number(
+    db
+      .prepare("SELECT COUNT(*) AS n FROM record WHERE kind = 'log' AND deleted_at = '' AND (sheet_id IS NULL OR sheet_id = 0)")
+      .get().n
+  );
+  eq('候选数量 = 主表活行数', targets.length, liveCount);
+  eq('候选标题来自真列', targets.find(item => item.id === jia)?.title, '甲');
+
+  // 任务表里的一行指向「甲」
+  db.prepare(
+    "INSERT INTO record (kind, sheet_id, custom, sort, created_at, updated_at, deleted_at) VALUES ('sheet_row', 2, ?, 0, '', '', '')"
+  ).run(JSON.stringify({ f_task: [jia], title: '任务一' }));
+  const taskRowId = Number(db.prepare('SELECT MAX(id) AS id FROM record').get().id);
+
+  const briefs = await listRecordBriefs([jia, bing, 9999]);
+  eq('标题查得到', briefs.get(String(jia)).title, '甲');
+  eq('活着的不是 deleted', briefs.get(String(jia)).deleted, false);
+  eq('软删的标成 deleted', briefs.get(String(bing)).deleted, true);
+  eq('不存在的 id 也有一条（deleted）', briefs.get('9999'), { title: '#9999', deleted: true });
+
+  const links = await findBacklinks(jia);
+  eq('被引用查得到', links.length, 1);
+  eq('被引用带表名', links[0].tableName, '任务表');
+  eq('被引用带列名', links[0].fieldLabel, '相关记录');
+  eq('被引用行号对', links[0].rowId, taskRowId);
+  eq('没人引用乙', (await findBacklinks(yi)).length, 0);
+
+  // 预置表上的自引用：甲 → 乙，找乙的被引用时应当命中「主表 · 上一条」
+  await saveTableRow(PRESET, { id: jia, custom: rawRow(jia).custom }, { ...rawRow(jia), text: '甲', f_parent: [yi] });
+  const selfLink = await findBacklinks(yi);
+  eq('预置表自引用也算被引用', selfLink.length, 1);
+  eq('自引用表名', selfLink[0].tableName, '主表');
+  eq('自引用行是甲', selfLink[0].rowId, jia);
+
+  // 关联值走 custom 往返（单选也存数组）
+  const presetFields = await readTableFields(PRESET);
+  const parentField = presetFields.find(item => item.key === 'f_parent');
+  check('预置表读得到关联列', Boolean(parentField), '没读到 f_parent');
+  const reloaded = (await readTableRows(PRESET)).find(row => Number(row.id) === jia);
+  eq('关联值读回是数组', reloaded.values.f_parent, [yi]);
 
   // ---------------------------------------------------------------
   // 汇总

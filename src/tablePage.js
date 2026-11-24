@@ -1476,7 +1476,10 @@ function openColumnMenu(anchorEl, field) {
       </div>
       <div class="wr-colmenu-types" hidden>
         <div class="wr-colmenu-types-title">字段类型</div>
-        ${FIELD_TYPE_ORDER.map(type => `
+        <!-- 关联记录不在这里：老网格的写入白名单只认真列与 custom.* 键，
+             选了这个类型会「能建列、改不动、也不报错」。预置表的关联列必须在
+             sheetPage 里配（那里才有一整条读写路径）。等老网格退役就删掉这段过滤。 -->
+        ${FIELD_TYPE_ORDER.filter(type => type !== 'relation').map(type => `
           <button type="button" class="wr-type-option${type === field.type ? ' is-active' : ''}" data-type="${type}">
             ${renderFieldIcon(type)}
             <span>${FIELD_TYPE_LABELS[type]}</span>

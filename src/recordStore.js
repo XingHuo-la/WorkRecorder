@@ -12,6 +12,10 @@
 // 依赖注入 adapter（与 sheetStore 一致），好处是调试壳能换假数据。
 
 import { wouldCreateCycle, toId } from './recordTree.js';
+// 只为一个纯函数（字段 key → custom 里的键）。抄一份的代价是两处规则漂移：
+// 老网格生成的字段 key 带 `custom.` 前缀，剥前缀的规则必须与 sheetStore 完全一致，
+// 否则「删行清引用」会漏掉那批字段，界面留下灰块。
+import { customKeyOf } from './sheetStore.js';
 
 let adapter = null;
 
@@ -72,6 +76,22 @@ function safeParse(raw, fallback) {
 function normalizeRow(row) {
   if (!row) return null;
   return { ...row, custom: safeParse(row.custom, {}) };
+}
+
+/**
+ * 一条记录「属于哪张表」。
+ * 自建表的行看 sheet_id；预置表的行不挂 sheet_id（kind='log'），
+ * 全库唯一的预置表由 sheet.kind='preset' 认出来。
+ * 关联字段的「同表」判定全走这一个口径 —— 各处自己拼 WHERE 就会漏掉预置表。
+ */
+async function tableOfRecord(record) {
+  if (!record) return null;
+  const sheetId = Number(record.sheet_id);
+  if (Number.isInteger(sheetId) && sheetId > 0) return { id: sheetId, isPreset: false };
+  if (!String(record.kind ?? '').startsWith('log')) return null;
+  const rows = await db().dbQuery("SELECT id FROM sheet WHERE kind = 'preset' ORDER BY id LIMIT 1");
+  const presetId = rows?.[0]?.id;
+  return presetId == null ? null : { id: Number(presetId), isPreset: true };
 }
 
 /**
@@ -401,29 +421,38 @@ export async function deleteRecord(id) {
   }
 
   // 3) 同表引用清理
+  //
+  // 范围按「这条记录属于哪张表」算：自建表看 record.sheet_id，预置表的行不挂 sheet_id
+  // （kind='log' 且 sheet_id 为空），要靠 sheet.kind='preset' 那一行认。
+  // 以前只处理了前者，预置表里的关联列删完行会留下悬空 id（界面显示灰块）。
   let clearedRefs = 0;
-  if (record.sheet_id !== null && record.sheet_id !== undefined) {
-    const sheetId = Number(record.sheet_id);
-    const fields = await db().dbQuery(
-      "SELECT id, key, options FROM sheet_field WHERE sheet_id = ? AND type = 'relation'",
-      [sheetId]
-    );
+  const ownTable = await tableOfRecord(record);
+  if (ownTable) {
+    const fields = ownTable.isPreset
+      ? await db().dbQuery("SELECT key, options FROM field_def WHERE entity = 'log' AND type = 'relation'")
+      : await db().dbQuery('SELECT key, options FROM sheet_field WHERE sheet_id = ? AND type = ?', [ownTable.id, 'relation']);
     const selfReferencing = (fields || []).filter(field => {
       const options = safeParse(field.options, {});
-      return Number(options.targetSheetId) === sheetId;
+      return Number(options.targetSheetId) === Number(ownTable.id);
     });
 
     if (selfReferencing.length) {
-      const rows = await db().dbQuery('SELECT id, custom FROM record WHERE sheet_id = ?', [sheetId]);
+      const rows = ownTable.isPreset
+        ? await db().dbQuery(
+            "SELECT id, custom FROM record WHERE kind = 'log' AND deleted_at = '' AND (sheet_id IS NULL OR sheet_id = 0)"
+          )
+        : await db().dbQuery('SELECT id, custom FROM record WHERE sheet_id = ?', [ownTable.id]);
       for (const row of rows || []) {
         const custom = safeParse(row.custom, {});
         let dirty = false;
         for (const field of selfReferencing) {
-          const value = custom[field.key];
+          // 字段 key → custom 里的键：老网格建的字段带 `custom.` 前缀，要剥掉（与 sheetStore 同一条规则）
+          const key = customKeyOf(field.key);
+          const value = custom[key];
           if (!Array.isArray(value)) continue;
           const next = value.filter(item => Number(item) !== recordId);
           if (next.length === value.length) continue;
-          custom[field.key] = next;
+          custom[key] = next;
           dirty = true;
         }
         if (!dirty) continue;

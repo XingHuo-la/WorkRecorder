@@ -3195,3 +3195,141 @@ body[data-skin="v4"] .sh-table .sh-cell[data-tree-path]::before {
   text-overflow: ellipsis !important;
   white-space: nowrap !important;
 }
+
+/* ==========================================
+   关联字段（T08）
+   —— 单元格里的「对方标题」胶囊、记录选择器、抽屉里的「被引用于」
+   与笔记胶囊同一套尺寸与材质：它们都是「格子里的一小块可点文字」，
+   在同一行里并排出现时必须是同一个家族，不能一个 16px 一个 26px。
+   ========================================== */
+
+body[data-skin="v4"] .sh-cell .ft-rel-list {
+  display: flex !important;
+  flex: 1 1 auto !important;
+  align-items: center !important;
+  gap: 4px !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+}
+
+body[data-skin="v4"] .sh-cell .ft-rel-chip {
+  display: inline-flex !important;
+  flex: 0 1 auto !important;
+  align-items: center !important;
+  min-width: 0 !important;
+  max-width: 150px !important;
+  padding: 2px 7px !important;
+  border: 1px solid color-mix(in srgb, var(--color-primary) 22%, var(--border-light)) !important;
+  border-radius: 5px !important;
+  background: color-mix(in srgb, var(--color-primary) 8%, transparent) !important;
+  color: var(--text-secondary) !important;
+  font-size: 11.5px !important;
+  line-height: 16px !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  cursor: pointer !important;
+  user-select: none !important;
+}
+
+body[data-skin="v4"] .sh-cell .ft-rel-chip:hover {
+  border-color: color-mix(in srgb, var(--color-primary) 55%, transparent) !important;
+  color: var(--color-primary) !important;
+}
+
+/* 已删除：虚线边 + 灰字。仍然可点（点进去看真相），但一眼就知道是条死链 */
+body[data-skin="v4"] .sh-cell .ft-rel-chip.is-gone,
+body[data-skin="v4"] .sh-cell .ft-rel-chip.is-pending {
+  border-style: dashed !important;
+  border-color: var(--border-light) !important;
+  background: transparent !important;
+  color: var(--text-muted) !important;
+}
+
+body[data-skin="v4"] .sh-cell .ft-rel-chip.is-gone {
+  text-decoration: line-through !important;
+  text-decoration-color: color-mix(in srgb, var(--text-muted) 60%, transparent) !important;
+}
+
+body[data-skin="v4"] .sh-cell .ft-rel-more {
+  flex: none !important;
+  color: var(--text-muted) !important;
+  font-size: 11px !important;
+  white-space: nowrap !important;
+}
+
+/* 记录选择器：复用 .ft-dropdown 的框与搜索行，只补「勾选圈」 */
+body[data-skin="v4"] .ft-relpicker .ft-relopt-dot {
+  display: inline-flex !important;
+  flex: none !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 15px !important;
+  height: 15px !important;
+  margin-right: 2px !important;
+  border: 1.5px solid var(--border-light) !important;
+  border-radius: 4px !important;
+  color: #fff !important;
+}
+
+body[data-skin="v4"] .ft-relpicker .ft-relopt-dot.is-on {
+  border-color: var(--color-primary) !important;
+  background: var(--color-primary) !important;
+}
+
+body[data-skin="v4"] .ft-relpicker .ft-relopt-dot .wr-icon {
+  width: 10px !important;
+  height: 10px !important;
+}
+
+body[data-skin="v4"] .ft-relpicker .ft-option-label {
+  min-width: 0 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+
+/* 抽屉「被引用于」：一行一条（表名 · 列名 + 标题），整行可点 */
+body[data-skin="v4"] .sh-drawer .rd-backlink {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  width: 100% !important;
+  min-height: 0 !important;
+  padding: 6px 8px !important;
+  border: 1px solid transparent !important;
+  border-radius: 6px !important;
+  background: transparent !important;
+  color: var(--text-primary) !important;
+  text-align: left !important;
+  cursor: pointer !important;
+}
+
+body[data-skin="v4"] .sh-drawer .rd-backlink:hover {
+  border-color: var(--border-light) !important;
+  background: var(--surface-2, color-mix(in srgb, var(--text-primary) 4%, transparent)) !important;
+}
+
+body[data-skin="v4"] .sh-drawer .rd-backlink .wr-icon {
+  flex: none !important;
+  width: 13px !important;
+  height: 13px !important;
+  color: var(--text-muted) !important;
+}
+
+body[data-skin="v4"] .sh-drawer .rd-backlink-title {
+  flex: 0 1 auto !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  font-size: 13px !important;
+}
+
+body[data-skin="v4"] .sh-drawer .rd-backlink-meta {
+  flex: none !important;
+  margin-left: auto !important;
+  color: var(--text-muted) !important;
+  font-size: 11.5px !important;
+  white-space: nowrap !important;
+}
