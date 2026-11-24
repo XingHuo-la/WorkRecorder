@@ -109,25 +109,50 @@ export function buildCell(field, row, ctx = {}) {
   if (clamp) styles.push(`--clamp:${clamp}`);
   // 底色走 CSS 变量：选区高亮用 background-image 叠加，不会把用户底色盖掉
   if (isHexColor(fmt.bg)) styles.push(`--cell-bg:${fmt.bg}`);
+  // 行层级：缩进只作用在**第一格**上（值由宿主写在 td，这里再落一份到格子上，
+  // 万一重画整行也还是对的）。路径前缀走 data 属性 + CSS ::before ——
+  // 重画 innerHTML 不会把属性冲掉，所以就地编辑提交后前缀还在。
+  const treeIndent = Number(ctx.tree?.indent) || 0;
+  if (treeIndent) styles.push(`--tree-indent:${treeIndent}px`);
   const classes = ['sh-cell', wrap ? 'is-wrap' : '', clamp ? 'is-clamped' : '', fmt.h ? `is-h-${fmt.h}` : '', fmt.v ? `is-v-${fmt.v}` : '']
     .filter(Boolean)
     .join(' ');
   const style = styles.length ? ` style="${styles.join(';')}"` : '';
+  const treePath = ctx.tree?.pathPrefix ? ` data-tree-path="${escapeHtml(ctx.tree.pathPrefix)}"` : '';
   return `<div class="${classes}" data-key="${escapeHtml(field.key)}" data-row="${escapeHtml(
     row.id
-  )}"${col}${rowIndex}${style} tabindex="-1">${renderCell(field, value, { ...ctx, solidPill: true })}</div>`;
+  )}"${col}${rowIndex}${treePath}${style} tabindex="-1">${renderCell(field, value, { ...ctx, solidPill: true })}</div>`;
 }
 
-export function buildRow(row, fields, index) {
+export function buildRow(row, fields, index, rowCtx = {}) {
   const visible = visibleOf(fields);
   const rowHeight = Number(row.height) || 0;
+  const tree = rowCtx.tree || null;
+  const treeIndent = Number(tree?.indent) || 0;
+  // 折叠箭头长在 td 上（不在 .sh-cell 里）：cell 的 innerHTML 会被编辑器整块换掉，
+  // 箭头跟着消失就成了「一编辑，子项就展不开了」。
+  const caret = tree?.hasChildren
+    ? `<button type="button" class="sh-tree-caret${tree.isCollapsed ? ' is-collapsed' : ''}"
+         data-tree-toggle="${escapeHtml(row.id)}" aria-expanded="${tree.isCollapsed ? 'false' : 'true'}"
+         title="${tree.isCollapsed ? '展开子项' : '折叠子项'}">
+         <svg class="wr-icon" aria-hidden="true"><use href="#ic-chevron-right"/></svg>
+       </button>`
+    : '';
   const cells = visible
     .map(
       (field, colIndex) =>
-        `<td class="sh-td" data-key="${escapeHtml(field.key)}">${buildCell(field, row, {
+        `<td class="sh-td${colIndex === 0 ? ' sh-td-first' : ''}${
+          colIndex === 0 && treeIndent ? ' is-tree' : ''
+        }"${colIndex === 0 && treeIndent ? ` style="--tree-indent:${treeIndent}px"` : ''} data-key="${escapeHtml(
+          field.key
+        )}">${colIndex === 0 ? caret : ''}${buildCell(field, row, {
           colIndex,
           rowIndex: index - 1,
           rowHeight,
+          // 附件列里要画的笔记胶囊（record_id → 笔记），由页面按行传进来
+          notes: rowCtx.notes,
+          // 层级只装饰第一列
+          tree: colIndex === 0 ? tree : null,
         })}</td>`
     )
     .join('');

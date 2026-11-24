@@ -189,6 +189,9 @@ export function flattenVisibleTree(rows, collapsedIds, opts = {}) {
       indentMax,
       indentStep,
       withPathPrefix,
+      // 标题从哪来由宿主决定：预置表有 record.title，自建表的标题在 values 的某个文本列里，
+      // 内核不该知道这件事。不传就退到 row.title / #id。
+      titleOf: opts.titleOf,
     }));
 
     // 折叠了就不再把子项压栈 —— 整枝消失，而不是只隐藏直接子项
@@ -203,7 +206,11 @@ export function flattenVisibleTree(rows, collapsedIds, opts = {}) {
   return visible;
 }
 
-function titleOf(node) {
+function titleOf(node, cfg = {}) {
+  if (typeof cfg.titleOf === 'function') {
+    const custom = cfg.titleOf(node && node.row);
+    if (custom != null && String(custom).trim()) return String(custom).trim();
+  }
   const title = node && node.row ? String(node.row.title ?? '').trim() : '';
   return title || `#${node.id}`;
 }
@@ -213,7 +220,7 @@ function describeVisible(node, depth, ancestors, childCount, isCollapsed, cfg) {
   const cappedDepth = Math.min(depth, cfg.indentMax);
   const indent = (cappedDepth - 1) * cfg.indentStep;
 
-  const labels = ancestors.map(titleOf);
+  const labels = ancestors.map(item => titleOf(item, cfg));
   // 路径取祖先链**末两段**：第一列只有 260px，全路径会占满整行反而更糟；
   // 完整链路在行详情抽屉的面包屑里，以及这里的 title 属性（pathFull）。
   const pathPrefix = cfg.withPathPrefix && depth > cfg.indentMax && labels.length
@@ -225,7 +232,7 @@ function describeVisible(node, depth, ancestors, childCount, isCollapsed, cfg) {
     depth,
     indent,
     pathPrefix,
-    pathFull: labels.concat([titleOf(node)]).join(' / '),
+    pathFull: labels.concat([titleOf(node, cfg)]).join(' / '),
     hasChildren: childCount > 0,
     childCount,
     isCollapsed,

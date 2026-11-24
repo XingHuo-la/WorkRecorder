@@ -358,7 +358,8 @@ export function openRowDrawer(opts = {}) {
             row,
             ctx.fieldLayout,
             ctx.visibleFields.length > 0 &&
-              ctx.visibleFields.every(field => ctx.fieldLayout.get(field.key)?.hidden)
+              ctx.visibleFields.every(field => ctx.fieldLayout.get(field.key)?.hidden),
+            ctx.notes
           )}
         </div>
         <div class="rd-fieldcfg" data-fieldcfg hidden></div>
@@ -759,7 +760,7 @@ function layoutItems(fields, layout) {
 const drawValue = (field, value, extra = {}) =>
   renderCell(field, value, { solidPill: true, ...extra });
 
-function fieldsHtml(gridFields, row, layout, allHidden = false) {
+function fieldsHtml(gridFields, row, layout, allHidden = false, notes = null) {
   if (!gridFields.length) {
     // 两种空：用户自己收起来了（要告诉他怎么捞回来），或者这个表只有一列而它的值
     // 已经写在大标题上了（没什么可补的，给一句实话，别留一片空白让「字段」这个标题悬着）。
@@ -776,7 +777,7 @@ function fieldsHtml(gridFields, row, layout, allHidden = false) {
         <div class="sh-detail-cell sh-cell" data-key="${escapeHtml(field.key)}" data-row="${escapeHtml(row?.id ?? '')}" tabindex="-1">${drawValue(
           field,
           row?.values?.[field.key],
-          { placeholder: field.type === 'attachment' ? '点击添加附件' : '点击填写' }
+          { placeholder: field.type === 'attachment' ? '点击添加附件' : '点击填写', notes }
         )}</div>
       </div>`;
     })
@@ -814,6 +815,7 @@ function bodyBlocksHtml(ctx) {
       return `${label}<div class="sh-detail-cell sh-cell rd-body-cell" data-key="${escapeHtml(field.key)}"
         data-row="${escapeHtml(ctx.row?.id ?? '')}" tabindex="-1">${drawValue(field, ctx.row?.values?.[field.key], {
           placeholder: '写点什么…',
+          notes: ctx.notes,
         })}</div>`;
     })
     .join('');
@@ -881,6 +883,7 @@ function renderHeadline(ctx) {
       <div class="sh-detail-cell sh-cell rd-hl-cell" data-key="${escapeHtml(field.key)}"
            data-row="${escapeHtml(ctx.row?.id ?? '')}" tabindex="-1">${drawValue(field, ctx.row?.values?.[field.key], {
              placeholder: '点击填写',
+             notes: ctx.notes,
            })}</div>
     </div>`);
   };
@@ -1354,7 +1357,7 @@ function renderFieldGrid(ctx) {
     const cfg = ctx.fieldLayout.get(field.key);
     return cfg && !cfg.hidden && !cfg.off;
   });
-  host.innerHTML = fieldsHtml(ctx.gridFields, ctx.row, ctx.fieldLayout, !anyShown);
+  host.innerHTML = fieldsHtml(ctx.gridFields, ctx.row, ctx.fieldLayout, !anyShown, ctx.notes);
 }
 
 /**
@@ -2339,6 +2342,25 @@ function renderNotes(ctx) {
   // 「新建笔记」保留 —— 那是空态里没有的另一个入口。
   const linkEntry = foot?.querySelector('[data-note-pick-link]');
   if (linkEntry) linkEntry.hidden = ctx.notes.length === 0;
+
+  // 笔记是附件族：上面这份列表一增一减，下方「附件」字段里的胶囊必须同步。
+  // 漏这一步，抽屉里就会出现「笔记区 2 条、附件列还挂着 3 个」两套真相。
+  refreshAttachmentFields(ctx);
+}
+
+/** 只重画抽屉里的附件字段格（不整块渲染：那会把正在编辑的格子一起清掉）。 */
+function refreshAttachmentFields(ctx) {
+  if (!ctx?.el || !ctx.notesReady) return;
+  ctx.el.querySelectorAll('.sh-detail-field .sh-detail-cell[data-key]').forEach(cell => {
+    if (cell.classList.contains('ft-cell-editing')) return;
+    if (cell.querySelector('.ft-cell-editing')) return;
+    const field = ctx.visibleFields.find(item => item.key === cell.dataset.key);
+    if (!field || field.type !== 'attachment') return;
+    cell.innerHTML = drawValue(field, ctx.row?.values?.[field.key], {
+      placeholder: '点击添加附件',
+      notes: ctx.notes,
+    });
+  });
 }
 
 /**

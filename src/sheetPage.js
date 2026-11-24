@@ -5,6 +5,8 @@
 // 所有 DOM 由本模块生成，index.html 只留一个空壳，避免和旧样式打架。
 
 import { escapeHtml } from './htmlUtils.js';
+// 行层级：建森林 / 折叠展开 / 缩进降级都是纯函数，表格这一层只负责把结果画出来
+import { flattenVisibleTree } from './recordTree.js';
 import { serializeTSV, parseTSV, createGrid, resolveKeyIntent } from './gridCore.js';
 // 内部剪贴板的「值 → 哪一列」决策：纯函数放在 pasteMap，能单测（跨表最容易出错的就是这里）
 import { adaptClipValue, resolveBlockTargets, resolveRowTargets } from './pasteMap.js';
@@ -14,6 +16,10 @@ import { mountFillHandle, mountRowResizer } from './gridGestures.js';
 import { undoStack } from './undoCore.js';
 import { renderCell, openCellEditor, renderFieldIcon, FIELD_TYPE_LABELS } from './fieldTypes.js';
 import { pickAttachmentItems, storeImageFile, setAttachmentNotifier, readClipboardContent } from './attachmentOps.js';
+// 笔记在附件列里就是一个附件项：映射来自 note_record（随笔记文件同步），
+// 解绑只摘当前这一条记录的 id。**不把笔记路径抄进 attachments** ——
+// 笔记改名/移动一次，附件数组里就会留下一条永远点不开的死链。
+import { listNotes, addNoteRecord, removeNoteRecord } from './notesStore.js';
 // 剪贴板表格：解析在 clipboardTable（纯函数，可单测），预览与落库在 clipboardImport。
 // 分两层是因为「HTML → 矩阵」与「矩阵 → 库」的失败模式完全不同：
 // 前者是格式问题（要能单独测），后者是写库问题（要能回滚）。
@@ -38,6 +44,7 @@ import {
   openFilterPanel,
   openSortPanel,
   openImagePreview,
+  openPopover,
   openAttachmentSourceMenu,
   closeAllPanels,
   closeFloats,
@@ -78,6 +85,11 @@ import {
   mergeFieldOptions,
   fieldOptionsList,
   rowTitle,
+  listRecordNotes,
+  listAnchorTitles,
+  getSheetCollapsed,
+  setSheetCollapsed,
+  setRowParent,
 } from './sheetStore.js';
 
 const CHUNK = 60;
@@ -95,6 +107,15 @@ const state = {
   search: '',
   rendered: 0,
   rowTotal: 0,
+  // record_id → 挂在这一行上的笔记。附件列要把笔记画成附件项，
+  // 单元格渲染是同步的，所以打开表时一次性取全量。
+  notesByRecord: new Map(),
+  // 行层级：折叠了哪些行（id 集合）。null = 这张表没存过偏好，
+  // 走默认「只展开第 1 层」。缓存在这里，是因为 rowsInView 每次选区/键盘都要读。
+  collapsed: null,
+  collapsedSheetId: null,
+  rowsToken: 0, // 换行数据时 +1，用来失效层级缓存
+  anchorTitles: new Map(), // 挂载点 id → 显示名（挂载点可能是一行而不是 todo）
   fieldIndex: new Map(), // sheetId → [{label, type}]，库视图卡片上展示字段摘要
 };
 
@@ -257,10 +278,32 @@ function visibleFields() {
   return state.fields.filter(field => Number(field.visible) !== 0);
 }
 
-function cellCtx(field) {
+function cellCtx(field, row = null) {
   // solidPill：表格里配了色的选项要画成实心色块（编辑提交后重渲染也走这里，
   // 漏标就会「一改完又变回灰字」）。
-  return { placeholder: field.type === 'text' ? '未命名' : '—', solidPill: true };
+  // notes：附件列要把本行挂着的笔记画成附件项（纯数据，同步渲染）。
+  return {
+    placeholder: field.type === 'text' ? '未命名' : '—',
+    solidPill: true,
+    notes: notesForRecord(row?.id),
+  };
+}
+
+/** 某条记录挂着的笔记。没加载到就返回 undefined —— 渲染层会当「没有」。 */
+function notesForRecord(recordId) {
+  if (recordId == null) return undefined;
+  return state.notesByRecord.get(String(recordId)) || undefined;
+}
+
+// 笔记在别处（抽屉 / 笔记页）被挂上或摘掉后，重进表 / 重画这一行时要能跟上
+async function reloadRecordNotes() {
+  try {
+    state.notesByRecord = await listRecordNotes();
+  } catch (error) {
+    // 笔记索引读不出来不该把表格带崩：附件列少画几个胶囊而已
+    console.warn('[sheetPage] 读取笔记关联失败', error);
+    state.notesByRecord = new Map();
+  }
 }
 
 function displayValue(field, value) {
@@ -357,16 +400,19 @@ function filterRows(rows) {
 // ==========================================
 
 function groupSheets() {
+  // 两套名字：todos 仍是老的「任务」概念（表菜单里还在用），
+  // 挂载点可能是任意一条 record —— 后者优先，因为 T07 起「挂载于某一行」才是主语义。
   const taskMap = new Map(state.tasks.map(task => [String(task.id), task.label]));
   const groups = new Map();
   state.sheets.forEach(sheetItem => {
     const key = sheetItem.task_id == null ? '__none__' : String(sheetItem.task_id);
     if (!groups.has(key)) {
-      groups.set(key, {
-        key,
-        label: key === '__none__' ? '未归属任务' : taskMap.get(key) || '已删除的任务',
-        sheets: [],
-      });
+      let label = '独立表';
+      if (key !== '__none__') {
+        const anchor = state.anchorTitles.get(key);
+        label = anchor ? `挂载于：${anchor}` : taskMap.get(key) || '挂载点已删除（表仍在）';
+      }
+      groups.set(key, { key, label, sheets: [] });
     }
     groups.get(key).sheets.push(sheetItem);
   });
@@ -547,7 +593,8 @@ function renderSheet({ resetScroll = false } = {}) {
   clearSelection();
   const task = state.tasks.find(item => String(item.id) === String(sheet.task_id));
   const total = state.rows.length;
-  const shown = filterRows(state.rows).length;
+  // 状态栏报「看到几条」：折叠后子树不算可见，报 filterRows 的数会多出一截
+  const shown = rowsInView().length;
 
   host.innerHTML = `<div class="sh-page is-sheet">
     <div class="sh-crumbs">
@@ -643,7 +690,15 @@ function renderBodyRows(reset) {
   const start = state.rendered;
   const end = Math.min(start + CHUNK, list.length, ROW_LIMIT_HINT);
   if (start >= end) return;
-  const html = list.slice(start, end).map((row, offset) => buildRow(row, state.fields, start + offset + 1)).join('');
+  const html = list
+    .slice(start, end)
+    .map((row, offset) =>
+      buildRow(row, state.fields, start + offset + 1, {
+        notes: notesForRecord(row.id),
+        tree: treeMetaOf(row),
+      })
+    )
+    .join('');
   tbody.insertAdjacentHTML('beforeend', html);
   state.rendered = end;
   rebuildCellIndex();
@@ -671,6 +726,10 @@ async function refreshSheets() {
   try {
     state.sheets = await listSheets();
     state.tasks = await listTasks();
+    // 挂载点可能是一条表格行（record），todos 里查不到它 —— 名字单独取一份，
+    // 否则库视图会把「挂在一行记录上的表」写成「已删除的任务」。
+    const anchors = state.sheets.map(item => item.task_id).filter(id => Number(id) > 0);
+    state.anchorTitles = anchors.length ? await listAnchorTitles(anchors) : new Map();
   } catch (error) {
     toast(`读取表格列表失败：${error?.message || error}`, 'danger');
   }
@@ -763,6 +822,20 @@ async function openSheet(sheetId, options = {}) {
   resetPresetQuick();
   state.fields = await readTableFields(sheet);
   state.rows = await readTableRows(sheet);
+  state.rowsToken += 1;
+  // 折叠偏好按表存（settings），换表必须换一份：A 表折叠的行 id
+  // 落到 B 表上会随机藏掉几行，看起来像数据丢了。
+  state.collapsed = null;
+  state.collapsedSheetId = String(sheet.id);
+  try {
+    const saved = await getSheetCollapsed(sheet.id);
+    if (saved) state.collapsed = new Set(saved);
+  } catch (error) {
+    console.warn('[sheetPage] 读取折叠状态失败', error);
+  }
+  collapsedVersion += 1;
+  // 附件列要画本行挂着的笔记：一次取全量映射，别在每格渲染里 await
+  await reloadRecordNotes();
   state.view = 'sheet';
   // 换了一张表：必须回到顶部，不能沿用上一张表的滚动位置
   renderSheet({ resetScroll: true });
@@ -786,6 +859,7 @@ async function reloadFields() {
 
 async function reloadRows() {
   state.rows = await readTableRows(state.sheet);
+  state.rowsToken += 1;
 }
 
 // ==========================================
@@ -812,7 +886,7 @@ async function commitCell(field, row, cellEl, value) {
     return;
   }
   row.values[field.key] = value;
-  if (cellEl) cellEl.innerHTML = renderCell(field, value, cellCtx(field));
+  if (cellEl) cellEl.innerHTML = renderCell(field, value, cellCtx(field, row));
   markSaving();
   try {
     await writeRow(row);
@@ -827,7 +901,7 @@ async function commitCell(field, row, cellEl, value) {
     // 这里只在表格上体现；重开抽屉即最新。
   } catch (error) {
     row.values[field.key] = previous;
-    if (cellEl) cellEl.innerHTML = renderCell(field, previous, cellCtx(field));
+    if (cellEl) cellEl.innerHTML = renderCell(field, previous, cellCtx(field, row));
     markSaved();
     toast(`保存失败：${error?.message || error}`, 'danger');
   } finally {
@@ -873,7 +947,7 @@ async function applyCellBatch(items, sheetId) {
   if (!sheetId || String(state.sheet?.id) === String(sheetId)) {
     host?.querySelectorAll('.sh-cell[data-row][data-key]').forEach(el => {
       const hit = map.get(`${el.dataset.row}:${el.dataset.key}`);
-      if (hit) el.innerHTML = renderCell(hit.field, hit.value, cellCtx(hit.field));
+      if (hit) el.innerHTML = renderCell(hit.field, hit.value, cellCtx(hit.field, hit.row));
     });
   }
   markSaving();
@@ -1204,19 +1278,140 @@ function ensureRowRendered(rowId) {
 
 async function removeRow(row) {
   const title = rowTitle(row.values, state.fields);
-  window.showModal?.('删除记录', `<p style="margin:0;">删除「${escapeHtml(title)}」？此操作无法撤销。</p>`, null, async () => {
-    try {
-      await deleteRow(row.id);
-      await reloadRows();
-    } catch (error) {
-      toast(`删除失败：${error?.message || error}`, 'danger');
-      return false;
+  // 有子项时必须说清楚子项去哪了 —— 用户最怕的是「删一条，连带没了一整片」。
+  const children = state.rows.filter(item => Number(item.parent_id) === Number(row.id));
+  const hint = children.length
+    ? `<p style="margin:8px 0 0;color:var(--text-muted);">它下面的 ${children.length} 个子项会提到上一级，不会被一起删除。</p>`
+    : '';
+  window.showModal?.(
+    '删除记录',
+    `<p style="margin:0;">删除「${escapeHtml(title)}」？此操作无法撤销。</p>${hint}`,
+    null,
+    async () => {
+      try {
+        await deleteRow(row.id);
+        await reloadRows();
+      } catch (error) {
+        toast(`删除失败：${error?.message || error}`, 'danger');
+        return false;
+      }
+      closeAllPanels();
+      renderSheet();
+      toast(children.length ? `记录已删除，${children.length} 个子项已提到上一级` : '记录已删除');
+      return true;
+    },
+    { danger: true, btnText: '删除' }
+  );
+}
+
+/**
+ * 在这一行下面加一个子项。
+ *
+ * 两个细节：
+ *  ① 新行一出生就带 parent_id（insertTableRow 的 options），不走「先插再改父」，
+ *     否则中间那一帧是条孤儿行；
+ *  ② 加完必须**展开父行**，否则默认折叠状态下新建的子项立刻被藏起来，
+ *     用户看到的是「点了加子项，什么也没发生」。
+ */
+async function addChildRow(parent) {
+  if (!state.sheet || !parent) return;
+  const values = state.sheet.kind === 'preset' ? presetNewRowValues() : {};
+  let id = null;
+  try {
+    id = await insertTableRow(state.sheet, values, { parentId: parent.id });
+    const parentId = Number(parent.id);
+    const current = new Set(effectiveCollapsed(filterRows(state.rows)));
+    if (current.has(parentId)) {
+      current.delete(parentId);
+      state.collapsed = current;
+      if (state.sheet) await setSheetCollapsed(state.sheet.id, [...current]).catch(() => {});
     }
-    closeAllPanels();
+    await reloadRows();
+    await touchSheet(state.sheet.id);
+  } catch (error) {
+    toast(`加子项失败：${error?.message || error}`, 'danger');
+    return;
+  }
+  collapsedVersion += 1;
+  renderSheet();
+  const cell = ensureRowRendered(id);
+  if (cell) {
+    cell.scrollIntoView({ block: 'nearest' });
+    const field = state.fields.find(item => item.key === cell.dataset.key);
+    const row = state.rows.find(item => String(item.id) === String(id));
+    if (field && row) {
+      if (grid && grid.sel.size() > 1) clearSelection();
+      startCellEdit(field, row, cell);
+    }
+  }
+}
+
+/** 提升一级：交给祖父（父是根时变成根）。Excel 的「升级」就是这一下。 */
+async function promoteRow(row) {
+  const parentId = Number(row?.parent_id);
+  if (!Number.isInteger(parentId) || parentId <= 0) return;
+  const parent = state.rows.find(item => Number(item.id) === parentId);
+  const grandId = Number(parent?.parent_id);
+  const nextParent = Number.isInteger(grandId) && grandId > 0 ? grandId : null;
+  try {
+    await setRowParent(row.id, nextParent);
+    await reloadRows();
     renderSheet();
-    toast('记录已删除');
-    return true;
-  }, { danger: true, btnText: '删除' });
+    toast(nextParent ? '已提升一级' : '已提升为根记录');
+  } catch (error) {
+    toast(`提升失败：${error?.message || error}`, 'danger');
+  }
+}
+
+/**
+ * 把一张表挂到这一行（T07）。
+ *
+ * 语义是「挂载」不是「从属」：表本来就是独立表，只是被这一行指过来了。
+ * 一张表只能挂一个地方，所以选择器里把「已经挂在别处」的表标出来 ——
+ * 选中它等于**移动**，不是再挂一次（sheet.task_id 是单值）。
+ */
+async function openAttachSheetPicker(row) {
+  if (!row || row.id == null) return;
+  if (!state.sheets.length) await refreshSheets();
+  // 基础表不能被挂：它自己就是「基础表」，挂到某一行下面没有语义
+  const sheets = state.sheets.filter(item => item.kind !== 'preset');
+  if (!sheets.length) {
+    toast('还没有可挂的表，先到表格页新建一张', 'info');
+    return;
+  }
+  const currentId = sheets.find(item => Number(item.task_id) === Number(row.id))?.id;
+  const options = sheets
+    .map(item => {
+      const elsewhere = Number(item.task_id) > 0 && Number(item.task_id) !== Number(row.id);
+      const mark = String(item.id) === String(currentId) ? '（当前挂在这里）' : elsewhere ? '（已挂在别处）' : '';
+      return `<option value="${escapeHtml(item.id)}" ${String(item.id) === String(currentId) ? 'selected' : ''}>${escapeHtml(item.name)}${mark}</option>`;
+    })
+    .join('');
+  window.showModal?.(
+    '把表挂到这一行',
+    `<p style="margin:0 0 10px;color:var(--text-muted);">表里的数据不会动。删掉这一行时，表会保留，只是不再挂在这里。</p>
+     <select id="rd-attach-sheet" class="form-control" style="width:100%;">${options}</select>`,
+    null,
+    async () => {
+      const picked = document.getElementById('rd-attach-sheet')?.value;
+      if (!picked) return false;
+      const target = state.sheets.find(item => String(item.id) === String(picked));
+      const moved = target && Number(target.task_id) > 0 && Number(target.task_id) !== Number(row.id);
+      try {
+        await updateSheet(picked, { task_id: row.id });
+        await refreshSheets();
+      } catch (error) {
+        toast(`挂载失败：${error?.message || error}`, 'danger');
+        return false;
+      }
+      toast(moved ? '这张表原先挂在别处，已移到这一行' : '已挂到这一行');
+      // 抽屉里的「挂载的表」是打开时渲染的，重开一次才看得到新表
+      closeAllPanels();
+      setTimeout(() => openDetail(row), 0);
+      return true;
+    },
+    { btnText: '挂到这里' }
+  );
 }
 
 function openRowMenuFor(anchorEl, row) {
@@ -1231,6 +1426,8 @@ function openRowMenuFor(anchorEl, row) {
     insertBelow: count => insertRows(row, count, 'below'),
     height: value => applyRowHeight(row, value),
     'autofit-row': () => autoFitRow(row),
+    'add-child': () => addChildRow(row),
+    promote: () => promoteRow(row),
     delete: () => removeRow(row),
   });
 }
@@ -1741,8 +1938,113 @@ async function openAttachmentAddMenu(anchorEl, field, row, cellEl) {
   openAttachmentSourceMenu(anchorEl, {
     onFile: () => { void appendAttachments(field, row, cellEl); },
     onClipboard: () => { void appendFromClipboard(field, row, cellEl); },
+    // 笔记是附件族：从同一个「＋」进来挂，不再要求先开抽屉
+    onNote: () => { void openNotePicker(anchorEl, row); },
   });
   return null;
+}
+
+// ==========================================
+// 笔记 = 附件项
+//
+// 真相仍是 note_record（笔记文件优先）：这里既不复制路径、也不另建表。
+// 单元格里只负责「画一条胶囊 + 点开 / 解绑」，所以三类交互都在这一个文件里：
+//   ① 开笔记（先路由再 openNote —— 笔记编辑器只在自己那一栏可见时才有意义）
+//   ② 解绑（只摘当前这一条记录的 id，笔记与其它记录的关联原样保留）
+//   ③ 挂已有笔记（列表选择器；不重造抽屉里那套，直接读 notes_list）
+// ==========================================
+
+/** 只重画附件列的格子：挂/摘一篇笔记不必把整表重排（滚动位置也会丢）。 */
+function repaintAttachmentCells(recordId = null) {
+  if (!host) return;
+  const keys = new Set(state.fields.filter(field => field.type === 'attachment').map(field => field.key));
+  if (!keys.size) return;
+  host.querySelectorAll('.sh-cell[data-row][data-key]').forEach(cellEl => {
+    if (!keys.has(cellEl.dataset.key)) return;
+    if (recordId != null && String(cellEl.dataset.row) !== String(recordId)) return;
+    if (cellEl.classList.contains('ft-cell-editing')) return;
+    const row = state.rows.find(item => String(item.id) === String(cellEl.dataset.row));
+    const field = state.fields.find(item => item.key === cellEl.dataset.key);
+    if (!row || !field) return;
+    cellEl.innerHTML = renderCell(field, row.values[field.key], cellCtx(field, row));
+  });
+}
+
+async function openNoteFromTable(relPath) {
+  const rel = String(relPath ?? '');
+  if (!rel) return;
+  try {
+    // 必须先切页：笔记页是 display:none 的子视图，没显示就 openNote 只是白读一遍
+    await window.__wrRouteTo?.('nav-notes');
+    // 动态 import 是硬性要求：sheetPage 被全应用复用，顶层静态引 notesEditor
+    // 会把整条编辑器链路拖进表格的模块图（也躲开循环引用）
+    const mod = await import('./notesEditor.js');
+    await mod.openNote(rel);
+  } catch (error) {
+    toast(`打开笔记失败：${error?.message || error}`, 'danger');
+  }
+}
+
+async function detachNoteFromRow(relPath, recordId) {
+  const rel = String(relPath ?? '');
+  if (!rel || recordId == null) return;
+  try {
+    await removeNoteRecord(rel, recordId);
+    await reloadRecordNotes();
+    repaintAttachmentCells(recordId);
+    toast('已从这条记录解除笔记关联（笔记仍在笔记页）');
+  } catch (error) {
+    toast(`解除关联失败：${error?.message || error}`, 'danger');
+  }
+}
+
+/** 「＋」→ 挂一篇笔记：列出还没挂到这一行的笔记，点一条即挂上。 */
+async function openNotePicker(anchorEl, row) {
+  if (!row) return;
+  const notes = await listNotes().catch(() => []);
+  const linked = new Set((notesForRecord(row.id) || []).map(item => item.relPath));
+  const options = (Array.isArray(notes) ? notes : [])
+    .filter(item => item && item.rel_path && !linked.has(String(item.rel_path)))
+    .slice(0, 50);
+  if (!options.length) {
+    toast('没有可挂的笔记（要么一篇都没有，要么都挂在这一行了）', 'info');
+    return;
+  }
+  const items = options
+    .map(item => {
+      const rel = String(item.rel_path);
+      const title = String(item.title || '').trim() || rel.split('/').pop().replace(/\.md$/i, '');
+      const meta = String(item.updated_at || item.created_at || '').slice(0, 10);
+      return `<button type="button" class="sh-notepick-item" data-note-pick="${escapeHtml(rel)}" title="${escapeHtml(rel)}">
+        <svg class="wr-icon" aria-hidden="true"><use href="#ic-notebook"/></svg>
+        <span class="sh-notepick-title">${escapeHtml(title)}</span>
+        <span class="sh-notepick-meta">${escapeHtml(meta)}</span>
+      </button>`;
+    })
+    .join('');
+  const el = openPopover(anchorEl, 'sh-notepick', `
+    <div class="sh-menu-head">
+      <span class="sh-menu-title">挂一篇笔记</span>
+      <span class="sh-menu-sub">${options.length} 篇可选</span>
+    </div>
+    <div class="sh-menu-sep"></div>
+    <div class="sh-notepick-list">${items}</div>`);
+  if (!el) return;
+  el.addEventListener('click', async event => {
+    const pick = event.target.closest('[data-note-pick]');
+    if (!pick) return;
+    const rel = pick.dataset.notePick;
+    closeFloats();
+    if (!rel) return;
+    try {
+      await addNoteRecord(rel, row.id);
+      await reloadRecordNotes();
+      repaintAttachmentCells(row.id);
+      toast('已挂到这一行的附件列');
+    } catch (error) {
+      toast(`挂笔记失败：${error?.message || error}`, 'danger');
+    }
+  });
 }
 
 /** Excel 粘进来的都是纯文本，按字段类型收一下，别把 "1,234" 直接塞进数字列 */
@@ -2072,6 +2374,20 @@ function openDetail(row) {
       });
     },
     onDelete: target => removeRow(target),
+    // 「⋯」里的动作：把这张表挂到当前行（T07）。keepOpen = 先不关抽屉 ——
+    // 选择器是模态，关了抽屉再弹窗会闪一下。
+    actions: [
+      {
+        key: 'attach-sheet',
+        label: '在此行挂一张表…',
+        keepOpen: true,
+        run: () => { void openAttachSheetPicker(row); },
+      },
+    ],
+    // 抽屉里能挂 / 摘笔记：关掉后把附件列的胶囊刷一次，否则表格上还是旧的
+    onClose: () => {
+      void reloadRecordNotes().then(() => repaintAttachmentCells());
+    },
     // 抽屉里改标题走的是 patchRecord（没经过 writeRow / commitCell），
     // 网格上那一格不会自己变 —— 关掉抽屉还写着旧字，看起来就是「没保存」。
     // 「字段」区的滑杆面板：隐藏 / 顺序 / 大小都存在这个字段自己的 options 里
@@ -2082,7 +2398,7 @@ function openDetail(row) {
         `.sh-cell[data-row="${CSS.escape(String(row.id))}"][data-key="${CSS.escape(field.key)}"]`
       );
       if (cellEl && !cellEl.classList.contains('ft-cell-editing')) {
-        cellEl.innerHTML = renderCell(field, value, cellCtx(field));
+        cellEl.innerHTML = renderCell(field, value, cellCtx(field, row));
       }
     },
     onPrev: () => {
@@ -2433,8 +2749,87 @@ function rebuildCellIndex() {
   });
 }
 
+// 层级视图的缓存：rowsInView() 会被选区描边、键盘、拖选反复调用，
+// 每次都重建森林在 1000 行表上是纯浪费。键里带 rowsToken / 折叠版本 / 筛选条件，
+// 任何一样变了才重算。
+let viewCache = { key: '', rows: [], meta: new Map() };
+let collapsedVersion = 0;
+
+function viewSignature() {
+  return [
+    state.rowsToken,
+    collapsedVersion,
+    state.search || '',
+    JSON.stringify(activeFilters()),
+    JSON.stringify(state.sorts),
+  ].join('|');
+}
+
+/**
+ * 当前该显示哪些行、按什么顺序。
+ *
+ * 层级在这里收口：筛选/排序先跑，**再**建森林 —— 父被筛掉的行当根（recordTree 的既定语义），
+ * 这样「筛出一部分」不会整枝消失，也不会凭空多出缩进。
+ */
 function rowsInView() {
-  return filterRows(state.rows);
+  const key = viewSignature();
+  if (viewCache.key === key) return viewCache.rows;
+  const filtered = filterRows(state.rows);
+  const flat = flattenVisibleTree(filtered, effectiveCollapsed(filtered), {
+    // 标题解析交给这一层：自建表的标题在 values 的某个文本列里，
+    // 预置表才有 record.title。内核不该知道这种差别。
+    titleOf: row => rowTitle(row?.values, state.fields),
+  });
+  viewCache = {
+    key,
+    rows: flat.map(item => item.row),
+    meta: new Map(flat.map(item => [String(item.row.id), item])),
+  };
+  return viewCache.rows;
+}
+
+/**
+ * 折叠集合。没存过偏好时按既定规则「只展开第 1 层」——
+ * 即所有有子项的行都折叠。整张表都是平的时候这个集合是空的，行为与以前完全一致。
+ */
+function effectiveCollapsed(filtered) {
+  if (state.collapsed instanceof Set) return state.collapsed;
+  const parents = new Set();
+  filtered.forEach(row => {
+    const parentId = Number(row?.parent_id);
+    if (Number.isInteger(parentId) && parentId > 0) parents.add(parentId);
+  });
+  return parents;
+}
+
+/** 某一行的层级信息（缩进 / 是否有子项 / 是否折叠 / 路径前缀）。平表返回 null。 */
+function treeMetaOf(row) {
+  if (!row) return null;
+  rowsInView();
+  const meta = viewCache.meta.get(String(row.id)) || null;
+  // 深度 1 且没有子项 = 普通行，不画任何层级装饰
+  if (!meta || (meta.depth <= 1 && !meta.hasChildren)) return null;
+  return meta;
+}
+
+async function toggleCollapsed(rowId) {
+  const id = Number(rowId);
+  if (!Number.isInteger(id) || id <= 0) return;
+  const list = filterRows(state.rows);
+  const current = new Set(effectiveCollapsed(list));
+  if (current.has(id)) current.delete(id);
+  else current.add(id);
+  state.collapsed = current;
+  collapsedVersion += 1;
+  renderSheet();
+  // 折叠状态要跟表走、要能进备份 —— 存 settings，不存 localStorage
+  if (state.sheet) {
+    try {
+      await setSheetCollapsed(state.sheet.id, [...current]);
+    } catch (error) {
+      console.warn('[sheetPage] 保存折叠状态失败', error);
+    }
+  }
 }
 
 function colsInView() {
@@ -3082,16 +3477,23 @@ function onHostPointerDown(event) {
   if (event.target.closest('.sh-cell.ft-cell-editing')) return;
   const handle = event.target.closest('.sh-col-resizer');
   if (!handle) {
+    // Ctrl / ⌘ 按下的那一下是「加选 / 减选」，不可能是拖选的起手 ——
+    // 真鼠标按下去常带 3~5px 抖动（150% 缩放下 5 CSS px 只有 7.5 设备像素），
+    // 起手拖选会在 pointermove 里把整片已有选区清成一条，表现就是「Ctrl 加选没用」。
+    // 所以带修饰键时一律把选择交给后面的 click。
+    const additive = Boolean(event.ctrlKey || event.metaKey);
     // 列头 / 行号：按住拖 = 连续多列 / 多行（必须在单元格之前判，
     // 否则拖到格子上就被框选逻辑接管了）
     const colHead = event.target.closest('.sh-th-btn');
     if (colHead) {
+      if (additive) return;
       const key = colHead.dataset.key;
       startLineDrag('col', colsInView().findIndex(item => item.key === key), event);
       return;
     }
     const rowHead = event.target.closest('.sh-rownum');
     if (rowHead) {
+      if (additive) return;
       const list = rowsInView();
       startLineDrag('row', list.findIndex(item => String(item.id) === String(rowHead.dataset.row)), event);
       return;
@@ -3099,6 +3501,7 @@ function onHostPointerDown(event) {
     // 单元格拖选：记下起点，移动超过 5px 才算框选（否则仍然是单击编辑）
     const cell = event.target.closest('.sh-cell');
     if (cell && cell.dataset.rowindex != null && !event.target.closest('input, textarea, button')) {
+      if (additive) return;
       dragSel = {
         r: Number(cell.dataset.rowindex),
         c: Number(cell.dataset.col),
@@ -3192,6 +3595,9 @@ function onHostDblClick(event) {
     });
     return;
   }
+
+  // 双击笔记胶囊：那是「打开笔记」，不能再顺手把附件来源菜单弹出来
+  if (event.target.closest('.ft-note-chip')) { event.preventDefault(); return; }
 
   // 双击单元格 = 进入编辑；附件格：空的直接选文件，有图的看大图
   const cell = event.target.closest('.sh-cell');
@@ -3315,6 +3721,14 @@ function onHostClick(event) {
   }
   if (event.target.closest('[data-clear-sort]')) { state.sorts = []; renderSheet(); return; }
 
+  // 折叠箭头（长在第一格的 td 上，不在 .sh-cell 里）：
+  // 必须在单元格选中之前判，否则点箭头会顺手把那一格选中。
+  const treeToggle = event.target.closest('[data-tree-toggle]');
+  if (treeToggle) {
+    void toggleCollapsed(treeToggle.dataset.treeToggle);
+    return;
+  }
+
   const thBtn = event.target.closest('.sh-th-btn');
   if (thBtn) {
     // 左键点列头 = 选中这一列（Ctrl/⌘ 累加、Shift 连选）；
@@ -3329,6 +3743,21 @@ function onHostClick(event) {
     // 左键点行号 = 选中这一行（Ctrl 累加 / Shift 连选），和列头同一套手势；
     // 行菜单走右键，详情走双击。
     selectRowById(rownum.dataset.row, event);
+    return;
+  }
+
+  // 笔记胶囊（附件列）：× 是胶囊的子元素，必须先判它；
+  // 点胶囊本体 = 打开那篇笔记（不重选单元格，否则一次点击干两件事）
+  const noteDetach = event.target.closest('[data-note-unlink]');
+  if (noteDetach) {
+    const cellEl = noteDetach.closest('.sh-cell');
+    const row = cellEl && state.rows.find(item => String(item.id) === String(cellEl.dataset.row));
+    if (row) void detachNoteFromRow(noteDetach.dataset.noteUnlink, row.id);
+    return;
+  }
+  const noteChip = event.target.closest('[data-note-open]');
+  if (noteChip) {
+    void openNoteFromTable(noteChip.dataset.noteOpen);
     return;
   }
 
@@ -3685,7 +4114,8 @@ export async function initSheetPage() {
       const status = host.querySelector('[data-status-text]');
       if (status) {
         const total = state.rows.length;
-        const shown = filterRows(state.rows).length;
+        // 状态栏报「看到几条」：折叠后子树不算可见，报 filterRows 的数会多出一截
+  const shown = rowsInView().length;
         status.textContent = shown === total ? `共 ${total} 条记录` : `筛选出 ${shown} / ${total} 条`;
       }
     };

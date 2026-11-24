@@ -2973,3 +2973,225 @@ body[data-ui="v3"] .rd-note-open:focus-visible .rd-note-icon {
 body[data-ui="v3"] .rd-note-item.is-missing .rd-note-icon {
   opacity: .5 !important;
 }
+
+/* =========================================================================
+   笔记在附件列里（2026-11-24）
+   -------------------------------------------------------------------------
+   笔记与文件本来就是同一类东西 —— 一堆能点开的文件。以前它们长在
+   两个互不相干的地方（附件列只有图片/文件，笔记单独占一块），于是
+   「这条记录有几个附件」要跑两处数。现在笔记画成同尺寸的胶囊：
+   几何完全对齐 .ft-file-chip（2px 7px / 5px 圆角 / 11.5px），只换图标。
+
+   × 只在悬停 / 聚焦时出现：常显会让每个胶囊都像「删除按钮」，
+   一格里挂三篇笔记时满是叉。
+   ========================================================================= */
+body[data-skin="v4"] .sh-cell .ft-note-list {
+  display: inline-flex !important;
+  flex: 0 1 auto !important;
+  align-items: center !important;
+  gap: 5px !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  margin-left: 6px !important;
+  overflow: hidden !important;
+}
+
+body[data-skin="v4"] .sh-cell .ft-note-chip {
+  display: inline-flex !important;
+  flex: 0 1 auto !important;
+  align-items: center !important;
+  gap: 4px !important;
+  min-width: 0 !important;
+  max-width: 190px !important;
+  padding: 2px 7px !important;
+  border: 1px solid color-mix(in srgb, var(--color-primary) 22%, var(--border-light)) !important;
+  border-radius: 5px !important;
+  background: color-mix(in srgb, var(--color-primary) 8%, transparent) !important;
+  color: var(--text-secondary) !important;
+  font-size: 11.5px !important;
+  line-height: 16px !important;
+  cursor: pointer !important;
+  user-select: none !important;
+}
+
+body[data-skin="v4"] .sh-cell .ft-note-chip:hover {
+  border-color: color-mix(in srgb, var(--color-primary) 55%, transparent) !important;
+  color: var(--color-primary) !important;
+}
+
+body[data-skin="v4"] .sh-cell .ft-note-chip .wr-icon {
+  flex: none !important;
+  width: 12px !important;
+  height: 12px !important;
+  color: color-mix(in srgb, var(--color-primary) 70%, var(--text-secondary)) !important;
+}
+
+body[data-skin="v4"] .sh-cell .ft-note-name {
+  min-width: 0 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+
+/* 解绑：默认隐形，悬停整条胶囊才出现。它是胶囊的子元素，
+   命中区 14px 见方，别做成 0 高度（点不到等于没有）。 */
+body[data-skin="v4"] .sh-cell .ft-note-x {
+  flex: none !important;
+  width: 14px !important;
+  height: 14px !important;
+  margin-right: -3px !important;
+  border-radius: 3px !important;
+  color: var(--text-muted) !important;
+  font-size: 12px !important;
+  line-height: 14px !important;
+  text-align: center !important;
+  opacity: 0 !important;
+  transition: opacity .12s ease !important;
+}
+
+body[data-skin="v4"] .sh-cell .ft-note-chip:hover .ft-note-x,
+body[data-skin="v4"] .sh-cell .ft-note-chip:focus-within .ft-note-x {
+  opacity: 1 !important;
+}
+
+body[data-skin="v4"] .sh-cell .ft-note-x:hover {
+  background: color-mix(in srgb, var(--color-danger) 16%, transparent) !important;
+  color: var(--color-danger) !important;
+}
+
+body[data-skin="v4"] .sh-cell .ft-note-more {
+  flex: none !important;
+  color: var(--text-muted) !important;
+  font-size: 11px !important;
+}
+
+/* 挂一篇笔记：选择器。列表可滚，行高 30px，
+   与 .sh-attmenu-item 同一套材质（同一个「＋」进来的，不该像两个产品）。 */
+body[data-skin="v4"] .sh-notepick {
+  width: 300px !important;
+  padding: 5px !important;
+}
+
+body[data-skin="v4"] .sh-notepick-list {
+  max-height: 286px !important;
+  overflow: auto !important;
+  overscroll-behavior: contain !important;
+}
+
+body[data-skin="v4"] .sh-notepick-item {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  width: 100% !important;
+  height: 30px !important;
+  padding: 0 8px !important;
+  border: 0 !important;
+  border-radius: 6px !important;
+  background: transparent !important;
+  color: var(--v4-text) !important;
+  font-family: var(--v4-sans) !important;
+  font-size: 12.5px !important;
+  line-height: 1 !important;
+  text-align: left !important;
+  cursor: pointer !important;
+}
+
+body[data-skin="v4"] .sh-notepick-item:hover,
+body[data-skin="v4"] .sh-notepick-item:focus-visible {
+  background: var(--v4-surface-2) !important;
+  outline: none !important;
+}
+
+body[data-skin="v4"] .sh-notepick-item .wr-icon {
+  flex: none !important;
+  width: 13px !important;
+  height: 13px !important;
+  color: var(--v4-text-3) !important;
+}
+
+body[data-skin="v4"] .sh-notepick-title {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+
+body[data-skin="v4"] .sh-notepick-meta {
+  flex: none !important;
+  color: var(--v4-text-3) !important;
+  font-size: 11px !important;
+  font-variant-numeric: tabular-nums !important;
+}
+
+/* =========================================================================
+   行层级（T06）：缩进 + 折叠箭头 + 深度降级的路径前缀
+   -------------------------------------------------------------------------
+   缩进走第一格的 padding-left，**不动 .sh-cell 的基础 12px**：
+   编辑器用「-12px 负边距 + 12px 内边距」抵消格子内边距（v5 上面那套），
+   多出来的 --tree-indent 会原样留下，所以静态文字与编辑态仍逐像素重合。
+   箭头挂在 td 上而不是 .sh-cell 里：cell 的 innerHTML 会被编辑器整块换掉，
+   箭头跟着消失就等于「一编辑就展不开子项」。
+   ========================================================================= */
+body[data-skin="v4"] .sh-table .sh-td-first {
+  position: relative !important;
+}
+
+body[data-skin="v4"] .sh-table .sh-td-first .sh-cell {
+  padding-left: calc(12px + var(--tree-indent, 0px)) !important;
+}
+
+/* 全局 button 有 min-height:38px / padding 的 !important（MEMORY 里那条三连坑），
+   所以这里必须用 td 级前缀 + 三件套一起压回去。 */
+body[data-skin="v4"] .sh-table td.sh-td-first > .sh-tree-caret {
+  position: absolute !important;
+  left: calc(1px + var(--tree-indent, 0px)) !important;
+  top: 50% !important;
+  transform: translateY(-50%) !important;
+  z-index: 3 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 12px !important;
+  height: 12px !important;
+  min-height: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 3px !important;
+  background: transparent !important;
+  color: var(--text-muted) !important;
+  cursor: pointer !important;
+}
+
+body[data-skin="v4"] .sh-table td.sh-td-first > .sh-tree-caret:hover {
+  background: color-mix(in srgb, var(--color-primary) 14%, transparent) !important;
+  color: var(--color-primary) !important;
+}
+
+body[data-skin="v4"] .sh-table .sh-tree-caret .wr-icon {
+  width: 10px !important;
+  height: 10px !important;
+  transform: rotate(90deg) !important; /* 展开：箭头朝下 */
+  transition: transform .12s ease !important;
+}
+
+/* 折叠：箭头朝右（=「这里有东西，点开」），与文件夹树一致 */
+body[data-skin="v4"] .sh-table .sh-tree-caret.is-collapsed .wr-icon {
+  transform: rotate(0deg) !important;
+}
+
+/* 第 4 层起缩进封顶，改用「⋯ 祖父 / 父」前缀表达位置。
+   写在 ::before 上、读 data-tree-path 属性：重画 innerHTML 抹不掉属性，
+   所以改完一格前缀还在（这是不把它塞进内容里的原因）。 */
+body[data-skin="v4"] .sh-table .sh-cell[data-tree-path]::before {
+  content: attr(data-tree-path) !important;
+  flex: 0 1 auto !important;
+  max-width: 46% !important;
+  margin-right: 6px !important;
+  overflow: hidden !important;
+  color: var(--text-muted) !important;
+  font-size: 11.5px !important;
+  line-height: 1.4 !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}

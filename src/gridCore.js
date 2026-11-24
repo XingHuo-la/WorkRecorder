@@ -188,13 +188,37 @@ export function createSelection() {
     return snapshot();
   }
 
-  /** Ctrl 点：加/减一格（不拉矩形）。 */
+  /**
+   * Ctrl 点：加/减一格（不拉矩形）。
+   *
+   * 三条语义都是 Excel 的，也是真机上真正会被触发的那几次点击：
+   *   · 整行/整列选区上 Ctrl 点一格 → 收起行列、改成按格选（行列选区表达不了「再加一格」）；
+   *   · 当前只有一格、Ctrl 再点它 → 取消选中（以前 anchor 会把它一直画成选中，点不掉）；
+   *   · 其余情况增减 extras。
+   * ⚠️ 这里只改 mode/extras，不碰 anchor —— anchor 是 Shift 扩展的起点，
+   *    也是「活动格」描边的落点。
+   */
   function toggle(r, c) {
     const k = key(r, c);
+    if (mode === 'rows' || mode === 'cols') {
+      pickedRows = [];
+      pickedCols = [];
+      extras.clear();
+      anchor = { r, c };
+      focus = { r, c };
+      mode = 'cell';
+      return snapshot();
+    }
+    if (!anchor) { select(r, c); return snapshot(); }
+    const box = bounds();
+    const onlyThis = box
+      && box.r1 === box.r2 && box.c1 === box.c2
+      && box.r1 === r && box.c1 === c
+      && extras.size === 0;
+    if (onlyThis) { clear(); return snapshot(); }
     if (extras.has(k)) extras.delete(k);
     else extras.add(k);
-    if (!anchor) { anchor = { r, c }; focus = { r, c }; }
-    mode = extras.size || anchor ? 'cell' : 'none';
+    mode = 'cell';
     return snapshot();
   }
 

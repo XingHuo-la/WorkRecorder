@@ -118,6 +118,21 @@ console.log('\n[3] 选区模型');
   sel.toggle(0, 2);
   eq('Ctrl 再点取消该格', sel.size(), 2);
 
+  // Ctrl 再点「唯一那一格」= 取消选中（以前 anchor 会把它一直画成选中，点不掉）
+  sel.clear();
+  sel.select(4, 4);
+  sel.toggle(4, 4);
+  eq('Ctrl 点唯一已选中的格 → 清空', sel.size(), 0);
+  eq('清空后没有活动格', sel.active(), null);
+
+  // 整列选区上 Ctrl 点一格：收起行列，改成按格（否则再点别的格会画出整列）
+  sel.clear();
+  sel.selectCols([2]);
+  sel.toggle(1, 5);
+  eq('整列上 Ctrl 点格 → 模式回到 cell', sel.snapshot().mode, 'cell');
+  eq('原来的列已清空', sel.colsList(), []);
+  ok('只有点的那一格被选中', sel.contains(1, 5) && !sel.contains(0, 2));
+
   sel.clear();
   eq('清空后 size=0', sel.size(), 0);
   eq('清空后无 active', sel.active(), null);

@@ -270,13 +270,38 @@ function baseName(path) {
 
 function renderAttachmentCell(value, ctx) {
   const items = Array.isArray(value) ? value.filter(item => item && item.path) : [];
-  if (!items.length) return renderEmpty(ctx);
+  // 笔记 = 附件族。真相在 note_record（笔记文件优先），这里只负责画：
+  // 把挂着本行的笔记并排画成胶囊，点击开笔记、× 只解绑这一行。
+  // 不把笔记路径抄进 attachments 数组 —— 笔记改名/移动一次就会留下死链。
+  // 两种键名都收：notes_list 给的是 rel_path，列表映射给的是 relPath。
+  const notes = (Array.isArray(ctx?.notes) ? ctx.notes : [])
+    .map(item => ({ relPath: String(item?.relPath ?? item?.rel_path ?? ''), title: String(item?.title ?? '') }))
+    .filter(item => item.relPath);
+  if (!items.length && !notes.length) return renderEmpty(ctx);
   // 两类附件：图片（嵌入到数据目录，可缩略预览）与普通文件（只存路径链接）
   const images = items.filter(item => item.kind !== 'file');
   const files = items.filter(item => item.kind === 'file');
   // 有内容的附件格右下角给一个「＋」：点它选来源（剪贴板 / 文件），空格双击也能加
   const addBtn = '<span class="ft-att-add" data-add-att="1" title="添加附件（剪贴板或文件）">＋</span>';
-  return `${images.length ? renderImagePart(images) : ''}${files.length ? renderFilePart(files, images.length > 0) : ''}${addBtn}`;
+  return `${images.length ? renderImagePart(images) : ''}${files.length ? renderFilePart(files, images.length > 0) : ''}${
+    notes.length ? renderNotePart(notes) : ''
+  }${addBtn}`;
+}
+
+// 笔记胶囊。data-note-open / data-note-detach 与抽屉笔记区同名 ——
+// 抽屉里点的还是同一套处理函数，表格自己接一份。
+function renderNotePart(notes) {
+  const max = 2;
+  const visible = notes.slice(0, max);
+  const rest = notes.length - visible.length;
+  const chips = visible
+    .map(item => `<span class="ft-note-chip" data-note-open="${escapeHtml(item.relPath)}" title="${escapeHtml(item.relPath)}">
+      <svg class="wr-icon" aria-hidden="true"><use href="#ic-notebook"/></svg>
+      <span class="ft-note-name">${escapeHtml(item.title || '')}</span>
+      <span class="ft-note-x" data-note-unlink="${escapeHtml(item.relPath)}" title="从这条记录解除">×</span>
+    </span>`)
+    .join('');
+  return `<span class="ft-note-list">${chips}${rest > 0 ? `<span class="ft-note-more">+${rest}</span>` : ''}</span>`;
 }
 
 function renderImagePart(items) {

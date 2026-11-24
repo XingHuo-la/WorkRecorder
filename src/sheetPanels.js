@@ -362,6 +362,14 @@ export function openRowMenu(anchor, row, index, handlers = {}) {
       <svg class="wr-icon" aria-hidden="true"><use href="#ic-swap"/></svg>最适合的行高
     </button>
     <div class="sh-menu-sep"></div>
+    <!-- 行层级：子项挂在当前行下面；提升一级把它交还给祖父 -->
+    <button type="button" class="sh-menu-item" data-act="add-child">
+      <svg class="wr-icon" aria-hidden="true"><use href="#ic-insert-right"/></svg>在此行下加子项
+    </button>
+    <button type="button" class="sh-menu-item" data-act="promote" ${Number(row.parent_id) > 0 ? '' : 'disabled'}>
+      <svg class="wr-icon" aria-hidden="true"><use href="#ic-insert-left"/></svg>提升一级
+    </button>
+    <div class="sh-menu-sep"></div>
     <button type="button" class="sh-menu-item is-danger" data-act="delete">
       <svg class="wr-icon" aria-hidden="true"><use href="#ic-trash"/></svg>删除记录
     </button>`, { width: 236 });
@@ -492,6 +500,15 @@ export function openFileActionMenu(anchor, { name, path }, handlers = {}) {
  * @param {{onClipboard?:Function, onFile?:Function}} handlers
  */
 export function openAttachmentSourceMenu(anchorEl, handlers = {}) {
+  // 笔记是附件族（Sir 拍板）：同一个「＋」里给入口，用户不必先知道
+  // 「笔记」与「附件」在数据上其实是两套存储。
+  const noteItem = handlers.onNote
+    ? `<button type="button" class="sh-attmenu-item" data-att-src="note">
+      <svg class="wr-icon" aria-hidden="true"><use href="#ic-notebook"/></svg>
+      <span class="sh-attmenu-label">挂一篇笔记…</span>
+      <span class="sh-attmenu-kbd"></span>
+    </button>`
+    : '';
   const el = openPopover(anchorEl, 'sh-attmenu', `
     <button type="button" class="sh-attmenu-item" data-att-src="clipboard">
       <svg class="wr-icon" aria-hidden="true"><use href="#ic-copy"/></svg>
@@ -502,13 +519,14 @@ export function openAttachmentSourceMenu(anchorEl, handlers = {}) {
       <svg class="wr-icon" aria-hidden="true"><use href="#ic-type-attachment"/></svg>
       <span class="sh-attmenu-label">选择文件…</span>
       <span class="sh-attmenu-kbd"></span>
-    </button>`);
+    </button>${noteItem}`);
   if (!el) return null;
   el.addEventListener('click', event => {
     const src = event.target.closest('[data-att-src]')?.dataset.attSrc;
     if (!src) return;
     closeFloats();
     if (src === 'file') handlers.onFile?.();
+    else if (src === 'note') handlers.onNote?.();
     else handlers.onClipboard?.();
   });
   return el;

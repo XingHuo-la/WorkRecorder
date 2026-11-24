@@ -254,6 +254,37 @@ export async function listTasks() {
     .sort((a, b) => Number(a.done) - Number(b.done));
 }
 
+/**
+ * 每一条记录挂着哪些笔记。表格的附件列要把笔记当成附件项画出来，
+ * 而单元格渲染必须是同步纯函数 —— 所以这里一次取全量，由页面建 record_id → 笔记 的映射。
+ *
+ * 真相仍是 note_record（v12 派生表）+ 笔记文件的 front-matter；
+ * **不要把笔记路径再抄进 attachments 数组** —— 那样笔记改名/移动一次，
+ * 附件列就会留下一条永远点不开的死链，而 note_record 是随文件同步的。
+ *
+ * @returns {Promise<Map<string, Array<{relPath: string, title: string}>>>}
+ */
+export async function listRecordNotes() {
+  const rows = await db().dbQuery(
+    `SELECT n.record_id AS record_id, n.rel_path AS rel_path,
+            COALESCE(i.title, '') AS title, COALESCE(i.updated_at, '') AS updated_at
+       FROM note_record n
+       LEFT JOIN note_index i ON i.rel_path = n.rel_path
+      ORDER BY n.record_id, i.updated_at DESC`
+  );
+  const map = new Map();
+  (Array.isArray(rows) ? rows : []).forEach(item => {
+    const id = Number(item.record_id);
+    const relPath = String(item.rel_path || '');
+    if (!Number.isFinite(id) || id <= 0 || !relPath) return;
+    const key = String(id);
+    if (!map.has(key)) map.set(key, []);
+    const title = String(item.title || '').trim() || relPath.split('/').pop().replace(/\.md$/i, '');
+    map.get(key).push({ relPath, title });
+  });
+  return map;
+}
+
 export async function createSheet({ name, taskId = null, templateKey = 'blank' }) {
   const template = SHEET_TEMPLATES.find(item => item.key === templateKey) || SHEET_TEMPLATES[3];
   const stamp = nowStamp();
@@ -526,6 +557,18 @@ export async function saveRowValues(rowId, values) {
 export async function deleteRow(rowId) {
   // v13 软删除：kind 打 '#deleted' 后缀，sheet_row 视图的 `WHERE kind='sheet_row'` 自动过滤。
   // 直接 DELETE 会绕过视图的 INSTEAD OF 触发器，所以这里手写同一套标记。
+  //
+  // 行层级（T06）：删父行必须把子项交还给祖父，否则它们会挂在一个已删除的 id 上 ——
+  // 树里看着像根，点开抽屉面包屑却是「已删除记录」，而且再也提升不回来。
+  // 先摘父再删，两条 UPDATE 的顺序不能反：反了就先查不到 parent_id 了。
+  const rows = await db().dbQuery('SELECT parent_id FROM record WHERE id = ?', [rowId]);
+  const parentId = Number(rows?.[0]?.parent_id);
+  if (Number.isInteger(parentId) && parentId > 0) {
+    await db().dbExecute('UPDATE record SET parent_id = ? WHERE parent_id = ?', [parentId, rowId]);
+  } else {
+    // NULL 只能是 SQL 字面量：dbExecute 会 params.map(String)，传 null 会写成字符串 'null'
+    await db().dbExecute('UPDATE record SET parent_id = NULL WHERE parent_id = ?', [rowId]);
+  }
   await db().dbExecute(
     "UPDATE record SET deleted_at = ?, kind = kind || '#deleted' WHERE id = ? AND kind NOT LIKE '%#deleted'",
     [nowStamp(), rowId],
@@ -763,31 +806,61 @@ export async function saveTableRow(table, row, values) {
   );
 }
 
-export async function insertTableRow(table, values = {}) {
+export async function insertTableRow(table, values = {}, options = {}) {
   if (!table) return null;
-  if (table.kind !== TABLE_KIND_PRESET) return insertRow(table.id, values);
+  // 父子关系（行层级）：新行可以一出生就挂在某一行下面。
+  // 不用 INSERT 完再 UPDATE 两步（预置表那条尤其危险：两次写库之间刷新会看到一条孤儿行）。
+  const parentId = options.parentId == null ? null : Number(options.parentId);
+  if (table.kind !== TABLE_KIND_PRESET) {
+    const id = await insertRow(table.id, values);
+    if (id != null && Number.isFinite(parentId)) await setRowParent(id, parentId);
+    return id;
+  }
 
   const stamp = nowStamp();
   const columns = presetColumnsOf(values);
   const custom = {};
   if (Array.isArray(values?.attachments) && values.attachments.length) custom.attachments = values.attachments;
-  await db().dbExecute(
-    `INSERT INTO record (kind, title, body, tag, sub_tag, happened_date, happened_time,
-                         status, custom, sort, created_at, updated_at, deleted_at)
-     VALUES ('log', ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, '')`,
-    [
-      columns.title,
-      columns.body,
-      columns.tag,
-      columns.sub_tag,
-      columns.happened_date,
-      columns.happened_time,
-      columns.status,
-      JSON.stringify(custom),
-      stamp,
-      stamp,
-    ]
-  );
+  if (Number.isFinite(parentId)) {
+    await db().dbExecute(
+      `INSERT INTO record (kind, title, body, tag, sub_tag, happened_date, happened_time,
+                           status, custom, parent_id, sort, created_at, updated_at, deleted_at)
+       VALUES ('log', ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, '')`,
+      [
+        columns.title,
+        columns.body,
+        columns.tag,
+        columns.sub_tag,
+        columns.happened_date,
+        columns.happened_time,
+        columns.status,
+        JSON.stringify(custom),
+        parentId,
+        stamp,
+        stamp,
+      ]
+    );
+  } else {
+    await db().dbExecute(
+      `INSERT INTO record (kind, title, body, tag, sub_tag, happened_date, happened_time,
+                           status, custom, sort, created_at, updated_at, deleted_at)
+       VALUES ('log', ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, '')`,
+      [
+        columns.title,
+        columns.body,
+        columns.tag,
+        columns.sub_tag,
+        columns.happened_date,
+        columns.happened_time,
+        columns.status,
+        JSON.stringify(custom),
+        stamp,
+        stamp,
+      ]
+    );
+  }
+  // 预置表按时间排序，`ORDER BY id DESC LIMIT 1` 拿到的就是刚插的那条。
+  // （自建表不能这么拿：sort 相同时 id 未必最大；那边用的是 insertRow 自己的返回值。）
   const created = await db().dbQuery('SELECT id FROM record ORDER BY id DESC LIMIT 1');
   return created?.[0]?.id ?? null;
 }
@@ -953,6 +1026,110 @@ export async function getDefaultTableId() {
 export async function setDefaultTableId(tableId) {
   if (tableId == null) return;
   await db().dbExecute("INSERT OR REPLACE INTO settings (key, value) VALUES ('default_table_id', ?)", [String(tableId)]);
+}
+
+// ==========================================
+// 通用的按表设置（settings 表）
+//
+// 为什么不用 localStorage：折叠状态、视图偏好这类东西要跟表走、要能进备份。
+// localStorage 换台机器就没了，而且和主题等设置不同源。
+// ==========================================
+
+async function readSetting(key) {
+  const rows = await db().dbQuery('SELECT value FROM settings WHERE key = ?', [String(key)]);
+  const value = rows?.[0]?.value;
+  return value == null ? '' : String(value);
+}
+
+async function writeSetting(key, value) {
+  await db().dbExecute('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', [String(key), String(value)]);
+}
+
+/**
+ * 某张表折叠了哪些行（id 数组）。
+ * 返回 **null** 表示「没存过」——调用方据此走默认策略（只展开第 1 层），
+ * 而不是把「用户展开了所有枝」和「从没动过」混成同一种空数组。
+ */
+export async function getSheetCollapsed(sheetId) {
+  const raw = await readSetting(`sheet_collapsed:${sheetId}`);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return null;
+    return parsed.map(Number).filter(id => Number.isInteger(id) && id > 0);
+  } catch (error) {
+    return null;
+  }
+}
+
+/**
+ * 一批挂载点的显示名。
+ *
+ * 库视图要写「挂载于：2 号机组」，而挂载点可能是一条 `sheet_row`（自建表的行），
+ * 它的标题不在 record.title 里，而在 custom 的某个文本列里 —— 所以不能只查 todos。
+ *
+ * @param {Array<number|string>} ids
+ * @returns {Promise<Map<string, string>>} id → 标题
+ */
+export async function listAnchorTitles(ids) {
+  const list = Array.from(new Set((ids || []).map(Number).filter(n => Number.isInteger(n) && n > 0)));
+  if (!list.length) return new Map();
+  const rows = await db().dbQuery(
+    `SELECT id, title, custom FROM record WHERE id IN (${list.map(() => '?').join(',')})`,
+    list
+  );
+  const map = new Map();
+  (Array.isArray(rows) ? rows : []).forEach(row => {
+    map.set(String(row.id), displayTitleOf(row));
+  });
+  return map;
+}
+
+/** 一条记录的显示名：真列标题 → custom 里第一个像标题的字符串 → #id。 */
+function displayTitleOf(row) {
+  const title = String(row?.title ?? '').trim();
+  if (title) return title;
+  let data = {};
+  try {
+    data = typeof row?.custom === 'string' ? JSON.parse(row.custom || '{}') : row?.custom || {};
+  } catch (error) {
+    data = {};
+  }
+  for (const [key, value] of Object.entries(data)) {
+    if (key.startsWith('_')) continue; // _bd（白板布局）这类内部键
+    if (typeof value === 'string' && value.trim()) return value.trim().slice(0, 60);
+  }
+  return `#${row?.id ?? ''}`;
+}
+
+export async function setSheetCollapsed(sheetId, ids) {
+  const list = Array.from(new Set((ids || []).map(Number).filter(id => Number.isInteger(id) && id > 0)));
+  await writeSetting(`sheet_collapsed:${sheetId}`, JSON.stringify(list));
+}
+
+/**
+ * 改某一行的父记录。parentId=null 表示提升为根。
+ *
+ * ⚠️ NULL 只能写成 SQL 字面量：dbExecute 会 params.map(String)，
+ * 传 null 落库会变成字符串 'null'，之后 `parent_id IS NULL` 与 `= 3` 都查不到，
+ * 这一行会「凭空消失」且零报错。
+ */
+export async function setRowParent(rowId, parentId, options = {}) {
+  if (rowId == null) return;
+  const sort = Number.isFinite(Number(options.sort)) ? Number(options.sort) : null;
+  if (parentId == null) {
+    if (sort == null) {
+      await db().dbExecute('UPDATE record SET parent_id = NULL, updated_at = ? WHERE id = ?', [nowStamp(), rowId]);
+    } else {
+      await db().dbExecute('UPDATE record SET parent_id = NULL, sort = ?, updated_at = ? WHERE id = ?', [sort, nowStamp(), rowId]);
+    }
+    return;
+  }
+  if (sort == null) {
+    await db().dbExecute('UPDATE record SET parent_id = ?, updated_at = ? WHERE id = ?', [parentId, nowStamp(), rowId]);
+  } else {
+    await db().dbExecute('UPDATE record SET parent_id = ?, sort = ?, updated_at = ? WHERE id = ?', [parentId, sort, nowStamp(), rowId]);
+  }
 }
 
 // ==========================================
