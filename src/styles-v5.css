@@ -3472,3 +3472,50 @@ body[data-skin="v4"] .sh-adopt-hint {
   line-height: 1.55 !important;
   color: var(--text-muted) !important;
 }
+
+/* 选项配色：九色预设（七色 + 黑白）。
+   原生 <input type="color"> 只在 Windows 上还算能用，且必须记住色值；
+   这一排是「一眼就能点」的那一层，自定义取色仍留在系统面板里。 */
+body .sh-color-btn {
+  flex: none !important;
+  width: 22px !important;
+  height: 22px !important;
+  padding: 0 !important;
+  border-radius: 7px !important;
+  border: 1px solid rgba(0, 0, 0, 0.14) !important;
+  background: var(--c, #60a5fa) !important;
+  cursor: pointer !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.55) !important;
+}
+
+body .sh-color-btn:hover {
+  transform: scale(1.06) !important;
+}
+
+body[data-skin="v4"] .sh-color-presets {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  gap: 7px !important;
+  margin: -2px 0 8px 29px !important;
+  padding: 7px 9px !important;
+  border-radius: 9px !important;
+  background: rgba(0, 0, 0, 0.04) !important;
+}
+
+body .sh-color-dot {
+  width: 18px !important;
+  height: 18px !important;
+  padding: 0 !important;
+  border-radius: 50% !important;
+  border: 1px solid rgba(0, 0, 0, 0.16) !important;
+  background: var(--c, #60a5fa) !important;
+  cursor: pointer !important;
+}
+
+body .sh-color-dot.is-on {
+  box-shadow: 0 0 0 2px var(--surface, #fff), 0 0 0 3.5px currentColor !important;
+}
+
+body .sh-color-dot:hover {
+  transform: scale(1.12) !important;
+}

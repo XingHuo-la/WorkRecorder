@@ -653,6 +653,21 @@ export function openCellFormatPanel(anchor, { field, columnFormat = {}, cellForm
 
 const COLOR_SWATCHES = ['#60a5fa', '#2fbf71', '#f5a524', '#e5484d', '#a78bfa', '#22d3ee', '#f472b6', '#94a3b8'];
 
+// 手边就能点到的九种颜色：七色 + 黑 + 白。
+// 原来只有系统取色器 —— 想配一个「和别的列一个红」得先记住色值再手输，
+// 而大部分需求其实就是「红橙黄绿青蓝紫里挑一个」。
+const PRESET_COLORS = [
+  { name: '红', hex: '#e5484d' },
+  { name: '橙', hex: '#f5a524' },
+  { name: '黄', hex: '#f7d046' },
+  { name: '绿', hex: '#2fbf71' },
+  { name: '青', hex: '#22d3ee' },
+  { name: '蓝', hex: '#3b82f6' },
+  { name: '紫', hex: '#a78bfa' },
+  { name: '黑', hex: '#1f2937' },
+  { name: '白', hex: '#ffffff' },
+];
+
 export function openFieldPanel({ field = null, sheetName, tables = [], selfTableId = null, columnValues = [], onSave, onDelete, onClose }) {
   const isEdit = Boolean(field);
   const config = (() => {
@@ -674,6 +689,8 @@ export function openFieldPanel({ field = null, sheetName, tables = [], selfTable
     // 最常见的是「这条任务的父任务」「同一批里的上一条」，指自己那张表。
     targetSheetId: Number(config.targetSheetId) > 0 ? Number(config.targetSheetId) : Number(selfTableId) || 0,
     multiple: config.multiple === true,
+    // 哪一行的预设调色板是展开的（一次只开一个，点开就顶掉上一个）
+    colorOpen: -1,
   };
   // 这一列里实际出现过的值（宿主扫好传进来，面板不查库）。
   // 一律只留「还没被任何选项接住」的那些，面板上是「＋ 值（N 次）」的一排待补按钮。
@@ -798,12 +815,19 @@ export function openFieldPanel({ field = null, sheetName, tables = [], selfTable
                  .map(
                    (option, index) => `
                  <div class="sh-option-row" data-index="${index}">
-                   <input type="color" class="sh-color" value="${escapeHtml(option.color || optionColor(option.label))}" data-color aria-label="选项颜色" />
+                   <button type="button" class="sh-color-btn" data-color-toggle="${index}" style="--c:${escapeHtml(option.color || optionColor(option.label))}" aria-label="选项颜色" aria-expanded="${state.colorOpen === index}"></button>
                    <input type="text" class="sh-input sh-input-flat" data-option-label value="${escapeHtml(option.label)}" />
                    <button type="button" class="sh-icon-btn" data-remove-option aria-label="删除选项">
                      <svg class="wr-icon" aria-hidden="true"><use href="#ic-trash"/></svg>
                    </button>
-                 </div>`
+                 </div>
+                 ${
+                   state.colorOpen === index
+                     ? `<div class="sh-color-presets" data-color-row="${index}">
+                          ${PRESET_COLORS.map(color => `<button type="button" class="sh-color-dot${String(option.color || '').toLowerCase() === color.hex ? ' is-on' : ''}" data-set-color="${color.hex}" title="${color.name}" style="--c:${color.hex}"></button>`).join('')}
+                        </div>`
+                     : ''
+                 }`
                  )
                  .join('')}
              </div>
@@ -958,6 +982,25 @@ export function openFieldPanel({ field = null, sheetName, tables = [], selfTable
         color: COLOR_SWATCHES[state.options.length % COLOR_SWATCHES.length],
       });
       paint();
+      return;
+    }
+    // 选项配色：点方块展开九色（七色 + 黑白），点色块即定色。
+    // 不走 openPopover —— 它第一行是 closeAllPanels()，会把字段面板这个抽屉一起收掉。
+    const colorToggle = event.target.closest('[data-color-toggle]');
+    if (colorToggle) {
+      const index = Number(colorToggle.dataset.colorToggle);
+      state.colorOpen = state.colorOpen === index ? -1 : index;
+      paint();
+      return;
+    }
+    const colorDot = event.target.closest('[data-set-color]');
+    if (colorDot) {
+      const index = Number(colorDot.closest('[data-color-row]')?.dataset.colorRow);
+      if (Number.isInteger(index) && state.options[index]) {
+        state.options[index].color = colorDot.dataset.setColor;
+        state.colorOpen = -1;
+        paint();
+      }
       return;
     }
     const removeBtn = event.target.closest('[data-remove-option]');
