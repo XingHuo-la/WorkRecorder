@@ -4384,17 +4384,29 @@ export async function initSheetPage() {
       // 否则「在输入框外面按一下 Ctrl+V」会把内容直接灌进底下的表格
       const overlay = document.getElementById('global-modal-overlay');
       if (overlay && overlay.style.display === 'flex') return;
+
+      const snapshot = snapshotClipboard(event.clipboardData);
+      const tabular = looksTabular(snapshot);
+
+      // 「一点就开编辑器」的列（单选 / 多选 / 日期 / 关联）有个隐藏的坑：
+      // 点单元格会把编辑器打开并把焦点放进它的搜索框，下面的 typing 判断于是把内容
+      // 原样交给输入框 —— 整列粘贴在这些列上根本用不了，而这恰恰是最常见的事
+      // （把一列分类从 Excel 搬过来）。多行/多列 = 要铺一片，不是往搜索框里塞一行字：
+      // 先按 Esc 关掉编辑器（它自己监听 document 捕获），再按表格粘贴走。
+      if (tabular && document.querySelector('.ft-cell-editing')) {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
+      }
+
       const typing = document.activeElement?.closest?.('input, textarea, select, [contenteditable="true"]');
       if (typing) return; // 正在输入 → 交给原生粘贴
       if (document.querySelector('.ft-cell-editing')) return;
 
-      const snapshot = snapshotClipboard(event.clipboardData);
-      if (!looksTabular(snapshot) && !snapshot.files.length && !snapshot.text) return;
+      if (!tabular && !snapshot.files.length && !snapshot.text) return;
 
       const cell = host.querySelector('.sh-cell.is-active');
 
       // 单格：图片 / 纯文本 —— 保持「覆盖这一格」的原语义
-      if (!looksTabular(snapshot)) {
+      if (!tabular) {
         if (!cell) return;
         const field = state.fields.find(item => item.key === cell.dataset.key);
         const row = state.rows.find(item => String(item.id) === String(cell.dataset.row));
