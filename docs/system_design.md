@@ -1054,14 +1054,22 @@ sequenceDiagram
 
 ### T09 · 跳转栈 + 定位（P0-5） — P0
 
-- **做什么**：`navigation.js`；`rowDrawer` 接入 push/pop；`sheetPage` 导出 `__wrOpenSheet` / `__wrLocateCell`；`commandPalette` 表格结果改为开表 + 定位行（修既存缺陷）；Esc 优先级（先弹栈，栈空才关抽屉）。
-- **涉及文件**：`src/navigation.js`（新）、`src/sheetPage.js`、`src/rowDrawer.js`、`src/commandPalette.js`、`src/main.js`
+- **做什么**：`navigation.js`；`rowDrawer` 接入 push/pop；`sheetPage` 导出 `locateRow`（供 `main.js` 挂 `__wrLocateRow` / `__wrOpenSheet`）；`commandPalette` 表格结果改为开表 + 定位行（修既存缺陷）；Esc 优先级（先弹栈，栈空才关抽屉）。
+- **涉及文件**：`src/navigation.js`（新）、`src/sheetPage.js`、`src/rowDrawer.js`、`src/commandPalette.js`、`src/main.js`、`src/sheetPanels.js`
+- **栈里只有抽屉，没有页面**（与初版设计的偏离，理由见下）：
+  表格页是抽屉底下那个**从来没被替换掉**的常驻页面，把「表」也压进栈会让最浅的一层抽屉变成第二层，
+  Esc 要多按一次才关得掉。跨表跳转（点抽屉里的「挂载的表」卡片）走的是换表 ——
+  `openSheet` 里 `resetNav()` 整栈作废：人已经换了一张表，Esc 不该把他带回上一张表的某条记录。
+  换页（设置 / 笔记 / 白板）同理，`main.show()` 里也 reset。
+  表格页的 Esc 本来就有既定含义（取消编辑 / 清选区，Excel 语义），再叠一层「返回上一张表」会互相打架。
 - **完成判据**：
-  1. 表格 → 行 A → 关联行 B → B 上挂的表 C，连按 3 次 Esc 逐层回到表格首页，每层都定位到来源单元格（`document.activeElement` 是那个 `.sh-cell`）
-  2. Ctrl+K 搜到某表格行 → 打开**对应那张表**（不是表格首页）并滚动定位到该行高亮
+  1. 表格 → 行 A（抽屉）→ 关联行 B（抽屉）：Esc 退回 A 的抽屉（A 没被 `closeAllPanels` 顺手摘出栈），再 Esc 关抽屉回到表格；`nav.depth()` 全程与视觉层数一致
+  2. Ctrl+K 搜到某表格行 → 打开**对应那张表**（不是表格首页）并滚动定位到该行、选中首格
   3. 栈为空时 Esc 只关抽屉，不跳页
-  4. 从设置页返回表格时栈已清空（不会 Esc 回到一个已经不存在的行）
-  5. 定位到第 300 行（分块未渲染）能成功（走 `ensureRowRendered`）
+  4. 换表 / 换页后栈已清空（不会 Esc 回到一个已经不存在的行）
+  5. 定位到第 300 行（分块未渲染）能成功（`grid.focus` 的补块循环）
+  6. 关掉栈顶 = 整栈作废；关闭后从表格直开一条，Esc 一次就关（不会回到上一条）
+- **验证**：`tests/navigation.test.mjs`（45 条）+ `_debug/nav-stack-probe.html`（21 条，真 DOM 里按 Esc 走全链路）
 - **依赖**：T04、T06、T07、T08
 
 ### T10 · 视图收口（今天 / 记录 / 设置 / 首页） — P1

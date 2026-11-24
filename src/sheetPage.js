@@ -95,6 +95,8 @@ import {
   setRowParent,
 } from './sheetStore.js';
 import { relationConfig, normalizeRelationIds, relationText } from './relationField.js';
+// 跳转栈（T09）：换表 = 之前的「上一条记录」已经不在语境里，整栈作废
+import { reset as resetNav } from './navigation.js';
 
 const CHUNK = 60;
 const ROW_LIMIT_HINT = 5000;
@@ -303,7 +305,7 @@ function cellCtx(field, row = null) {
  *
  * 不带 fields：目标行通常属于另一张表，拿本表的字段集去画会把「关联」列
  * 画成目标表的列名，全错。抽屉自己会走「记录信息 + 正文 + 笔记 + 被引用于」那一套。
- * 现在的形态是「替换当前抽屉」；T09 的跳转栈会把它换成入栈 + Esc 回退。
+ * T09 起每开一层都入跳转栈：从 A 点进 B，Esc 退回 A，再 Esc 才回到表格。
  */
 function openLinkedRecord(recordId) {
   const id = Number(recordId);
@@ -857,6 +859,72 @@ export async function openSheetTab(sheetId) {
   await openSheet(sheetId);
 }
 
+/**
+ * 定位到某张表的某一行（Ctrl+K 的表格结果、从关联跳回表）。
+ *
+ * 三层遮挡都要拆掉，否则「定位了但看不见」：
+ *   ① 不在那张表 → 先打开它；
+ *   ② 被筛选 / 搜索藏起来 → 清掉条件再来一次；
+ *   ③ 挂在折叠的父行下面 → 把祖先链展开。
+ * 最后才选中并滚动过去。行是分块渲染的，grid.focus 自己会补块（见 createGrid.focus）。
+ *
+ * @returns {Promise<boolean>} 真找到了没
+ */
+export async function locateRow(tableId, rowId) {
+  if (!isSheetStoreReady() || tableId == null || rowId == null) return false;
+  if (!state.sheets.length) await refreshSheets();
+  if (!state.sheet || String(state.sheet.id) !== String(tableId)) {
+    await openSheetTab(tableId);
+  }
+  if (!state.sheet || String(state.sheet.id) !== String(tableId)) return false;
+
+  const indexOf = () => rowsInView().findIndex(row => String(row.id) === String(rowId));
+  let index = indexOf();
+
+  if (index < 0 && (state.filters.length || state.search || presetQuick.mode !== 'all' || presetQuick.tag || presetQuick.sub)) {
+    state.filters = [];
+    state.search = '';
+    resetPresetQuick();
+    renderSheet({ resetScroll: true });
+    index = indexOf();
+  }
+
+  if (index < 0) {
+    // 还找不到：可能在被折叠的父行下面。把祖先链展开（只动内存，不写进偏好 ——
+    // 定位是一次性的，不该顺手改掉用户排好的折叠状态）。
+    const target = state.rows.find(row => String(row.id) === String(rowId));
+    if (target) {
+      const collapsed = new Set(effectiveCollapsed(filterRows(state.rows)));
+      let changed = false;
+      let parentId = Number(target.parent_id);
+      let guard = 0;
+      while (Number.isInteger(parentId) && parentId > 0 && guard < 200) {
+        if (collapsed.delete(parentId)) changed = true;
+        const parent = state.rows.find(row => Number(row.id) === parentId);
+        parentId = Number(parent?.parent_id);
+        guard += 1;
+      }
+      // 祖先链本来就是展开的 → 不重画，白闪一下没有必要
+      if (changed) {
+        state.collapsed = collapsed;
+        collapsedVersion += 1;
+        renderSheet({ resetScroll: true });
+        index = indexOf();
+      }
+    }
+  }
+
+  if (index < 0) {
+    toast('没找到那一行，可能已被删除', 'info');
+    return false;
+  }
+
+  const gridApi = ensureGrid();
+  gridApi.select(index, 0);
+  gridApi.focus(index, 0);
+  return true;
+}
+
 // 「＋ 新建表」：复用原有的新建弹层（含模板 / 归属任务），
 // 创建成功后 openNewSheetModal 内部会 refreshSheets + openSheet，
 // tab 条通过 onSheetListChange 自动多出一项。
@@ -874,6 +942,9 @@ export function openCurrentSheetMenu(anchorEl) {
 async function openSheet(sheetId, options = {}) {
   const sheet = state.sheets.find(item => String(item.id) === String(sheetId));
   if (!sheet) return;
+  // 换表就清掉抽屉跳转栈：别的表里的「上一条记录」与这里无关，
+  // 留着只会让 Esc 把人带回一张不相干的记录上。
+  if (String(state.sheet?.id ?? '') !== String(sheet.id)) resetNav();
   state.sheet = sheet;
   state.filters = [];
   state.sorts = [];

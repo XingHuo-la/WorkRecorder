@@ -11,7 +11,7 @@ import { initFreeCellModule } from './freecell.js';
 import { initNotesEditor, flushBeforeLeave, refreshNotesCache, getNotesCache, openNote } from './notesEditor.js';
 import { initNotesModule } from './notes.js';
 import { setNotesDataPathProvider } from './notesStore.js';
-import { initSheetPage, openSheetTab, getSheetList, onSheetListChange, openNewSheet, currentSheetId, openCurrentSheetMenu, openSheetMenuFor, refreshSheetList, toast, openPopoverSimple, closeAllPanels } from './sheetPage.js';
+import { initSheetPage, openSheetTab, locateRow, getSheetList, onSheetListChange, openNewSheet, currentSheetId, openCurrentSheetMenu, openSheetMenuFor, refreshSheetList, toast, openPopoverSimple, closeAllPanels } from './sheetPage.js';
 // 表 / 视图分层：列表与视图页签都在这一层拼装。
 // sheetPage 只管「表格形态怎么画」，不负责「这张表有几种看法」。
 import {
@@ -39,6 +39,8 @@ import { flushDrawerBody, openRowDrawer } from './rowDrawer.js';
 import { escapeHtml } from './htmlUtils.js';
 import { initBoardPage, flushBoard, setBoardAdapter } from './board.js';
 import { bindUndoShortcuts } from './undoCore.js';
+// 换页 = 抽屉跳转栈作废（T09）。main 是唯一知道「现在在哪一页」的地方。
+import { reset as resetNav } from './navigation.js';
 
 // Tauri 全局对象由 withGlobalTauri 同步注入，正常情况可直接取用。
 // 这里做一次防御：万一注入时序异常，也不要让整个模块崩溃。
@@ -604,6 +606,10 @@ function setupRouting() {
       try { await flushBoard(); } catch (error) { logToFile('error', `白板落库失败: ${error?.stack || error}`); }
     }
 
+    // 离开表格页 = 抽屉里那条线索断了（T09）。栈留着的话，在设置页按 Esc
+    // 会把一条记录抽屉重新画到设置页头上 —— 换页比任何「上一条」都强。
+    if (id !== 'nav-table') resetNav();
+
     // 先无条件收起所有 subview，再显示目标。
     // 不能只遍历 routes：路由表里只有 6 个可导航的视图，已经下线的
     // #subview-dashboard 不在表里 —— 不主动收就会一直留在页面上，
@@ -643,6 +649,36 @@ function setupRouting() {
 
   // 命令面板与设置页都靠这个跳转：视图可以没有按钮，但切换必须只有一条路径。
   window.__wrRouteTo = show;
+
+  // 抽屉里的「子表卡片」点开 = 切到表格页并打开那张表（T09 补上 T07 留的钩子）。
+  // 换表会让跳转栈作废（见 sheetPage.openSheet）—— 这是对的：
+  // 人已经换了一张表，Esc 不该把他带回另一张表里的某条记录。
+  window.__wrOpenSheet = async sheetId => {
+    if (sheetId == null) return false;
+    window.__wrRouteTo?.('nav-table');
+    try {
+      await openSheetTab(sheetId);
+      return true;
+    } catch (error) {
+      logToFile('error', `打开子表失败: ${error?.stack || error}`);
+      toast(`打开表失败：${error?.message || error}`, 'danger');
+      return false;
+    }
+  };
+
+  // Ctrl+K 的表格结果：不只是「回到表格页」，而是「打开那张表 + 定位到那一行」。
+  // 只回到表格页的话，用户还得自己在 tab 条上找表、在几百行里找那一条。
+  window.__wrLocateRow = async (tableId, rowId) => {
+    if (tableId == null || rowId == null) return false;
+    try {
+      await locateRow(tableId, rowId);
+      return true;
+    } catch (error) {
+      logToFile('error', `定位表格行失败: ${error?.stack || error}`);
+      toast(`定位失败：${error?.message || error}`, 'danger');
+      return false;
+    }
+  };
 
   const lastSubview = localStorage.getItem('workRecorder:lastSubview');
   show(routes.some(route => route.id === lastSubview) ? lastSubview : 'nav-table');

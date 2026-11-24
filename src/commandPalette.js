@@ -176,9 +176,16 @@ function openRecord(record, type) {
   }
 
   if (type === 'sheet') {
-    // 自建表已经和基础表并列在同一个页面里，这里只要回到表格页
-    // （用户可以在表 tab 条上继续切到那张表）。
+    // 表格行：先回到表格页，再把那张表打开并定位到那一行。
+    // 以前只做到「回到表格页」—— 用户还得自己在 tab 条上找表、在几百行里找那一条，
+    // 搜出来的结果等于只给了一半。
     window.__wrRouteTo?.('nav-table');
+    const locate = window.__wrLocateRow;
+    if (typeof locate === 'function' && record.sheetId != null) {
+      Promise.resolve(locate(record.sheetId, record.id)).catch(error =>
+        console.warn('定位表格行失败', error)
+      );
+    }
     return;
   }
 

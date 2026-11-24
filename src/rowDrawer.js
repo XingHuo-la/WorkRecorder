@@ -40,6 +40,7 @@ import { renderMarkdown, extractExcerpt } from './markdown.js';
 // 标题与被引用关系走 sheetStore 的批量查询（一条 IN SQL，不在渲染里逐格查库）。
 import { normalizeRelationIds, relationConfig } from './relationField.js';
 import { listRecordBriefs, findBacklinks } from './sheetStore.js';
+import { push as pushNav, drop as dropNav, back as backNav } from './navigation.js';
 import { logToFile } from './logger.js';
 
 /**
@@ -413,17 +414,24 @@ export function openRowDrawer(opts = {}) {
       </section>
     </div>`;
 
+  // 入栈（T09）：每开一个记录抽屉就是一层。Esc 能从这一条退回上一条，
+  // 靠的就是这里存下的「同样的参数再开一次」。
+  const navId = pushNav({ label: initialTitle, reopen: () => openRowDrawer(options) });
+
   const drawer = openDrawer({
     title: initialTitle,
     subtitle: initialKicker,
     width: drawerWidthFor(window.innerWidth),
     body: bodyHtml,
     footer: footerHtml(index, total, handlers),
+    // Esc = 退一层：栈里还有上一条就回到它（这一下 Esc 被用掉，不再关面板）
+    onBack: () => backNav(),
     onClose: () => {
       // 点遮罩 / 点 × / Esc 关抽屉走的是这条路（sheetPage 的上一条/下一条是
       // 先 closeAllPanels 再开新抽屉，同样经过这里）。closeAllPanels 是
       // 「先摘节点、后调 onClose」，所以这里 state.el 还在，只是脱离了文档 ——
       // querySelector 照样能取到编辑框的值，草稿不会丢。
+      dropNav(navId);
       void flushDrawerBody();
       teardownBodyEditor(ctx);
       teardownNotePanel(ctx);
@@ -1972,12 +1980,13 @@ function onBodyClick(ctx, event) {
     return;
   }
 
-  // ⑥ 子表卡片：sheetPage 还没导出 __wrOpenSheet（T09 才有），先只留入口判断
+  // ⑥ 子表卡片：切到表格页并打开那张表（钩子由 main.js 的 setupRouting 提供）。
+  // 换表会让抽屉跳转栈作废 —— 人已经换了一张表，Esc 不该把他带回另一张表的某条记录。
   const sheetCard = event.target.closest('[data-sheet-id]');
   if (sheetCard) {
     const sheetId = toId(sheetCard.dataset.sheetId);
     if (typeof window.__wrOpenSheet === 'function') window.__wrOpenSheet(sheetId);
-    else console.debug('[rowDrawer] 打开子表待接入（T07 / T09）', sheetId);
+    else console.warn('[rowDrawer] 打开子表的钩子没挂上', sheetId);
     return;
   }
 
@@ -2164,8 +2173,7 @@ function openChildDrawer(ctx, childId) {
 /**
  * 关联记录 / 被引用条目的默认跳转。
  * 与 openChildDrawer 同一套做法（不带 fields），差别只在副标题说的是「关联」。
- * T09 会把它换成「入栈 + Esc 回退并定位来源格」，在那之前这就是一条能用的路：
- * 点标题 → 看到那一条 → 关掉回到原处（原抽屉被替换，关掉后回到表格）。
+ * T09 起这是一条**可回退**的路：openRowDrawer 自己入栈，Esc 退回上一条。
  */
 function openLinkedRecordDrawer(ctx, recordId) {
   openRowDrawer({

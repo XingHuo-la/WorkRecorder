@@ -10,6 +10,8 @@
 // closeAllPanels 仍然两层都收（真正要全关的时候用它）。
 
 import { escapeHtml } from './htmlUtils.js';
+// 跳转栈只需要一个「关掉当前层」的回调，这里注入；navigation 不反过来依赖 UI。
+import { setNavCloser } from './navigation.js';
 import {
   FIELD_TYPE_ORDER,
   FIELD_TYPE_LABELS,
@@ -126,7 +128,7 @@ export function openPopover(anchor, className, html, options = {}) {
   return el;
 }
 
-export function openDrawer({ title, subtitle = '', width = 396, body, footer = '', onMount, onClose }) {
+export function openDrawer({ title, subtitle = '', width = 396, body, footer = '', onMount, onClose, onBack }) {
   closeAllPanels();
   const scrim = document.createElement('div');
   scrim.className = 'sh-scrim';
@@ -172,6 +174,9 @@ export function openDrawer({ title, subtitle = '', width = 396, body, footer = '
     if (document.querySelector(
       '.sh-pop, .ft-cell-editing, .ft-inline-input, .sh-dp, .ft-dropdown, .sh-lightbox, .custom-modal-overlay, .rd-title-input, .rd-fieldcfg-rename'
     )) return;
+    // 跳转栈（T09）：宿主在这里有机会把「关掉」换成「退回上一条记录」。
+    // 必须先问宿主再关 —— 关掉之后栈里那一层已经没了，就再也回不去。
+    if (typeof onBack === 'function' && onBack() === true) return;
     closeAllPanels();
   };
   document.addEventListener('mousedown', onOutside, true);
@@ -1219,4 +1224,8 @@ export function openImagePreview(src, name = '', gallery = null) {
 // 在 TDZ 里被求值，表现为「抽屉偶发打不开，刷新后又好了」。依赖方向只能是
 // 抽屉 → 本文件（浮层基座），不能反过来。
 // 这里原来那个「表格行详情」函数已删除，调用方（sheetPage.js）直接从抽屉模块取。
+
+// 跳转栈的「关掉这一层」= 面板基座的 closeAllPanels。
+// 放在文件尾：此时函数声明都已就位，模块求值顺序上不会有 TDZ 问题。
+setNavCloser(closeAllPanels);
 
