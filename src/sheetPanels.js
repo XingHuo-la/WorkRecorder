@@ -12,6 +12,8 @@
 import { escapeHtml } from './htmlUtils.js';
 // 跳转栈只需要一个「关掉当前层」的回调，这里注入；navigation 不反过来依赖 UI。
 import { setNavCloser } from './navigation.js';
+// 选项面板要把「这一列里已有的值」补成选项，判断逻辑在 fieldCheck（纯函数，可单测）。
+import { optionsFromValues, filterUnmatchedStats } from './fieldCheck.js';
 import {
   FIELD_TYPE_ORDER,
   FIELD_TYPE_LABELS,
@@ -651,7 +653,7 @@ export function openCellFormatPanel(anchor, { field, columnFormat = {}, cellForm
 
 const COLOR_SWATCHES = ['#60a5fa', '#2fbf71', '#f5a524', '#e5484d', '#a78bfa', '#22d3ee', '#f472b6', '#94a3b8'];
 
-export function openFieldPanel({ field = null, sheetName, tables = [], selfTableId = null, onSave, onDelete, onClose }) {
+export function openFieldPanel({ field = null, sheetName, tables = [], selfTableId = null, columnValues = [], onSave, onDelete, onClose }) {
   const isEdit = Boolean(field);
   const config = (() => {
     try {
@@ -673,11 +675,14 @@ export function openFieldPanel({ field = null, sheetName, tables = [], selfTable
     targetSheetId: Number(config.targetSheetId) > 0 ? Number(config.targetSheetId) : Number(selfTableId) || 0,
     multiple: config.multiple === true,
   };
-  if (!state.options.length && (state.type === 'select' || state.type === 'multi_select')) {
-    state.options = [
-      { value: 'a', label: '选项 A', color: COLOR_SWATCHES[0] },
-      { value: 'b', label: '选项 B', color: COLOR_SWATCHES[1] },
-    ];
+  // 这一列里实际出现过的值（宿主扫好传进来，面板不查库）。
+  // 一律只留「还没被任何选项接住」的那些，面板上是「＋ 值（N 次）」的一排待补按钮。
+  const stats = Array.isArray(columnValues) ? columnValues.filter(item => item && String(item.value ?? '').trim()) : [];
+  // 以前这里在「选项为空」时凭空塞两个「选项 A / 选项 B」。那是最糟的一种默认：
+  // 用户以为自己的值丢了（面板里一个都不认识），而一旦点保存，这两个假选项就被写进库，
+  // 把一列真实数据变成「全是未知值」。现在改成：**空选项就从这一列的真实值里长出来**。
+  if (!state.options.length && (state.type === 'select' || state.type === 'multi_select') && stats.length) {
+    state.options = optionsFromValues(stats.map(item => item.value), [], COLOR_SWATCHES);
   }
   // 一张表都读不到（调试壳 / 刚删完）：选择器会是个空下拉，保存必然指向 0。
   // 不给「保存」留一条造脏数据的路。
@@ -764,7 +769,28 @@ export function openFieldPanel({ field = null, sheetName, tables = [], selfTable
 
       ${
         needsOptions()
-          ? `<div class="sh-label sh-label-gap">选项 <span class="sh-label-hint">颜色决定单元格标签配色</span></div>
+          ? (() => {
+              // 待补的值：这一列里出现过、但当前选项一个也没接住的。
+              // 每次重画都重算 —— 用户可能在面板里删掉某个选项，它就又回到待补里。
+              const pending = filterUnmatchedStats(stats, state.options);
+              return `<div class="sh-label sh-label-gap">选项 <span class="sh-label-hint">颜色决定单元格标签配色</span></div>
+             ${
+               pending.length
+                 ? `<div class="sh-pending">
+                      <div class="sh-pending-hint">这一列里还有 <b>${pending.length}</b> 个值不在选项里</div>
+                      <div class="sh-pending-chips">
+                        ${pending
+                          .map(
+                            item => `<button type="button" class="sh-pending-chip" data-adopt-value="${escapeHtml(item.value)}" title="加为选项">
+                              ＋ ${escapeHtml(item.value)}${item.count > 1 ? `<span>${item.count}</span>` : ''}
+                            </button>`
+                          )
+                          .join('')}
+                      </div>
+                      <button type="button" class="sh-pending-all" data-adopt-all>全部加为选项</button>
+                    </div>`
+                 : ''
+             }
              <div class="sh-options" data-options>
                ${state.options
                  .map(
@@ -779,7 +805,8 @@ export function openFieldPanel({ field = null, sheetName, tables = [], selfTable
                  )
                  .join('')}
              </div>
-             <button type="button" class="sh-add-option" data-add-option>＋ 添加选项</button>`
+             <button type="button" class="sh-add-option" data-add-option>＋ 添加选项</button>`;
+            })()
           : ''
       }
 
@@ -891,12 +918,28 @@ export function openFieldPanel({ field = null, sheetName, tables = [], selfTable
     const typeBtn = event.target.closest('[data-type]');
     if (typeBtn) {
       state.type = typeBtn.dataset.type;
-      if ((state.type === 'select' || state.type === 'multi_select') && !state.options.length) {
-        state.options = [
-          { value: 'a', label: '选项 A', color: COLOR_SWATCHES[0] },
-          { value: 'b', label: '选项 B', color: COLOR_SWATCHES[1] },
-        ];
+      // 把一个「本来是文本」的列改成单选时，最想要的就是「别让我从头敲一遍选项」。
+      // 这里同样不许塞假选项：从这一列的真实值里长。
+      if ((state.type === 'select' || state.type === 'multi_select') && !state.options.length && stats.length) {
+        state.options = optionsFromValues(stats.map(item => item.value), [], COLOR_SWATCHES);
       }
+      paint();
+      return;
+    }
+    // 把这一列里已有的值补成选项。单个点 / 一次全加，两个入口，
+    // 默认动作都是「加」——用户诉求就是「这些值本来就该是选项」。
+    const adoptOne = event.target.closest('[data-adopt-value]');
+    if (adoptOne) {
+      state.options = optionsFromValues([adoptOne.dataset.adoptValue], state.options, COLOR_SWATCHES);
+      paint();
+      return;
+    }
+    if (event.target.closest('[data-adopt-all]')) {
+      state.options = optionsFromValues(
+        filterUnmatchedStats(stats, state.options).map(item => item.value),
+        state.options,
+        COLOR_SWATCHES
+      );
       paint();
       return;
     }

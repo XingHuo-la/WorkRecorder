@@ -3333,3 +3333,140 @@ body[data-skin="v4"] .sh-drawer .rd-backlink-meta {
   font-size: 11.5px !important;
   white-space: nowrap !important;
 }
+
+/* ==========================================
+   字段类型一致性（T11）
+   ==========================================
+   一个值「不在这一列的选项里」是可以当场算出来的事实，所以角标是派生的：
+   从文本改成单选，那一列老值立刻全部标出来，不用迁移、不用存标记。
+   颜色是固定的警示红，不跟主题走 —— 这一层表达的是「这里要收拾一下」，
+   换成主题色就等于把警告变成装饰。 */
+
+body[data-skin="v4"] .ft-mismatch {
+  position: relative !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
+}
+
+body[data-skin="v4"] .ft-mismatch > .ft-bad {
+  position: absolute !important;
+  left: -5px !important;
+  top: -5px !important;
+  width: 11px !important;
+  height: 11px !important;
+  border-radius: 50% !important;
+  background: #e5484d !important;
+  color: #fff !important;
+  font-size: 8px !important;
+  font-style: normal !important;
+  font-weight: 800 !important;
+  line-height: 11px !important;
+  text-align: center !important;
+  pointer-events: none !important;
+  z-index: 1 !important;
+}
+
+/* 字段面板：「这一列里还有 N 个值不在选项里」那一块 */
+body[data-skin="v4"] .sh-pending {
+  margin: 0 0 10px !important;
+  padding: 9px 10px !important;
+  border: 1px dashed rgba(229, 72, 77, 0.42) !important;
+  border-radius: 10px !important;
+  background: rgba(229, 72, 77, 0.06) !important;
+}
+
+body[data-skin="v4"] .sh-pending-hint {
+  font-size: 11.5px !important;
+  line-height: 1.5 !important;
+  color: var(--text-muted) !important;
+}
+
+body[data-skin="v4"] .sh-pending-hint b {
+  color: #e5484d !important;
+  font-weight: 700 !important;
+}
+
+body[data-skin="v4"] .sh-pending-chips {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  gap: 6px !important;
+  margin: 7px 0 6px !important;
+  max-height: 116px !important;
+  overflow: auto !important;
+}
+
+body .sh-pending-chip {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 4px !important;
+  max-width: 100% !important;
+  padding: 3px 9px !important;
+  border: 1px solid rgba(229, 72, 77, 0.38) !important;
+  border-radius: 999px !important;
+  background: transparent !important;
+  color: inherit !important;
+  font-size: 11.5px !important;
+  line-height: 1.5 !important;
+  cursor: pointer !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+body .sh-pending-chip:hover {
+  background: rgba(229, 72, 77, 0.1) !important;
+  border-color: rgba(229, 72, 77, 0.6) !important;
+}
+
+body[data-skin="v4"] .sh-pending-chip span {
+  font-size: 10px !important;
+  opacity: 0.65 !important;
+}
+
+body .sh-pending-all {
+  padding: 0 !important;
+  border: 0 !important;
+  background: none !important;
+  color: #e5484d !important;
+  font-size: 11.5px !important;
+  font-weight: 600 !important;
+  cursor: pointer !important;
+}
+
+body .sh-pending-all:hover {
+  text-decoration: underline !important;
+}
+
+/* 粘贴后的「要不要加为选项」小浮层 */
+body[data-skin="v4"] .sh-adopt-pop {
+  width: 262px !important;
+  padding: 12px 13px !important;
+}
+
+body[data-skin="v4"] .sh-adopt-h {
+  font-size: 13px !important;
+  font-weight: 650 !important;
+  color: var(--text-1) !important;
+}
+
+body[data-skin="v4"] .sh-adopt-b {
+  margin-top: 5px !important;
+  font-size: 12px !important;
+  line-height: 1.6 !important;
+  color: var(--text-2) !important;
+  word-break: break-word !important;
+}
+
+body[data-skin="v4"] .sh-adopt-actions {
+  display: flex !important;
+  gap: 8px !important;
+  margin: 11px 0 8px !important;
+}
+
+body[data-skin="v4"] .sh-adopt-hint {
+  font-size: 11px !important;
+  line-height: 1.55 !important;
+  color: var(--text-muted) !important;
+}

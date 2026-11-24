@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "tauri": "tauri",
-    "test:js": "node tests/recordTree.test.mjs && node tests/recordStore.test.mjs && node tests/notesStore.test.mjs && node tests/gridCore.test.mjs && node tests/undoCore.test.mjs && node tests/fieldTypes.test.mjs && node tests/clipboardTable.test.mjs && node tests/clipboardImport.test.mjs && node tests/pasteMap.test.mjs && node tests/presetCustom.test.mjs && node tests/relationField.test.mjs && node tests/navigation.test.mjs"
+    "test:js": "node tests/recordTree.test.mjs && node tests/recordStore.test.mjs && node tests/notesStore.test.mjs && node tests/gridCore.test.mjs && node tests/undoCore.test.mjs && node tests/fieldTypes.test.mjs && node tests/clipboardTable.test.mjs && node tests/clipboardImport.test.mjs && node tests/pasteMap.test.mjs && node tests/presetCustom.test.mjs && node tests/relationField.test.mjs && node tests/navigation.test.mjs && node tests/fieldCheck.test.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"

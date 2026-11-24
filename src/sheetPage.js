@@ -15,6 +15,8 @@ import { adaptClipValue, resolveBlockTargets, resolveRowTargets } from './pasteM
 import { mountFillHandle, mountRowResizer } from './gridGestures.js';
 import { undoStack } from './undoCore.js';
 import { renderCell, openCellEditor, renderFieldIcon, FIELD_TYPE_LABELS } from './fieldTypes.js';
+// 「这一列里已经有哪些值」——字段面板自动补选项用（纯函数，可在单测里跑）
+import { columnValueStats, unmatchedTokens, optionsFromValues } from './fieldCheck.js';
 import { pickAttachmentItems, storeImageFile, setAttachmentNotifier, readClipboardContent } from './attachmentOps.js';
 // 笔记在附件列里就是一个附件项：映射来自 note_record（随笔记文件同步），
 // 解绑只摘当前这一条记录的 id。**不把笔记路径抄进 attachments** ——
@@ -2339,11 +2341,84 @@ async function applyPastedChanges(changes, label, skipped = 0, failedImages = 0)
   // 整表重绘而不是只改受影响的格子：附件列要重新渲染缩略图，
   // 单格 innerHTML 换不掉图片节点（renderCell 会重建 img，但尺寸/折叠角标要重算）。
   renderSheet();
+  // 类型检查：粘进来的值可能压根不在选项里（跨应用粘贴时只有文字，没有选项 id）。
+  // 不静默收下 —— 给两个选择，默认「加为选项」，选「保留」的格子会带红角标。
+  maybeAdoptPastedOptions(changes);
   const bits = [`已粘贴 ${changes.length} 格`];
   if (skipped) bits.push(`跳过 ${skipped} 格`);
   if (failedImages) bits.push(`${failedImages} 张图片没能保存`);
   toast(bits.join('，'), failedImages ? 'info' : 'success');
   return true;
+}
+
+/**
+ * 粘贴之后的值检查：选项类字段里出现了不在选项中的值。
+ *
+ * 为什么在「写完」之后问，而不是写之前拦：
+ * 那时候用户已经看到结果了（格子上的字是对的），要不要把它变成选项是个**整理**决定，
+ * 不是数据合法性决定。拦在写之前会让人以为没粘成功。
+ *
+ * 两个出口，默认「加为选项」——这些值本来就是用户要的，缺的只是一个标签样式。
+ * 选「保留原值」什么都不做：渲染层会按「不在选项里」给它挂红角标（派生，不用存标记），
+ * 以后想加随时从字段面板那一排待补按钮加。
+ */
+function maybeAdoptPastedOptions(changes) {
+  const byField = new Map();
+  (changes || []).forEach(change => {
+    const field = change?.field;
+    if (!field || (field.type !== 'select' && field.type !== 'multi_select')) return;
+    const bad = unmatchedTokens(field, change.after, fieldOptionsList(field));
+    if (!bad.length) return;
+    const entry = byField.get(field.id) || { field, values: new Set(), rowId: change.row.id };
+    bad.forEach(value => entry.values.add(value));
+    byField.set(field.id, entry);
+  });
+  if (!byField.size) return;
+
+  const entries = [...byField.values()];
+  const names = [...new Set(entries.flatMap(entry => [...entry.values]))];
+  const anchorRow = entries[0].rowId;
+  const anchorKey = entries[0].field.key;
+  const cellEl = host?.querySelector(
+    `.sh-cell[data-row="${CSS.escape(String(anchorRow))}"][data-key="${CSS.escape(String(anchorKey))}"]`
+  );
+  if (!cellEl) return;
+
+  const preview = names.slice(0, 3).map(name => `「${escapeHtml(name)}」`).join(' ');
+  const more = names.length > 3 ? ` 等 ${names.length} 个` : '';
+  const panel = openPopoverSimple(
+    cellEl,
+    `<div class="sh-adopt">
+       <div class="sh-adopt-h">${names.length} 个值不在选项里</div>
+       <div class="sh-adopt-b">${preview}${more}</div>
+       <div class="sh-adopt-actions">
+         <button type="button" class="sh-btn is-primary" data-adopt-yes>加为选项</button>
+         <button type="button" class="sh-btn" data-adopt-no>保留原值</button>
+       </div>
+       <div class="sh-adopt-hint">保留原值的格子会带一个红色感叹号，之后可以从字段面板补。</div>
+     </div>`,
+    'sh-adopt-pop'
+  );
+  panel.querySelector('[data-adopt-no]')?.addEventListener('click', () => closeFloats());
+  panel.querySelector('[data-adopt-yes]')?.addEventListener('click', async () => {
+    closeFloats();
+    let changed = 0;
+    for (const entry of entries) {
+      const field = entry.field;
+      const next = optionsFromValues([...entry.values], fieldOptionsList(field));
+      try {
+        await patchField(field.id, { options: mergeFieldOptions(field, { source: 'custom', options: next }) });
+        field.options = mergeFieldOptions(field, { source: 'custom', options: next });
+        changed += entry.values.size;
+      } catch (error) {
+        toast(`加为选项失败：${error?.message || error}`, 'danger');
+      }
+    }
+    if (changed) {
+      renderSheet();
+      toast(`已加为选项 ${changed} 个`, 'success');
+    }
+  });
 }
 
 /** 保存状态那一行临时改文案：几十张图下载时总得有进度。 */
@@ -2608,6 +2683,12 @@ function openFieldPanelFor(field, { mode = 'edit', sort = null } = {}) {
     // 现值告诉面板「默认指自己这张表」。
     tables: state.sheets.map(item => ({ id: item.id, name: item.name, kind: item.kind })),
     selfTableId: state.sheet?.id ?? null,
+    // 面板要「自动识别这一列已经有什么值」：直接从已加载的行里数，不再打一次库。
+    // 只对选项类字段有用，其它类型传空数组（面板会忽略）。
+    columnValues:
+      mode === 'edit' && field
+        ? columnValueStats(state.rows, field)
+        : [],
     onSave: async payload => {
       try {
         const hasOptions = payload.type === 'select' || payload.type === 'multi_select';

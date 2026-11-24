@@ -10,6 +10,7 @@
 import { escapeHtml } from './htmlUtils.js';
 import { placeDropdown } from './dropdownPlace.js';
 import { renderRelationCell, openRelationPicker, relationConfig } from './relationField.js';
+import { unmatchedTokens } from './fieldCheck.js';
 
 // ==========================================
 // 常量与工具
@@ -219,20 +220,37 @@ function renderSelectCell(field, value, ctx) {
   // 上色时的三层强弱：用户配的色 → 实心饱和块；没配色的 → hash 稳定色淡底标签。
   // 淡底这一档不能省：预置表的「主分类」来自标签库（tags 表里根本没有颜色列），
   // 全是灰字就等于没有分类信息，v4 之前本来就是靠这层淡色区分的。
-  if (colored) {
-    return hasExplicitColor(option)
+  const html = colored
+    ? hasExplicitColor(option)
       ? renderPill(option.label, option.color, '', true)
-      : renderPill(option.label, selectColor(option), 'is-tinted');
-  }
-  // 卡片 / 看板 / 视图列表保持 v4 的安静基调，不跟着变彩色。
-  return renderPill(option.label, selectColor(option));
+      : renderPill(option.label, selectColor(option), 'is-tinted')
+    // 卡片 / 看板 / 视图列表保持 v4 的安静基调，不跟着变彩色。
+    : renderPill(option.label, selectColor(option));
+  return withMismatchBadge(field, value, ctx, html);
+}
+
+/**
+ * 值不在选项里 → 给这块内容加个左上角红点。
+ *
+ * 判断放在渲染层而不是写库时打标记：**「不在选项里」是一个可以当场算出来的事实**，
+ * 存一个标记只是把它抄了一遍 —— 抄完还得在别人删了那个选项时同步清掉。
+ * 派生出来的好处是老数据天然有角标：把一列从文本改成单选，那一列原来的值立刻全部标出来，
+ * 不需要迁移。
+ */
+function withMismatchBadge(field, value, ctx, html) {
+  const bad = unmatchedTokens(field, value, resolveOptions(field, ctx));
+  if (!bad.length) return html;
+  const hint = bad.length === 1
+    ? `「${bad[0]}」不在这一列的选项里，点开可以新建`
+    : `${bad.length} 个值不在选项里：${bad.join('、')}`;
+  return `<span class="ft-mismatch" title="${escapeHtml(hint)}">${html}<i class="ft-bad" aria-hidden="true">!</i></span>`;
 }
 
 function renderMultiSelectCell(field, value, ctx) {
   const values = normalizeMulti(value);
   if (!values.length) return renderEmpty(ctx);
   const colored = ctx?.solidPill === true;
-  return `<span class="ft-pill-group">${values
+  const html = `<span class="ft-pill-group">${values
     .map(item => {
       const option = resolveOption(field, item, ctx);
       // 多选里混着 tone 选项也要上色，判断与单选同源
@@ -241,6 +259,7 @@ function renderMultiSelectCell(field, value, ctx) {
       return renderPill(option.label, selectColor(option), extra, solid);
     })
     .join('')}</span>`;
+  return withMismatchBadge(field, value, ctx, html);
 }
 
 // 日期字段的精度存在字段配置里：{ dateOnly: true } 表示只到日。
