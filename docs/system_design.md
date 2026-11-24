@@ -1084,6 +1084,28 @@ sequenceDiagram
   5. 验收：从表格建一条记录 → 今天页「今天动过的记录」里能看到 → 记录页在对应表分组里能看到
 - **依赖**：T04、T09
 
+> **实施记录（2026-11-24，按 v4 现状收口，判据 3/4/5 作废）**
+>
+> 这一卡是按「今天 / 记录 / 设置 三个并列页面」写的，v4 的表库结构与它已经不是一回事：
+>
+> - **今天页**并入表格：`#subview-dashboard` 已不在路由表里（`setupRouting` 只有 表格/白板/笔记/设置/freecell），
+>   「今天」变成基础表上的筛选 chip（`data-rec-filter="today"`）。判据 1 早已满足，判据 2 的「三分区」无从谈起。
+> - **记录页**并入表库 + 表内：`#timeline-container` 已下线（`display:none`，容器只为 `timeline.js` 的顶层取 id 而留），
+>   `timeline.js` 现在只负责给基础表工具栏的两个下拉（主分类 / 子项目）喂选项。判据 3 的「按 sheet_id 分组」对应的是已经不存在的页面。
+> - **设置页**是六张卡片的自适应网格（外观 / 记录与时间 / 空当接龙 / 数据与存储 / 标签库 / 关于与更新），
+>   不是「三个分区可切换」。判据 4 的切换器不存在，也不该为一个已经能滚动的卡片网格补一个。
+>
+> 所以这一轮只做了真正还成立的那一半：**删掉「完整录入 · 补录历史」入口与它后面那整块死表单**
+> （`#legacy-tools-toggle` + `#legacy-capture-area`，197 行 HTML + `setupLegacyToolsToggle` 及其常量，
+> 判据 2 的 grep 目标现在为 0）。表单背后的 `initNotesModule` / `initLogModule` / `setupTabs` 全部是
+> 「元素缺失即 return」的空守，删掉标记后它们干净地不初始化，不需要连带删模块。
+> 保留 `#capture-popover`（快速记录，`Ctrl+Shift+Space` 全局唤起，初始化时会挂到 body 下）与
+> `#history-list-container`（`renderHistoryList` 仍在跑）。
+>
+> 教训：设计文档里「页面级」的判据会随信息架构调整整段失效 —— 执行前先核一遍路由表与 DOM 是否还有那个页面，
+> 别照着一张早已改版的图纸施工。
+
+
 **任务依赖图**
 
 ```mermaid

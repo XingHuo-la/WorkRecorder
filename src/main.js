@@ -172,7 +172,6 @@ async function initApp() {
   safeRun('search', initSearchModule);
   safeRun('command-palette', initCommandPalette);
   safeRun('freecell', initFreeCellModule);
-  safeRun('legacy-tools-toggle', setupLegacyToolsToggle);
   safeRun('dashboard-chrome', setupDashboardChrome);
 
   // 关窗口前把抽屉里还没落库的正文再刷一次。
@@ -211,53 +210,6 @@ async function initApp() {
   setupTitlebar();
   updateWorkspaceSummary();
   renderRecentNotes();
-}
-
-// 「完整录入 · 补录历史」的开合。
-//
-// 入口已从右栏「其他入口」卡片降级成右列底部的一行 quiet 链接（层 11），
-// 所以这里不再需要把整块卡片藏起来 —— 旧实现里的 `.advanced-tools-strip`
-// 已随首页重排删除，`strip` 恒为 null，保留判空只是让这段在新旧 DOM 下都能跑。
-// 文案常量放在函数上方：setOpen(false) 时要把按钮恢复成 HTML 里的初始文案，
-// 两处写死字符串迟早会漂（会先闪一下旧字再定住）。
-const LEGACY_TOGGLE_OPEN_TEXT = '收起';
-const LEGACY_TOGGLE_CLOSED_TEXT = '完整录入 · 补录历史';
-
-function setupLegacyToolsToggle() {
-  const toggle = document.getElementById('legacy-tools-toggle');
-  const collapse = document.getElementById('legacy-tools-collapse');
-  const area = document.getElementById('legacy-capture-area');
-  const strip = document.querySelector('.advanced-tools-strip');
-  if (!toggle || !area) return;
-
-  const setOpen = (isOpen, shouldScroll = false) => {
-    area.classList.toggle('show', isOpen);
-    area.setAttribute('aria-hidden', String(!isOpen));
-    toggle.setAttribute('aria-expanded', String(isOpen));
-    toggle.innerText = isOpen ? LEGACY_TOGGLE_OPEN_TEXT : LEGACY_TOGGLE_CLOSED_TEXT;
-    if (strip) strip.style.display = isOpen ? 'none' : '';
-    if (collapse) {
-      collapse.setAttribute('aria-expanded', String(isOpen));
-      collapse.innerText = '收起';
-    }
-
-    if (shouldScroll) {
-      // 收起时回到入口本身：卡片没了，closest('.advanced-tools-strip') 会返回 null，
-      // 滚回原处会把用户扔到页面顶部。
-      const target = isOpen ? area : toggle;
-      target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
-  };
-
-  toggle.addEventListener('click', () => {
-    setOpen(!area.classList.contains('show'), true);
-  });
-
-  collapse?.addEventListener('click', () => {
-    setOpen(false, true);
-  });
-
-  setOpen(area.classList.contains('show'));
 }
 
 // 工作台头部：日期、捕获浮层、右栏入口跳转。
