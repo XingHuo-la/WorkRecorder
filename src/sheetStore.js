@@ -702,14 +702,68 @@ export async function readTableFields(table) {
       'SELECT id, key, label, type, options, width, sort, visible FROM field_def WHERE entity = ? ORDER BY sort, id',
       ['log']
     );
-    return (Array.isArray(rows) ? rows : []).map(item => ({
-      ...item,
-      sheet_id: table.id,
-      visible: Number(item.visible) === 0 ? 0 : 1,
-      width: Number(item.width) || defaultWidthFor(item.type),
-    }));
+    const list = Array.isArray(rows) ? rows : [];
+    // key 归一（剥掉老网格的 `custom.` 前缀）：values 里的键 = custom JSON 的键 = field.key，
+    // 三条路对齐之后「改一格」才知道该往哪写。只在读的时候归一，不动库里的值：
+    // 一旦 UPDATE key，旧网格回退（wrPresetGrid=legacy）就读不到自己当年建的那几列了。
+    const used = new Set(list.map(item => String(item.key ?? '')));
+    return list.map(item => {
+      const rawKey = String(item.key ?? '');
+      const key = customKeyOf(rawKey);
+      return {
+        ...item,
+        // 剥完撞上另一条字段的 key 就保持原样：两条字段抢一个值比读不出来更难查
+        key: key && !used.has(key) ? key : rawKey,
+        sheet_id: table.id,
+        visible: Number(item.visible) === 0 ? 0 : 1,
+        width: Number(item.width) || defaultWidthFor(item.type),
+      };
+    });
   }
   return loadFields(table.id);
+}
+
+// 预置表的「真列」只有这 7 个（record 表上有对应字段）。
+// 其余字段都是用户在预置表上新建的列，值存在 record.custom JSON 里，键名就是 field_def.key。
+// 这两个方向的映射必须共用同一份名单，否则会出现「写了读不回来」的静默丢值。
+export const PRESET_COLUMN_KEYS = ['text', 'tag', 'sub_tag', 'date', 'attachments', 'status', 'detail'];
+const PRESET_COLUMN_KEY_SET = new Set(PRESET_COLUMN_KEYS);
+
+/**
+ * 字段 key → custom JSON 里的键。
+ *
+ * 老网格（tablePage.js 的「加一列」）当年生成的 key 是 `custom.f1a2b3`，
+ * 写库时 `key.slice(7)` 存成 custom 里的 `f1a2b3`。新 key 是 `f_xxx`，没有前缀。
+ * 读字段时统一剥掉前缀（见 readTableFields），两个时代的字段就落在同一个键上，
+ * 老数据不用迁移、也不用一次性洗库。
+ */
+export function customKeyOf(fieldKey) {
+  const key = String(fieldKey ?? '');
+  return key.startsWith('custom.') ? key.slice(7) : key;
+}
+
+/** custom JSON → values 里的自定义列。跳过内部键（`_bd` 白板布局、`__fmt` 格式）与撞内置名的脏数据。 */
+function customValuesOf(custom) {
+  const out = {};
+  for (const [key, value] of Object.entries(custom || {})) {
+    if (!key || key.startsWith('_')) continue;
+    if (PRESET_COLUMN_KEY_SET.has(key)) continue;
+    out[key] = value;
+  }
+  return out;
+}
+
+/** values → 该写进 custom 的自定义列（presetValues 的逆运算，只取真正的字段键）。 */
+function presetCustomOf(values) {
+  const out = {};
+  for (const [key, value] of Object.entries(values || {})) {
+    if (!key || key.startsWith('_')) continue;
+    if (value === undefined) continue;
+    const dataKey = customKeyOf(key);
+    if (!dataKey || PRESET_COLUMN_KEY_SET.has(dataKey)) continue;
+    out[dataKey] = value;
+  }
+  return out;
 }
 
 // 预置表的行 → 统一 values 对象。
@@ -730,6 +784,14 @@ function presetValues(row) {
     attachments: Array.isArray(custom.attachments) ? custom.attachments : [],
     status: row.status === 'inbox' ? 'unprocessed' : String(row.status ?? ''),
     detail: String(row.body ?? ''),
+    // 单元格级格式（底色/对齐/换行）在 values 里叫 __fmt，键名和别的自定义列一样是字段 key。
+    // 以前预置表这一格根本没往 custom 里写，用户点完颜色刷新就白点 —— 同一个接缝，顺手补上。
+    ...(custom.__fmt && typeof custom.__fmt === 'object' && !Array.isArray(custom.__fmt)
+      ? { __fmt: custom.__fmt }
+      : {}),
+    // 自定义列（v15 之后的「关联」「补充说明」这类）住在 custom 里，一并摊平。
+    // 上面 7 个真列先写，这里再覆盖不了它们（customValuesOf 已挡掉同名键）。
+    ...customValuesOf(custom),
   };
 }
 
@@ -787,6 +849,16 @@ export async function saveTableRow(table, row, values) {
   // 整列覆写会把它们抹掉（白板上的便签会集体跳回原点）。
   const custom = parseRowData({ data: row.custom });
   custom.attachments = Array.isArray(values?.attachments) ? values.attachments : [];
+  // 自定义列（预置表上新建的字段）没有真列可落，只能进 custom。
+  // 不写这一步的后果是：字段面板里加得出「关联」列，界面上改得动，
+  // 一刷新全部变空 —— 而且零报错，看起来像渲染 bug。
+  Object.assign(custom, presetCustomOf(values));
+  // 格式跟值一起存；全清掉时要真的删键，否则「取消格式」刷新后又回来了
+  if (values?.__fmt && typeof values.__fmt === 'object' && Object.keys(values.__fmt).length) {
+    custom.__fmt = values.__fmt;
+  } else {
+    delete custom.__fmt;
+  }
   await db().dbExecute(
     `UPDATE record SET title = ?, body = ?, tag = ?, sub_tag = ?,
             happened_date = ?, happened_time = ?, status = ?, custom = ?, updated_at = ?
@@ -819,7 +891,8 @@ export async function insertTableRow(table, values = {}, options = {}) {
 
   const stamp = nowStamp();
   const columns = presetColumnsOf(values);
-  const custom = {};
+  // 新行没有旧 custom 可合并；自定义列（含关联）直接进 custom，与写回路径共用一份映射
+  const custom = presetCustomOf(values);
   if (Array.isArray(values?.attachments) && values.attachments.length) custom.attachments = values.attachments;
   if (Number.isFinite(parentId)) {
     await db().dbExecute(
