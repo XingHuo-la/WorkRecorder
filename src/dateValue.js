@@ -70,18 +70,15 @@ export function formatDateValue(parts, precision) {
   return `${base} ${hhmm}:${pad2(parts.second)}`;
 }
 
-// 表格单元格的短形态（完整值永远留在 title 里）：
-//   11-18 / 11-18 10时 / 11-18 16:30 / 11-18 16:30:22
-// 「10时」这一档是刻意的：分秒都是 0 时，写 10:00 只是噪音，
-// 而 10时 一眼就知道「这一个只知道整点」。
+// 表格单元格就显示值本身 —— 不做任何加工。
+//
+// 走过两条弯路，都记在这里：
+//  · 先显示成 11-18（省年份），结果「看得到月日、看不到年」；
+//  · 再把整点写成 10时，又多了一层要背的规则。
+// 值的标识就是它的字符串，照原样显示最省解释：2026-11-18 16:30:22 一眼就是这个值。
+// 年份要不要省略不是渲染层该决定的事 —— 列窄了是列宽的问题，不是值的问题。
 export function shortDateText(value) {
-  const parsed = parseDateValue(value);
-  if (!parsed.hasValue) return String(value ?? '').trim();
-  const datePart = `${pad2(parsed.month)}-${pad2(parsed.day)}`;
-  if (parsed.precision === 'day') return datePart;
-  if (parsed.precision === 'minute' && parsed.minute === 0) return `${datePart} ${pad2(parsed.hour)}时`;
-  const hhmm = `${pad2(parsed.hour)}:${pad2(parsed.minute)}`;
-  return parsed.precision === 'second' ? `${datePart} ${hhmm}:${pad2(parsed.second)}` : `${datePart} ${hhmm}`;
+  return String(value ?? '').trim();
 }
 
 // 字段配置里「这一列的默认精度」：新键 precision 优先，
