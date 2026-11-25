@@ -656,6 +656,20 @@ const COLOR_SWATCHES = ['#60a5fa', '#2fbf71', '#f5a524', '#e5484d', '#a78bfa', '
 // 手边就能点到的九种颜色：七色 + 黑 + 白。
 // 原来只有系统取色器 —— 想配一个「和别的列一个红」得先记住色值再手输，
 // 而大部分需求其实就是「红橙黄绿青蓝紫里挑一个」。
+
+// 颜色换算：自定义取色面板要在 hex 与 rgb 之间来回（用户看的是 R/G/B 三个数字）
+const hexOf = (r, g, b) => `#${[r, g, b].map(v => Math.max(0, Math.min(255, Number(v) || 0)).toString(16).padStart(2, '0')).join('')}`;
+const rgbOf = hex => {
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || '').trim());
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+};
+const rgbText = hex => {
+  const rgb = rgbOf(hex);
+  return rgb ? `rgb(${rgb.r}, ${rgb.g}, ${rgb.b})` : '';
+};
+
 const PRESET_COLORS = [
   { name: '红', hex: '#e5484d' },
   { name: '橙', hex: '#f5a524' },
@@ -815,8 +829,7 @@ export function openFieldPanel({ field = null, sheetName, tables = [], selfTable
                  .map(
                    (option, index) => `
                  <div class="sh-option-row" data-index="${index}">
-                   <input type="color" class="sh-color" value="${escapeHtml(option.color || optionColor(option.label))}" data-color aria-label="自定义颜色" />
-                   <button type="button" class="sh-color-more" data-color-toggle="${index}" aria-label="预设颜色" aria-expanded="${state.colorOpen === index}">预设</button>
+                   <button type="button" class="sh-color-btn" data-color-toggle="${index}" aria-label="选项颜色" aria-expanded="${state.colorOpen === index}"><i style="background:${escapeHtml(option.color || optionColor(option.label))}"></i></button>
                    <input type="text" class="sh-input sh-input-flat" data-option-label value="${escapeHtml(option.label)}" />
                    <button type="button" class="sh-icon-btn" data-remove-option aria-label="删除选项">
                      <svg class="wr-icon" aria-hidden="true"><use href="#ic-trash"/></svg>
@@ -824,8 +837,16 @@ export function openFieldPanel({ field = null, sheetName, tables = [], selfTable
                  </div>
                  ${
                    state.colorOpen === index
-                     ? `<div class="sh-color-presets" data-color-row="${index}">
-                          ${PRESET_COLORS.map(color => `<button type="button" class="sh-color-dot${String(option.color || '').toLowerCase() === color.hex ? ' is-on' : ''}" data-set-color="${color.hex}" title="${color.name}" style="background:${color.hex}"></button>`).join('')}
+                     ? `<div class="sh-color-pop" data-color-row="${index}">
+                          <div class="sh-color-presets">
+                            ${PRESET_COLORS.map(color => `<button type="button" class="sh-color-dot${String(option.color || '').toLowerCase() === color.hex ? ' is-on' : ''}" data-set-color="${color.hex}" title="${color.name} · ${color.hex} · ${rgbText(color.hex)}"><i style="background:${color.hex}"></i></button>`).join('')}
+                          </div>
+                          <div class="sh-color-read"><i style="background:${escapeHtml(option.color || optionColor(option.label))}"></i><b>${escapeHtml(option.color || optionColor(option.label))}</b><span>${rgbText(option.color || optionColor(option.label))}</span></div>
+                          <div class="sh-color-fields">
+                            <input type="text" class="sh-input sh-input-flat" data-hex value="${escapeHtml(option.color || optionColor(option.label))}" spellcheck="false" aria-label="十六进制颜色" />
+                            <button type="button" class="sh-color-native" data-native="${index}">系统取色器</button>
+                          </div>
+                          <input type="color" class="sh-color-hidden" value="${escapeHtml(option.color || optionColor(option.label))}" data-color aria-label="自定义颜色" />
                         </div>`
                      : ''
                  }`
@@ -910,6 +931,18 @@ export function openFieldPanel({ field = null, sheetName, tables = [], selfTable
       return;
     }
 
+    const hexInput = event.target.closest('[data-hex]');
+    if (hexInput) {
+      const index = Number(hexInput.closest('[data-color-row]')?.dataset.colorRow);
+      const rgb = rgbOf(hexInput.value);
+      if (Number.isInteger(index) && state.options[index] && rgb) {
+        state.options[index].color = hexOf(rgb.r, rgb.g, rgb.b);
+        paint();
+      } else if (Number.isInteger(index) && state.options[index]) {
+        hexInput.value = state.options[index].color || '';
+      }
+      return;
+    }
     const colorInput = event.target.closest('[data-color]');
     if (colorInput) {
       const index = Number(colorInput.closest('[data-index]')?.dataset.index);
@@ -1001,6 +1034,15 @@ export function openFieldPanel({ field = null, sheetName, tables = [], selfTable
         state.options[index].color = colorDot.dataset.setColor;
         state.colorOpen = -1;
         paint();
+      }
+      return;
+    }
+    const nativeBtn = event.target.closest('[data-native]');
+    if (nativeBtn) {
+      const index = Number(nativeBtn.dataset.native);
+      const row = nativeBtn.closest('[data-color-row]');
+      if (Number.isInteger(index) && state.options[index]) {
+        row?.querySelector('input[data-color]')?.click();
       }
       return;
     }

@@ -3473,51 +3473,123 @@ body[data-skin="v4"] .sh-adopt-hint {
   color: var(--text-muted) !important;
 }
 
-/* 选项配色：原生取色器（RGB）+ 九色快捷（七色 + 黑白）。
-   原生 input[type=color] 不能拿掉 —— 预设只是「常用色的捷径」。
-   注意 body[data-ui="v3"] button (0,1,2) 会盖掉一切低优先级按钮底色，
-   所以这里的按钮一律写全限定 + !important。 */
-body[data-ui="v3"] .sh-drawer .sh-color-more {
+/* 选项配色：点色块展开一个自己的取色面板 —— 九色快捷 + 当前色 hex/rgb 读数 +
+   hex 输入 + 系统取色器兜底。
+   颜色一律画在内层 <i> 上，不画在 button 上：body[data-ui="v3"] button 用
+   !important 给所有按钮写了背景，连行内 style 都压不过它 —— 上一版色点全白就是这个原因。 */
+body[data-ui="v3"] .sh-drawer .sh-color-btn {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
   flex: none !important;
-  min-height: 20px !important;
-  height: 20px !important;
-  padding: 0 6px !important;
-  border: 1px solid var(--border, rgba(0, 0, 0, 0.14)) !important;
-  border-radius: 6px !important;
-  background: transparent !important;
-  color: var(--text-muted, #6b7280) !important;
-  font-size: 11px !important;
-  line-height: 18px !important;
+  width: 24px !important;
+  height: 24px !important;
+  min-width: 24px !important;
+  min-height: 24px !important;
+  padding: 2px !important;
+  border: 1px solid rgba(0, 0, 0, 0.16) !important;
+  border-radius: 7px !important;
+  background: #fff !important;
   cursor: pointer !important;
 }
 
-body[data-ui="v3"] .sh-drawer .sh-color-more[aria-expanded="true"] {
-  background: rgba(0, 0, 0, 0.06) !important;
-  color: var(--text-1) !important;
+body[data-ui="v3"] .sh-drawer .sh-color-btn > i,
+body[data-ui="v3"] .sh-drawer .sh-color-dot > i,
+body[data-ui="v3"] .sh-drawer .sh-color-read > i {
+  display: block !important;
+  width: 100% !important;
+  height: 100% !important;
+  border-radius: 5px !important;
+}
+
+body[data-ui="v3"] .sh-drawer .sh-color-pop {
+  display: block !important;
+  margin: -2px 0 10px 0 !important;
+  padding: 10px 11px !important;
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.1)) !important;
+  border-radius: 10px !important;
+  background: var(--surface, #fff) !important;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.08) !important;
 }
 
 body[data-ui="v3"] .sh-drawer .sh-color-presets {
   display: flex !important;
   flex-wrap: wrap !important;
-  gap: 7px !important;
-  margin: -2px 0 8px 0 !important;
-  padding: 7px 9px !important;
-  border-radius: 9px !important;
-  background: rgba(0, 0, 0, 0.04) !important;
+  gap: 8px !important;
+  margin: 0 0 10px 0 !important;
 }
 
 body[data-ui="v3"] .sh-drawer .sh-color-dot {
-  width: 18px !important;
-  height: 18px !important;
-  min-width: 18px !important;
-  min-height: 18px !important;
+  display: inline-flex !important;
+  width: 20px !important;
+  height: 20px !important;
+  min-width: 20px !important;
+  min-height: 20px !important;
   padding: 0 !important;
-  border-radius: 50% !important;
   border: 1px solid rgba(0, 0, 0, 0.16) !important;
+  border-radius: 50% !important;
+  background: transparent !important;
   cursor: pointer !important;
+  overflow: hidden !important;
 }
 
 body[data-ui="v3"] .sh-drawer .sh-color-dot.is-on {
-  border-color: #111 !important;
-  box-shadow: 0 0 0 2px var(--surface, #fff) inset !important;
+  box-shadow: 0 0 0 2px var(--surface, #fff), 0 0 0 3.5px #111 !important;
+}
+
+body[data-ui="v3"] .sh-drawer .sh-color-read {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  margin: 0 0 9px 0 !important;
+  font-size: 11.5px !important;
+  color: var(--text-2, #4b5563) !important;
+}
+
+body[data-ui="v3"] .sh-drawer .sh-color-read > i {
+  width: 18px !important;
+  height: 18px !important;
+  flex: none !important;
+  border-radius: 5px !important;
+  border: 1px solid rgba(0, 0, 0, 0.14) !important;
+}
+
+body[data-ui="v3"] .sh-drawer .sh-color-read > b {
+  font-weight: 600 !important;
+  letter-spacing: 0.02em !important;
+  color: var(--text-1, #111827) !important;
+}
+
+body[data-ui="v3"] .sh-drawer .sh-color-fields {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+}
+
+body[data-ui="v3"] .sh-drawer .sh-color-fields > input[data-hex] {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  height: 28px !important;
+  font-variant-numeric: tabular-nums !important;
+}
+
+body[data-ui="v3"] .sh-drawer .sh-color-native {
+  flex: none !important;
+  height: 28px !important;
+  min-height: 28px !important;
+  padding: 0 10px !important;
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.14)) !important;
+  border-radius: 7px !important;
+  background: transparent !important;
+  color: var(--text-2, #4b5563) !important;
+  font-size: 11.5px !important;
+  cursor: pointer !important;
+}
+
+body[data-ui="v3"] .sh-drawer .sh-color-hidden {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
 }
