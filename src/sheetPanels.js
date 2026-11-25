@@ -815,7 +815,8 @@ export function openFieldPanel({ field = null, sheetName, tables = [], selfTable
                  .map(
                    (option, index) => `
                  <div class="sh-option-row" data-index="${index}">
-                   <button type="button" class="sh-color-btn" data-color-toggle="${index}" style="--c:${escapeHtml(option.color || optionColor(option.label))}" aria-label="选项颜色" aria-expanded="${state.colorOpen === index}"></button>
+                   <input type="color" class="sh-color" value="${escapeHtml(option.color || optionColor(option.label))}" data-color aria-label="自定义颜色" />
+                   <button type="button" class="sh-color-more" data-color-toggle="${index}" aria-label="预设颜色" aria-expanded="${state.colorOpen === index}">预设</button>
                    <input type="text" class="sh-input sh-input-flat" data-option-label value="${escapeHtml(option.label)}" />
                    <button type="button" class="sh-icon-btn" data-remove-option aria-label="删除选项">
                      <svg class="wr-icon" aria-hidden="true"><use href="#ic-trash"/></svg>
@@ -824,7 +825,7 @@ export function openFieldPanel({ field = null, sheetName, tables = [], selfTable
                  ${
                    state.colorOpen === index
                      ? `<div class="sh-color-presets" data-color-row="${index}">
-                          ${PRESET_COLORS.map(color => `<button type="button" class="sh-color-dot${String(option.color || '').toLowerCase() === color.hex ? ' is-on' : ''}" data-set-color="${color.hex}" title="${color.name}" style="--c:${color.hex}"></button>`).join('')}
+                          ${PRESET_COLORS.map(color => `<button type="button" class="sh-color-dot${String(option.color || '').toLowerCase() === color.hex ? ' is-on' : ''}" data-set-color="${color.hex}" title="${color.name}" style="background:${color.hex}"></button>`).join('')}
                         </div>`
                      : ''
                  }`
