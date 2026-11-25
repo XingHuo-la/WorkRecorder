@@ -13,7 +13,8 @@ import { escapeHtml } from './htmlUtils.js';
 import { showUndoToast } from './undoToast.js';
 import { undoStack } from './undoCore.js';
 import { saveRowValues, rowTitle, fieldOptionsList, saveFieldDrawer } from './sheetStore.js';
-import { isDateOnly, openCellEditor, renderCell } from './fieldTypes.js';
+import { openCellEditor, renderCell } from './fieldTypes.js';
+import { dayValueForPrecision } from './dateValue.js';
 import { openDatePicker } from './datePicker.js';
 import { openAttachmentSourceMenu } from './sheetPanels.js';
 import { pickAttachmentItems, storeImageFile, readClipboardContent } from './attachmentOps.js';
@@ -184,7 +185,7 @@ function editCellInDrawer(field, cellEl, row, ctx) {
     openDatePicker: (targetCell, targetField, currentValue, opts = {}) => {
       openDatePicker(targetCell, {
         value: currentValue,
-        dateOnly: opts.dateOnly === true,
+        precision: opts.precision || 'minute',
         onPick: pick => Promise.resolve(opts.commit ? opts.commit(pick) : commit(pick)).catch(() => {}),
         onClear: () => Promise.resolve(opts.commit ? opts.commit('') : commit('')).catch(() => {}),
         onClose: () => opts.done?.(),
@@ -700,7 +701,7 @@ function calendarDateField(fields, config) {
 // 新建时给的值要与列精度一致：只到日的列收 YYYY-MM-DD，
 // 带时间的列补 00:00 —— 否则日期渲染里 slice(11,16) 拿到空串，会显示成一个孤零零的日期。
 function dayValueFor(field, key) {
-  return isDateOnly(field) ? key : `${key} 00:00`;
+  return dayValueForPrecision(field, key);
 }
 
 function renderCalendar(root, ctx) {

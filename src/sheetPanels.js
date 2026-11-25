@@ -670,6 +670,14 @@ const rgbText = hex => {
   return rgb ? `rgb(${rgb.r}, ${rgb.g}, ${rgb.b})` : '';
 };
 
+// 日期列默认精度的三档。文案用「只到日 / 到分 / 到秒」而不是「日 / 分 / 秒」——
+// 这一行是在解释「空白格会长成什么样」，得读得出来。
+const DATE_PRECISION_CHOICES = [
+  { value: 'day', label: '只到日' },
+  { value: 'minute', label: '到分' },
+  { value: 'second', label: '到秒' },
+];
+
 const PRESET_COLORS = [
   { name: '红', hex: '#e5484d' },
   { name: '橙', hex: '#f5a524' },
@@ -697,7 +705,13 @@ export function openFieldPanel({ field = null, sheetName, tables = [], selfTable
     label: field?.label || '',
     type: field?.type || 'text',
     wrap: config.wrap === true,
-    dateOnly: config.dateOnly === true,
+    // 日期列的默认精度（老键 dateOnly=true 读成 day，不改老数据）
+    precision:
+      config.precision === 'day' || config.precision === 'second'
+        ? config.precision
+        : config.dateOnly === true
+          ? 'day'
+          : 'minute',
     options: Array.isArray(config.options) ? config.options.map(item => ({ ...item })) : [],
     // 关联字段：指向哪张表 + 单选/多选。默认指向「当前这张表」——
     // 最常见的是「这条任务的父任务」「同一批里的上一条」，指自己那张表。
@@ -768,12 +782,14 @@ export function openFieldPanel({ field = null, sheetName, tables = [], selfTable
 
       ${
         state.type === 'date'
-          ? `<div class="sh-label sh-label-gap">日期精度</div>
+          ? `<div class="sh-label sh-label-gap">默认精度</div>
              <div class="sh-seg" data-seg="date">
-               <button type="button" class="sh-seg-item${state.dateOnly ? ' is-on' : ''}" data-dateonly="1">只到日</button>
-               <button type="button" class="sh-seg-item${state.dateOnly ? '' : ' is-on'}" data-dateonly="0">到分钟</button>
+               ${DATE_PRECISION_CHOICES.map(
+                 item =>
+                   `<button type="button" class="sh-seg-item${state.precision === item.value ? ' is-on' : ''}" data-dateprecision="${item.value}">${item.label}</button>`
+               ).join('')}
              </div>
-             <div class="sh-hint">「只到日」的列在选择器里不会出现时间输入，也不会存时间。</div>`
+             <div class="sh-hint">只决定<b>空白格</b>从哪一档开始。已经填好的格子各记各的精度，也能在选择器里单独改 —— 同一列里「只到日 / 到分 / 到秒」可以混着来。</div>`
           : ''
       }
 
@@ -878,7 +894,7 @@ export function openFieldPanel({ field = null, sheetName, tables = [], selfTable
     options: JSON.stringify({
       source: 'custom',
       options: state.options,
-      dateOnly: state.dateOnly,
+      precision: state.precision,
       targetSheetId: state.targetSheetId,
       multiple: state.multiple,
     }),
@@ -886,7 +902,12 @@ export function openFieldPanel({ field = null, sheetName, tables = [], selfTable
 
   const sampleValue = () => {
     switch (state.type) {
-      case 'date': return state.dateOnly ? '2026-11-10' : '2026-11-10 09:30';
+      case 'date':
+        return state.precision === 'day'
+          ? '2026-11-10'
+          : state.precision === 'second'
+            ? '2026-11-10 09:30:45'
+            : '2026-11-10 09:30';
       case 'number': return 42;
       case 'checkbox': return true;
       case 'select':
@@ -974,9 +995,9 @@ export function openFieldPanel({ field = null, sheetName, tables = [], selfTable
       paint();
       return;
     }
-    const dateBtn = event.target.closest('[data-dateonly]');
-    if (dateBtn) {
-      state.dateOnly = dateBtn.dataset.dateonly === '1';
+    const precBtn = event.target.closest('[data-dateprecision]');
+    if (precBtn) {
+      state.precision = precBtn.dataset.dateprecision;
       paint();
       return;
     }
@@ -1083,7 +1104,7 @@ export function openFieldPanel({ field = null, sheetName, tables = [], selfTable
       type: state.type,
       options: needsOptions() ? state.options : [],
       wrap: state.type === 'text' ? state.wrap : false,
-      dateOnly: state.type === 'date' ? state.dateOnly : false,
+      precision: state.type === 'date' ? state.precision : null,
       // 只有关联类型才带这两个；其余类型传 null，由 mergeFieldOptions 删掉旧配置
       targetSheetId: state.type === 'relation' ? state.targetSheetId : null,
       multiple: state.type === 'relation' ? state.multiple : null,

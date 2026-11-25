@@ -94,6 +94,9 @@ export function mergeFieldOptions(field, patch = {}) {
   if (!Array.isArray(next.options)) next.options = [];
   if (!next.wrap) delete next.wrap;
   if (!next.dateOnly) delete next.dateOnly;
+  // precision 的默认档就是 minute，「不写这个键」与它等价 —— 不落库，
+  // 免得每份配置里都躺一个永不变的精度。
+  if (!next.precision || next.precision === 'minute') delete next.precision;
   if (next.format && typeof next.format === 'object' && !Object.keys(next.format).length) delete next.format;
   if (next.format && typeof next.format !== 'object') delete next.format;
   return JSON.stringify(next);
@@ -114,6 +117,9 @@ export function serializeOptions(configOrList) {
   const payload = { source: 'custom', options: Array.isArray(config.options) ? config.options : [] };
   if (config.wrap) payload.wrap = true;
   if (config.dateOnly) payload.dateOnly = true;
+  // 日期列的默认精度：day / minute / second。minute 不落库（省一个键）。
+  // dateOnly 继续双写：老版本读到它仍然按「只到日」显示，不会突然冒时间。
+  if (config.precision && config.precision !== 'minute') payload.precision = config.precision;
   // 关联字段的两个开关：指向哪张表、能不能选多个。
   // 不加这两行的话，serializeOptions 会把它们当「未知键」丢掉 ——
   // 表现是「选完目标表、保存后字段变成指向空表」，而且没有任何报错。

@@ -1156,11 +1156,11 @@ function startCellEdit(field, row, cellEl, opts = {}) {
   }
   openCellEditor(cellEl, field, row.values[field.key], {
     getOptions: () => fieldOptionsList(field),
-    // 表格内的日期统一走自研选择器：可选「只到日 / 到分钟」，风格和应用一致
+    // 表格内的日期统一走自研选择器：日 / 分 / 秒三档，每一格可以不一样
     openDatePicker: (targetCell, targetField, currentValue, opts = {}) => {
       openDatePicker(targetCell, {
         value: currentValue,
-        dateOnly: opts.dateOnly === true,
+        precision: opts.precision || 'minute',
         onPick: pick => {
           Promise.resolve(opts.commit ? opts.commit(pick) : commitCell(field, row, cellEl, pick)).catch(() => {});
         },
@@ -2741,9 +2741,12 @@ function openFieldPanelFor(field, { mode = 'edit', sort = null } = {}) {
         const optionsJson = mergeFieldOptions(field, {
           source: 'custom',
           options: hasOptions ? payload.options || [] : undefined,
-          // 类型换了就把不再适用的开关显式清掉，别留一个看不见的 wrap/dateOnly
+          // 类型换了就把不再适用的开关显式清掉，别留一个看不见的 wrap / precision
           wrap: payload.type === 'text' ? (payload.wrap ? true : null) : null,
-          dateOnly: payload.type === 'date' ? (payload.dateOnly ? true : null) : null,
+          // 新键 precision（日/分/秒）；minute 是默认档，不落库。
+          // dateOnly 继续双写：它才是老版本认的那个键，删了整个列会对老版本「变回带时间」。
+          precision: payload.type === 'date' && payload.precision !== 'minute' ? payload.precision : null,
+          dateOnly: payload.type === 'date' && payload.precision === 'day' ? true : null,
           // 关联的两个开关同理：类型换走就删，否则「改回文本」还会留着 targetSheetId，
           // 以后有人按它算引用范围就会算错。
           targetSheetId: payload.type === 'relation' ? Number(payload.targetSheetId) || null : null,

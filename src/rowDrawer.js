@@ -1767,7 +1767,8 @@ function renderMetaLine(ctx, record) {
     .map(value => String(value ?? '').trim())
     .filter(Boolean)
     .join(' / ');
-  const happened = [record.happened_date, String(record.happened_time ?? '').slice(0, 5)]
+  // 不再 slice(0,5)：库里本来就有 HH:MM:SS 的值，截掉就等于在抽屉里把它藏起来
+  const happened = [record.happened_date, String(record.happened_time ?? '')]
     .map(value => String(value ?? '').trim())
     .filter(Boolean)
     .join(' ');

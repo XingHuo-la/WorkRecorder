@@ -1,21 +1,32 @@
 // 全应用统一的日期选择器。
 //
 // 为什么不用 flatpickr：它的 DOM 结构固定，样式能改的余地很小，
-// 而且「只到日 / 到分钟」这种业务差异要靠 enableTime 开关拼，视觉上对不齐。
+// 而且「只到日 / 到分 / 到秒」这种业务差异要靠开关拼，视觉上对不齐。
 // 这里自己做一套，尺寸、圆角、配色都跟表格一致，深色/浅色主题都能用。
 //
-// 只做一件事：给一个锚点元素，弹一个日历，选中后回调。
+// 两件事：
+// 1. 弹一个日历，选中后回调。精度是**每一格自己的事** —— 底部「精度 日/分/秒」
+//    只改这一格写库的形状，不回流到列配置（列上那个只是空白格的默认值）。
+// 2. 年月时分秒都能用滚轮调：鼠标停在「2026 年」上滚 = 换年，停在「11 月」上滚 = 换月，
+//    停在 16 / 30 / 22 上滚 = 换时分秒。日仍然是点的 —— 月份格里点日最快。
 
 import { escapeHtml } from './htmlUtils.js';
+import {
+  PRECISION_LEVELS,
+  PRECISION_LABELS,
+  normalizePrecision,
+  parseDateValue,
+  formatDateValue,
+  pad2,
+} from './dateValue.js';
 
 const WEEK_LABELS = ['一', '二', '三', '四', '五', '六', '日'];
 const MONTH_LABELS = ['1 月', '2 月', '3 月', '4 月', '5 月', '6 月', '7 月', '8 月', '9 月', '10 月', '11 月', '12 月'];
 
-let active = null;
+const UNIT_LABELS = { hour: '小时', minute: '分钟', second: '秒' };
+const UNIT_MAX = { hour: 23, minute: 59, second: 59 };
 
-function pad2(value) {
-  return String(value).padStart(2, '0');
-}
+let active = null;
 
 export function closeDatePicker() {
   if (!active) return;
@@ -27,68 +38,87 @@ export function closeDatePicker() {
   onClose?.();
 }
 
-// 值 → { date: Date|null, time: 'HH:mm' }
-function parseValue(value, dateOnly) {
-  const raw = String(value || '').trim();
-  const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?/);
-  if (!match) return { date: null, time: dateOnly ? '' : '' };
-  const [, y, m, d, hh, mm] = match;
-  return {
-    date: new Date(Number(y), Number(m) - 1, Number(d)),
-    time: dateOnly ? '' : `${hh || '09'}:${mm || '00'}`,
-  };
-}
-
-function formatValue(date, time, dateOnly) {
-  const base = `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
-  if (dateOnly) return base;
-  return `${base} ${time || '00:00'}`;
-}
-
 function sameDay(a, b) {
   return Boolean(a && b) && a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 }
 
 export function openDatePicker(anchorEl, options = {}) {
   closeDatePicker();
-  const { value = '', dateOnly = false, onPick, onClear, onClose } = options;
-  const parsed = parseValue(value, dateOnly);
+  const { value = '', precision: fallbackPrecision = 'minute', onPick, onClear, onClose } = options;
+  const parsed = parseDateValue(value, fallbackPrecision);
   const today = new Date();
-  let viewYear = (parsed.date || today).getFullYear();
-  let viewMonth = (parsed.date || today).getMonth();
+  let viewYear = parsed.hasValue ? parsed.year : today.getFullYear();
+  let viewMonth = parsed.hasValue ? parsed.month - 1 : today.getMonth();
   let viewMode = 'day'; // day | month
-  let selected = parsed.date;
-  let timeValue = parsed.time || '09:00';
-  // 打开后什么都没改就点「确定」= 不该写库。
-  // 否则一个只存了日期（没有时间）的旧值会被悄悄补成 09:00。
-  const originalRaw = String(value || '').trim();
-  const originalTime = parsed.time || '';
-  let dirty = false;
+  let selected = parsed.hasValue ? new Date(parsed.year, parsed.month - 1, parsed.day) : null;
+  // 时/分/秒 三段始终都留着：切精度只改「显示哪几段 / 写几位」，
+  // 不把已经填好的秒洗掉 —— 否则「秒→分→秒」来回切一次，秒就没了。
+  const draft = { hour: parsed.hour, minute: parsed.minute, second: parsed.second };
+  let precision = normalizePrecision(parsed.precision, fallbackPrecision);
+  // 打开时的原值。提交前拿最终串跟它比：一样就不写库，
+  // 省掉「打开看一眼再点确定」产生的一次无意义 updated_at。
+  const originalRaw = String(value ?? '').trim();
 
   const el = document.createElement('div');
   el.className = 'sh-dp';
   el.setAttribute('role', 'dialog');
-  el.setAttribute('aria-label', '选择日期');
+  el.setAttribute('aria-label', '选择日期与精度');
   document.body.appendChild(el);
+
+  const timeRowHtml = () => {
+    if (precision === 'day') return '';
+    const units = precision === 'second' ? ['hour', 'minute', 'second'] : ['hour', 'minute'];
+    return `<div class="sh-dp-time">
+      <span class="sh-dp-time-label">时间</span>
+      ${units
+        .map(
+          (unit, index) => `${index ? '<span class="sh-dp-colon">:</span>' : ''}<span class="sh-dp-spin" data-wheel="${unit}" title="滚轮切换${UNIT_LABELS[unit]}"><input type="text" inputmode="numeric" maxlength="2" data-time="${unit}" value="${pad2(draft[unit])}" aria-label="${UNIT_LABELS[unit]}" /></span>`
+        )
+        .join('')}
+    </div>`;
+  };
+
+  const precisionRowHtml = () => `<div class="sh-dp-prec">
+      <span class="sh-dp-time-label">精度</span>
+      <div class="sh-dp-prec-seg" role="group" aria-label="日期精度">
+        ${PRECISION_LEVELS.map(
+          level => `<button type="button" class="sh-dp-prec-btn${level === precision ? ' is-on' : ''}" data-prec="${level}">${PRECISION_LABELS[level]}</button>`
+        ).join('')}
+      </div>
+    </div>`;
+
+  const footHtml = () => `<div class="sh-dp-foot">
+      <button type="button" class="sh-dp-btn" data-today>今天</button>
+      <button type="button" class="sh-dp-btn" data-clear>清除</button>
+      <span class="sh-dp-gap"></span>
+      <button type="button" class="sh-dp-btn is-primary" data-done>确定</button>
+    </div>`;
+
+  const headHtml = () => {
+    const navLabel = viewMode === 'month' ? ['上一年', '下一年'] : ['上个月', '下个月'];
+    const yearSeg = `<button type="button" class="sh-dp-seg" data-mode="${viewMode === 'month' ? 'day' : 'month'}" data-wheel="year" title="滚轮切换年份">${viewYear} 年</button>`;
+    const monthSeg =
+      viewMode === 'month'
+        ? ''
+        : `<button type="button" class="sh-dp-seg" data-mode="month" data-wheel="month" title="滚轮切换月份">${viewMonth + 1} 月</button>`;
+    return `<div class="sh-dp-head">
+      <button type="button" class="sh-dp-nav" data-nav="-1" aria-label="${navLabel[0]}">‹</button>
+      <div class="sh-dp-title">${yearSeg}${monthSeg}</div>
+      <button type="button" class="sh-dp-nav" data-nav="1" aria-label="${navLabel[1]}">›</button>
+    </div>`;
+  };
 
   const paint = () => {
     if (viewMode === 'month') {
-      el.innerHTML = `
-        <div class="sh-dp-head">
-          <button type="button" class="sh-dp-nav" data-nav="-1" aria-label="上一年">‹</button>
-          <button type="button" class="sh-dp-title" data-mode="day">${viewYear} 年</button>
-          <button type="button" class="sh-dp-nav" data-nav="1" aria-label="下一年">›</button>
-        </div>
+      el.innerHTML = `${headHtml()}
         <div class="sh-dp-months">
           ${MONTH_LABELS.map(
             (label, index) => `<button type="button" class="sh-dp-month${index === viewMonth ? ' is-on' : ''}" data-month="${index}">${label}</button>`
           ).join('')}
         </div>
-        <div class="sh-dp-foot">
-          <button type="button" class="sh-dp-btn" data-today>今天</button>
-          <span class="sh-dp-gap"></span>
-          <button type="button" class="sh-dp-btn is-primary" data-done>确定</button>
-        </div>`;
+        ${timeRowHtml()}
+        ${precisionRowHtml()}
+        ${footHtml()}`;
       put();
       return;
     }
@@ -107,33 +137,54 @@ export function openDatePicker(anchorEl, options = {}) {
         data-date="${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}">${date.getDate()}</button>`);
     }
 
-    el.innerHTML = `
-      <div class="sh-dp-head">
-        <button type="button" class="sh-dp-nav" data-nav="-1" aria-label="上个月">‹</button>
-        <button type="button" class="sh-dp-title" data-mode="month">${viewYear} 年 ${viewMonth + 1} 月</button>
-        <button type="button" class="sh-dp-nav" data-nav="1" aria-label="下个月">›</button>
-      </div>
+    el.innerHTML = `${headHtml()}
       <div class="sh-dp-week">${WEEK_LABELS.map(label => `<span>${label}</span>`).join('')}</div>
       <div class="sh-dp-grid">${cells.join('')}</div>
-      ${dateOnly ? '' : `
-      <div class="sh-dp-time">
-        <span class="sh-dp-time-label">时间</span>
-        <input type="text" inputmode="numeric" class="sh-dp-time-input" data-time maxlength="5" value="${escapeHtml(timeValue)}" aria-label="时间 HH:MM" />
-        <span class="sh-dp-time-hint">24 小时制</span>
-      </div>`}
-      <div class="sh-dp-foot">
-        <button type="button" class="sh-dp-btn" data-today>今天</button>
-        <button type="button" class="sh-dp-btn" data-clear>清除</button>
-        <span class="sh-dp-gap"></span>
-        <button type="button" class="sh-dp-btn is-primary" data-done>确定</button>
-      </div>`;
+      ${timeRowHtml()}
+      ${precisionRowHtml()}
+      ${footHtml()}`;
     put();
   };
 
-  const commit = (date, time) => {
-    if (!date) return;
-    onPick?.(formatValue(date, time, dateOnly));
+  // 最终写库的串：日取选中（没选就用今天），时分秒取草稿，按当前精度决定写几位。
+  const composed = () => {
+    const base = selected || new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    return formatDateValue(
+      { year: base.getFullYear(), month: base.getMonth() + 1, day: base.getDate(), ...draft },
+      precision
+    );
+  };
+
+  const commit = () => {
+    const next = composed();
+    if (next !== originalRaw) onPick?.(next);
     closeDatePicker();
+  };
+
+  // 只刷三个输入框的值，不重画整块 —— 滚轮连着滚的时候重画会把焦点和输入状态全丢掉。
+  const syncTimeInputs = () => {
+    el.querySelectorAll('[data-time]').forEach(input => {
+      input.value = pad2(draft[input.dataset.time]);
+    });
+  };
+
+  const stepUnit = (unit, dir) => {
+    if (unit === 'year') {
+      viewYear = Math.min(2200, Math.max(1900, viewYear + dir));
+      paint();
+      return;
+    }
+    if (unit === 'month') {
+      viewMonth += dir;
+      if (viewMonth < 0) { viewMonth = 11; viewYear -= 1; }
+      if (viewMonth > 11) { viewMonth = 0; viewYear += 1; }
+      paint();
+      return;
+    }
+    const max = UNIT_MAX[unit] ?? 59;
+    // 时/分/秒循环：59 再往下滚回到 0，这是时间控件的常识（不是夹在边界不动）。
+    draft[unit] = (draft[unit] + dir + max + 1) % (max + 1);
+    syncTimeInputs();
   };
 
   // 定位：贴锚点下方，放不下就上翻。
@@ -141,8 +192,8 @@ export function openDatePicker(anchorEl, options = {}) {
   // 切到「年视图」高度会变，不重量就会跑出屏幕。
   function put() {
     const rect = anchorEl.getBoundingClientRect();
-    const width = el.offsetWidth || 268;
-    const height = el.offsetHeight || 340;
+    const width = el.offsetWidth || 272;
+    const height = el.offsetHeight || 380;
     const left = Math.min(Math.max(8, rect.left), window.innerWidth - width - 8);
     let top = rect.bottom + 6;
     if (top + height > window.innerHeight - 8) top = Math.max(8, rect.bottom - height - rect.height - 6);
@@ -178,28 +229,29 @@ export function openDatePicker(anchorEl, options = {}) {
       paint();
       return;
     }
+    const precBtn = event.target.closest('[data-prec]');
+    if (precBtn) {
+      precision = normalizePrecision(precBtn.dataset.prec);
+      paint();
+      return;
+    }
     const dayBtn = event.target.closest('[data-date]');
     if (dayBtn) {
       const [y, m, d] = dayBtn.dataset.date.split('-').map(Number);
       selected = new Date(y, m - 1, d);
       viewYear = y;
       viewMonth = m - 1;
-      dirty = true;
-      const timeInput = el.querySelector('[data-time]');
-      const time = timeInput ? timeInput.value.trim() : timeValue;
-      if (dateOnly) commit(selected, '');
-      else { timeValue = time; paint(); }
+      // 只到日的格子：点一天就是点完了，不用再点确定。
+      if (precision === 'day') commit();
+      else { paint(); el.querySelector('.sh-dp-day.is-on')?.focus?.(); }
       return;
     }
     if (event.target.closest('[data-today]')) {
       selected = new Date(today.getFullYear(), today.getMonth(), today.getDate());
       viewYear = selected.getFullYear();
       viewMonth = selected.getMonth();
-      dirty = true;
-      const timeInput = el.querySelector('[data-time]');
-      const time = timeInput ? timeInput.value.trim() : timeValue;
-      if (dateOnly) commit(selected, '');
-      else { timeValue = time; paint(); }
+      if (precision === 'day') commit();
+      else { paint(); el.querySelector('.sh-dp-day.is-on')?.focus?.(); }
       return;
     }
     if (event.target.closest('[data-clear]')) {
@@ -207,53 +259,71 @@ export function openDatePicker(anchorEl, options = {}) {
       closeDatePicker();
       return;
     }
-    if (event.target.closest('[data-done]')) {
-      // 打开后原值没动过：直接关掉，不产生一次无意义的写库
-      if (!dirty && originalRaw) { closeDatePicker(); return; }
-      const timeInput = el.querySelector('[data-time]');
-      commit(selected || new Date(), dateOnly ? '' : (timeInput ? timeInput.value.trim() : timeValue));
-    }
+    if (event.target.closest('[data-done]')) commit();
   });
 
+  // 滚轮：年月 + 时分秒。挂在外层做事件委托 —— 每次 paint 都换 DOM，
+  // 逐个绑定等于每次重画都要重绑一遍。
+  let wheelAt = 0;
+  el.addEventListener(
+    'wheel',
+    event => {
+      const target = event.target.closest?.('[data-wheel]');
+      if (!target) return;
+      event.preventDefault();
+      // 触控板惯性会连着发几十个小 delta，放任它就会一路滚飞。
+      // 小增量（<12）当抖动丢掉，再叠 60ms 节流；鼠标滚轮一格 ~100 不受影响。
+      if (Math.abs(event.deltaY) < 12) return;
+      const now = Date.now();
+      if (now - wheelAt < 60) return;
+      wheelAt = now;
+      // 方向统一成「往上滚 = 数值变大」，与 <input type=number> 和系统数字控件一致：
+      // 年 +1、月 +1、时/分/秒 +1。混着来（数字往上、日历往下）才是真的难记。
+      stepUnit(target.dataset.wheel, event.deltaY < 0 ? 1 : -1);
+    },
+    { passive: false }
+  );
+
   el.addEventListener('input', event => {
-    if (!event.target.matches('[data-time]')) return;
-    // 只允许 HH:MM，边输边补冒号
-    let raw = event.target.value.replace(/[^\d:]/g, '');
-    if (raw.length === 2 && !raw.includes(':') && event.inputType !== 'deleteContentBackward') raw = `${raw}:`;
-    if (raw.length > 5) raw = raw.slice(0, 5);
-    event.target.value = raw;
+    const input = event.target.closest?.('[data-time]');
+    if (!input) return;
+    const digits = input.value.replace(/\D/g, '').slice(0, 2);
+    input.value = digits;
+    draft[input.dataset.time] = Number(digits || 0);
   });
 
   el.addEventListener('change', event => {
-    if (!event.target.matches('[data-time]')) return;
-    const match = event.target.value.match(/^(\d{1,2}):?(\d{0,2})$/);
-    if (!match) { event.target.value = timeValue; return; }
-    const hh = Math.min(23, Number(match[1] || 0));
-    const mm = Math.min(59, Number(match[2] || 0));
-    timeValue = `${pad2(hh)}:${pad2(mm)}`;
-    if (timeValue !== originalTime) dirty = true;
-    event.target.value = timeValue;
+    const input = event.target.closest?.('[data-time]');
+    if (!input) return;
+    const unit = input.dataset.time;
+    const max = UNIT_MAX[unit] ?? 59;
+    draft[unit] = Math.min(max, Math.max(0, Number(input.value.replace(/\D/g, '') || 0)));
+    input.value = pad2(draft[unit]);
   });
 
   const onOutside = event => {
     if (!el.contains(event.target) && !anchorEl.contains(event.target)) closeDatePicker();
   };
   const onKey = event => {
-    if (event.key === 'Escape') { event.stopPropagation(); closeDatePicker(); }
+    if (event.key === 'Escape') { event.stopPropagation(); closeDatePicker(); return; }
     if (event.key === 'Enter') {
       // 输入法还在组词时回车是「选词」，不是「确定日期」
       if (event.isComposing || event.keyCode === 229) return;
-      const timeInput = el.querySelector('[data-time]');
-      const timeRaw = timeInput ? timeInput.value.trim() : timeValue;
-      const timeChanged = !dateOnly && timeRaw !== originalTime;
       event.preventDefault();
-      if (!dirty && !timeChanged && originalRaw) { closeDatePicker(); return; }
-      commit(selected || new Date(), dateOnly ? '' : timeRaw);
+      commit();
       return;
     }
-    // 方向键直接挪选中日：只在「日」视图下、且焦点不在时间输入框里才接管
+    // 焦点在时/分/秒里：上下就是滚轮的键盘版，其余按键交给原生（左右移光标）。
+    const spinInput = event.target.closest?.('[data-time]');
+    if (spinInput) {
+      if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+        event.preventDefault();
+        stepUnit(spinInput.dataset.time, event.key === 'ArrowUp' ? 1 : -1);
+      }
+      return;
+    }
+    // 方向键直接挪选中日：只在「日」视图下接管
     if (viewMode !== 'day') return;
-    if (event.target.matches?.('[data-time]')) return;
     const stepDay = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -7, ArrowDown: 7 }[event.key];
     const stepMonth = event.key === 'PageUp' ? -1 : (event.key === 'PageDown' ? 1 : 0);
     if (stepDay === undefined && !stepMonth) return;
@@ -269,7 +339,6 @@ export function openDatePicker(anchorEl, options = {}) {
     selected = base;
     viewYear = base.getFullYear();
     viewMonth = base.getMonth();
-    dirty = true;
     paint();
     el.querySelector('.sh-dp-day.is-on')?.focus?.();
   };

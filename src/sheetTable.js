@@ -5,7 +5,8 @@
 // （调试壳直接拿它渲染演示数据，不用起 Tauri）。
 
 import { escapeHtml } from './htmlUtils.js';
-import { renderFieldIcon, renderCell, isDateOnly } from './fieldTypes.js';
+import { renderFieldIcon, renderCell } from './fieldTypes.js';
+import { shortDateText } from './dateValue.js';
 
 const INDEX_WIDTH = 52;
 const ADD_COL_WIDTH = 44;
@@ -203,8 +204,8 @@ export function autoFitWidth(field, rows, options = []) {
     } else if (field.type === 'checkbox') text = value ? '已勾选' : '';
     else if (field.type === 'attachment') text = Array.isArray(value) && value.length ? '图片'.repeat(Math.min(value.length, 3)) : '';
     else if (field.type === 'date') {
-      const raw = String(value);
-      text = isDateOnly(field) ? raw.slice(5, 10) : `${raw.slice(5, 10)} ${raw.slice(11, 16)}`.trim();
+      // 与网格同一个短形态函数：11-18 / 11-18 10时 / 11-18 16:30 / 11-18 16:30:22
+      text = shortDateText(value);
     } else text = String(value);
 
     const width = measure(text) + (field.type === 'attachment' ? 130 : 26);

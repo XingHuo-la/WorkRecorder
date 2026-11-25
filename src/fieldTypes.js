@@ -11,6 +11,7 @@ import { escapeHtml } from './htmlUtils.js';
 import { placeDropdown } from './dropdownPlace.js';
 import { renderRelationCell, openRelationPicker, relationConfig } from './relationField.js';
 import { unmatchedTokens } from './fieldCheck.js';
+import { fieldPrecisionOf, shortDateText } from './dateValue.js';
 
 // ==========================================
 // 常量与工具
@@ -285,19 +286,22 @@ function renderMultiSelectCell(field, value, ctx) {
   return withMismatchBadge(field, value, ctx, html);
 }
 
-// 日期字段的精度存在字段配置里：{ dateOnly: true } 表示只到日。
+// 日期字段的**默认**精度存在字段配置里（precision，老键 dateOnly 读成 day）。
+// 注意它只是「空白单元格从哪一档开始」—— 每一格真用什么精度由那个值自己的
+// 字符串形状决定（见 dateValue.js），同一个列里三种精度可以共存。
+export function fieldDatePrecision(field) {
+  return fieldPrecisionOf(field);
+}
+
+// 老调用点只关心「是不是只到日」。
 export function isDateOnly(field) {
-  const config = parseFieldConfig(field);
-  return config.dateOnly === true;
+  return fieldPrecisionOf(field) === 'day';
 }
 
 function renderDateCell(value, ctx) {
   const str = String(value ?? '').trim();
   if (!str) return renderEmpty(ctx);
-  const [datePart, timePart] = str.split(' ');
-  const shortDate = datePart && datePart.length >= 10 ? datePart.slice(5) : datePart;
-  const shortTime = timePart ? timePart.slice(0, 5) : '';
-  return `<span class="ft-date" title="${escapeHtml(str)}">${escapeHtml(shortDate)}${shortTime ? ` ${escapeHtml(shortTime)}` : ''}</span>`;
+  return `<span class="ft-date" title="${escapeHtml(str)}">${escapeHtml(shortDateText(str))}</span>`;
 }
 
 function renderCheckboxCell(value, ctx) {
@@ -642,7 +646,9 @@ function openDateEditor(cellEl, field, value, actions) {
   if (typeof actions.openDatePicker === 'function') {
     markEditing(cellEl);
     actions.openDatePicker(cellEl, field, value, {
-      dateOnly: isDateOnly(field),
+      // 传的是「这一列的默认精度」，选择器会先看这一格的值本身，
+      // 值里已经有秒就按秒显示，不会被列的默认值截掉。
+      precision: fieldDatePrecision(field),
       commit: next => Promise.resolve(actions.commit(next)).catch(() => {}),
       done: () => { unmarkEditing(cellEl); actions.onSettled?.(); },
     });
@@ -669,10 +675,15 @@ function openDateEditor(cellEl, field, value, actions) {
     else actions.onSettled?.();
   };
 
+  // 兜底那条路也得认精度：只到日的列不该冒出时间，
+  // 带秒的值不该被 'Y-m-d H:i' 截掉（截了就是静默丢数据）。
+  const fallbackPrecision = fieldDatePrecision(field);
   const picker = window.flatpickr(input, {
-    enableTime: true,
+    enableTime: fallbackPrecision !== 'day',
+    enableSeconds: fallbackPrecision === 'second',
     time_24hr: true,
-    dateFormat: 'Y-m-d H:i',
+    dateFormat:
+      fallbackPrecision === 'day' ? 'Y-m-d' : fallbackPrecision === 'second' ? 'Y-m-d H:i:S' : 'Y-m-d H:i',
     minuteIncrement: 5,
     defaultDate: original || null,
     locale: window.flatpickr.l10ns?.zh || 'default',
