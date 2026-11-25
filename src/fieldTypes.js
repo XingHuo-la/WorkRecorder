@@ -87,16 +87,22 @@ function pillInkVar(color) {
 
 // 用户自选色（#rrggbb）上没有现成的 ink token，得自己算一个：深底白字、亮底深字。
 //
-// 判据是「和白色的对比度够不够 3.0:1」（WCAG 大字线），不够就用深字。
-// 早先按「相对亮度 > 0.42」一刀切，问题是 0.42 对应白字对比度只有约 2.2:1 ——
-// 中间那一段全被误判成白字：#2fbf71 绿 2.39、#60a5fa 蓝 2.54、#a78bfa 紫 2.72、
-// #2ab427 绿 2.70，浅色块上白字发飘，看着累。改判据后这几个自动转深字，
-// #e5484d 红 3.92 / #3b82f6 蓝 3.68 / #1f2937 黑 14.7 仍留白字，观感不变。
+// 判据是「和白色的对比度够不够 2.6:1」，不够就用深字。
 //
-// 两头都兜得住：白字不足 3.0 时底色亮度必然 > 0.30，此时深字对比度一定 ≥ 5.2。
+// 2.6 是实测调出来的线：
+//   必翻深字 —— 绿 #2fbf71 2.38 / 浅蓝 #60a5fa 2.54 / 灰 #94a3b8 2.56，
+//                这三个在中性灰底上白字最糊；
+//   留白字   —— 粉 #f472b6 2.65 / 中绿 #2ab427 2.70 / 紫 #a78bfa 2.72 /
+//                蓝 #3b82f6 3.68 / 红 #e5484d 3.92 / 黑 #1f2937 14.7。
+// 再抬到 3.0 会把紫和粉也拉成深字，整张表偏淡；再降到 2.4 就只剩绿一个。
+// 早先按「相对亮度 > 0.42」一刀切更糟——0.42 只对应白字约 2.2:1，上面几个全被误判成白字。
+//
+// 两头都兜得住：白字不足 2.6 时底色亮度必然 > 0.35，此时深字对比度一定 ≥ 6.0。
 // 不用 CSS 的 color-contrast()（WebView2 版本不可控）。
 const INK_LIGHT = '#ffffff';
 const INK_DARK = '#1f2328';
+// 白字的最低对比度门槛（见上）。调观感就动这一个数。
+const WHITE_INK_MIN_CONTRAST = 2.6;
 
 // WCAG 相对亮度（sRGB 反伽马）。
 function luminanceOf(hex) {
@@ -114,7 +120,7 @@ function contrastOnWhite(luminance) {
 }
 
 function readableInk(hex) {
-  return contrastOnWhite(luminanceOf(hex)) >= 3 ? INK_LIGHT : INK_DARK;
+  return contrastOnWhite(luminanceOf(hex)) >= WHITE_INK_MIN_CONTRAST ? INK_LIGHT : INK_DARK;
 }
 
 // 把底色与 ink 拼进 inline style。ink 为空串时输出与旧版完全一致。
