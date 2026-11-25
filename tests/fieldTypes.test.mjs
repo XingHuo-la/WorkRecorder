@@ -28,12 +28,13 @@ function selectField(option, type = 'select') {
 const pick = (html, re) => (html.match(re) || [])[0] || '';
 
 // ---- 1. 显式配色 + 表格语境 → 实心 ----
+// #15803d 白字对比度 5.0:1，稳稳走「白字」这一支。
 {
-  const field = selectField({ value: 'a', label: '已解决', color: '#2ab427' });
+  const field = selectField({ value: 'a', label: '已解决', color: '#15803d' });
   const html = renderCell(field, 'a', { solidPill: true });
 
   ok('深色：打 is-solid', html.includes('is-solid'), html);
-  ok('深色：底色写进 --pill', html.includes('--pill:#2ab427'), html);
+  ok('深色：底色写进 --pill', html.includes('--pill:#15803d'), html);
   ok('深色：浅色字（白）', html.includes('--pill-ink:#ffffff'), html);
   ok('深色：显示 label 不是 value', html.includes('>已解决<'), html);
   ok('只生成一个 pill', (html.match(/class="ft-pill/g) || []).length === 1, html);
@@ -79,7 +80,7 @@ const pick = (html, re) => (html.match(re) || [])[0] || '';
     options: JSON.stringify({
       source: 'custom',
       options: [
-        { value: 'm', label: '月报', color: '#60a5fa' },
+        { value: 'm', label: '月报', color: '#2563eb' },
         { value: 'y', label: '年报' },
       ],
     }),
@@ -89,7 +90,7 @@ const pick = (html, re) => (html.match(re) || [])[0] || '';
   ok('多选：两个 pill 都在', (html.match(/class="ft-pill(?![-\w])/g) || []).length === 2, html);
   ok('多选：只有配色那个实心', (html.match(/is-solid/g) || []).length === 1, html);
   ok('多选：在 pill-group 里', html.includes('class="ft-pill-group"'), html);
-  ok('多选：月报带蓝底', html.includes('--pill:#60a5fa'), html);
+  ok('多选：月报带蓝底', html.includes('--pill:#2563eb'), html);
   ok('多选：蓝底给白字', html.includes('--pill-ink:#ffffff'), html);
 }
 
@@ -130,6 +131,30 @@ const pick = (html, re) => (html.match(re) || [])[0] || '';
 
   ok('空值：不出 pill', !html.includes('ft-pill'), html);
   ok('空值：出占位符', html.includes('ft-cell-empty'), html);
+}
+
+// ---- 9. 字色判据：白字对比度 ≥ 3.0:1 才用白字 ----
+// 冻结 v1.1.8 起的新判据。旧版按「相对亮度 > 0.42」一刀切，0.42 只对应
+// 白字约 2.2:1，中间亮度那一段（绿/浅蓝/紫/中绿）全被误判成白字，浅色块上发飘。
+{
+  const cases = [
+    ['#2fbf71', '#1f2328', '预设绿 2.39:1'],
+    ['#60a5fa', '#1f2328', '浅蓝 2.54:1'],
+    ['#2ab427', '#1f2328', '中绿 2.70:1'],
+    ['#a78bfa', '#1f2328', '预设紫 2.72:1'],
+    ['#facc15', '#1f2328', '黄 1.53:1'],
+    ['#22d3ee', '#1f2328', '青 1.81:1'],
+    ['#ffffff', '#1f2328', '纯白 1.00:1'],
+    ['#3b82f6', '#ffffff', '预设蓝 3.68:1'],
+    ['#e5484d', '#ffffff', '预设红 3.92:1'],
+    ['#15803d', '#ffffff', '深绿 5.01:1'],
+    ['#1f2937', '#ffffff', '近黑 14.7:1'],
+  ];
+  for (const [hex, ink, note] of cases) {
+    const field = selectField({ value: 'a', label: 'x', color: hex });
+    const html = renderCell(field, 'a', { solidPill: true });
+    ok(`${hex}（${note}）→ ${ink}`, html.includes(`--pill-ink:${ink}`), html);
+  }
 }
 
 console.log(`\nfieldTypes: ${pass} 通过 / ${fail} 失败`);

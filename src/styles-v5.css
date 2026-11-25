@@ -2524,7 +2524,7 @@ body[data-skin="v4"] .sh-detail-cell .ft-pill.is-tinted {
 }
 
 /* ① ② 实心：底色就是 --pill，字色用 paired ink（暗底白字 / 亮底深字，
-   由 fieldTypes.readableInk 按 WCAG 亮度算好写进 inline style）。 */
+   由 fieldTypes.readableInk 算「和白色的对比度够不够 3:1」，写进 inline style）。 */
 body[data-skin="v4"] .sh-table .ft-pill.is-solid,
 body[data-skin="v4"] .sh-preview .ft-pill.is-solid,
 body[data-skin="v4"] .sh-detail-cell .ft-pill.is-solid {
