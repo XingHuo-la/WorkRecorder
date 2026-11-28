@@ -132,11 +132,15 @@ export function buildRow(row, fields, index, rowCtx = {}) {
   const treeIndent = Number(tree?.indent) || 0;
   // 折叠箭头长在 td 上（不在 .sh-cell 里）：cell 的 innerHTML 会被编辑器整块换掉，
   // 箭头跟着消失就成了「一编辑，子项就展不开了」。
+  //
+  // 形状用 CSS 画的实心三角（clip-path），不用细线 chevron：
+  // 9~10px 的 1.5px 线条在这个尺寸下会糊成一个「脏点」，看着像格子里沾了灰；
+  // 实心三角在同样尺寸下轮廓清楚，也是 Excel 大纲栏一直用的形状。
   const caret = tree?.hasChildren
     ? `<button type="button" class="sh-tree-caret${tree.isCollapsed ? ' is-collapsed' : ''}"
          data-tree-toggle="${escapeHtml(row.id)}" aria-expanded="${tree.isCollapsed ? 'false' : 'true'}"
-         title="${tree.isCollapsed ? '展开子项' : '折叠子项'}">
-         <svg class="wr-icon" aria-hidden="true"><use href="#ic-chevron-right"/></svg>
+         title="${tree.isCollapsed ? `展开 ${tree.childCount} 个子项` : '折叠子项'}">
+         <span class="sh-tree-tri" aria-hidden="true"></span>
        </button>`
     : '';
   const cells = visible

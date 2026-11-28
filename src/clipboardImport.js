@@ -20,14 +20,24 @@ import {
 import { filesFromDataTransfer, importImageSources } from './attachmentOps.js';
 import {
   createTableField,
-  insertTableRow,
   deleteTableField,
-  deleteRow,
   patchTableField,
   touchSheet,
   fieldOptionsList,
+  insertRowsBulk,
+  deleteRowsBulk,
+  ensureCreatedAtField,
+  CREATED_AT_KEY,
+  CREATED_AT_LABEL,
 } from './sheetStore.js';
 import { FIELD_TYPE_LABELS } from './fieldTypes.js';
+
+// 一次导入最多多少行。
+//
+// 时间上根本不必设这个上限：每条 +1 微秒，2000 行只吃掉 2 毫秒，
+// 离「向未来借 500ms」的预算差两个数量级。这个数字是**渲染与写库**的上限：
+// 再多，表格首屏要画的行数会让界面明显发顿，用户也分不清是导入慢还是应用卡。
+export const IMPORT_ROW_LIMIT = 2000;
 
 const TYPE_OPTIONS = ['text', 'number', 'select', 'multi_select', 'date', 'checkbox', 'attachment'];
 
@@ -204,7 +214,10 @@ function buildPlan({ model, fields, mode, header = model.header }) {
 
 function typeSelectHtml(col) {
   const disabled = col.action !== 'create' ? ' disabled' : '';
-  const value = col.action === 'create' ? col.type : (col.field?.type || 'text');
+  // 创建时间是结构列，类型恒为 date（它不建列，这里只是别显示成「文本」误导人）
+  const value = col.action === 'created-at'
+    ? 'date'
+    : (col.action === 'create' ? col.type : (col.field?.type || 'text'));
   const options = TYPE_OPTIONS.map(type =>
     `<option value="${type}" ${type === value ? 'selected' : ''}>${escapeHtml(FIELD_TYPE_LABELS[type] || type)}</option>`
   ).join('');
@@ -212,34 +225,55 @@ function typeSelectHtml(col) {
   return `<select class="sh-imp-type" data-imp-type="${col.index}"${disabled}>${options}</select>`;
 }
 
-function actionSelectHtml(col, mode) {
+// 「作为创建时间」这一项：
+//
+// 起因：粘贴过来的数据里常常本来就有一列创建时间，而 record.created_at 是
+// 结构列（有唯一索引、按微秒定宽），不能当普通字段收。以前只能「自动补」，
+// 用户手里那份真实时间就丢了。选中它之后，这一列的值直接写进 record.created_at
+// （规范化 + 去重 + 避开库里已有值，见 sheetStore 的 resolveStamps）。
+//
+// 同一时刻只允许一列认领：两列都写同一个结构列是在制造歧义。
+function actionSelectHtml(col, mode, claimedIndex) {
   const reuse = col.field
     ? `<option value="reuse" ${col.action === 'reuse' ? 'selected' : ''}>复用「${escapeHtml(col.field.label || '')}」</option>`
     : '';
   const create = mode === 'preset'
     ? ''
     : `<option value="create" ${col.action === 'create' ? 'selected' : ''}>新建列</option>`;
+  const takenByOther = claimedIndex != null && claimedIndex !== col.index;
+  const createdAt = takenByOther
+    ? ''
+    : `<option value="created-at" ${col.action === 'created-at' ? 'selected' : ''}>作为「创建时间」</option>`;
   const skip = `<option value="skip" ${col.action === 'skip' ? 'selected' : ''}>不导入</option>`;
-  return `<select class="sh-imp-act" data-imp-act="${col.index}">${reuse}${create}${skip}</select>`;
+  return `<select class="sh-imp-act" data-imp-act="${col.index}">${reuse}${create}${createdAt}${skip}</select>`;
 }
 
-function columnRowHtml(col, mode) {
+// 这一列在预览里叫什么。创建时间不建列，它的显示名是固定的。
+function columnLabel(col) {
+  if (col.action === 'created-at') return CREATED_AT_LABEL;
+  return col.name || `列${col.index + 1}`;
+}
+
+function columnRowHtml(col, mode, claimedIndex) {
   const desc = col.desc || {};
   const sample = desc.samples?.length
     ? desc.samples.join('、')
     : (desc.imageCount ? `${desc.imageCount} 格有图片` : '（空列）');
   const nameDisabled = col.action === 'create' ? '' : ' disabled';
+  const nameValue = col.action === 'created-at' ? CREATED_AT_LABEL : (col.name || '');
   return `<div class="sh-imp-col${col.action === 'skip' ? ' is-skip' : ''}" data-imp-col="${col.index}">
     <span class="sh-imp-idx">${col.index + 1}</span>
-    <input class="sh-imp-name" data-imp-name="${col.index}" value="${escapeHtml(col.name || '')}"${nameDisabled} spellcheck="false" />
+    <input class="sh-imp-name" data-imp-name="${col.index}" value="${escapeHtml(nameValue)}"${nameDisabled} spellcheck="false" />
     ${typeSelectHtml(col)}
-    ${actionSelectHtml(col, mode)}
+    ${actionSelectHtml(col, mode, claimedIndex)}
     <span class="sh-imp-sample" title="${escapeHtml(sample)}">${escapeHtml(sample)}</span>
   </div>`;
 }
 
 function columnsHtml(plan, mode) {
-  return plan.map(col => columnRowHtml(col, mode)).join('');
+  // 谁已经认领了创建时间 —— 下拉里要把这一项从其它列上摘掉
+  const claimed = plan.find(col => col.action === 'created-at');
+  return plan.map(col => columnRowHtml(col, mode, claimed ? claimed.index : null)).join('');
 }
 
 function dataPreviewHtml(plan, matrix, header) {
@@ -247,7 +281,7 @@ function dataPreviewHtml(plan, matrix, header) {
   const show = rows.slice(0, 6);
   const cells = plan.map(col => col.index);
   const head = `<tr><th class="sh-imp-th-idx"></th>${plan
-    .map(col => `<th>${escapeHtml(col.action === 'skip' ? '—' : col.name || `列${col.index + 1}`)}</th>`)
+    .map(col => `<th>${escapeHtml(col.action === 'skip' ? '—' : columnLabel(col))}</th>`)
     .join('')}</tr>`;
   const body = show.map(row => {
     const tds = cells.map(index => {
@@ -297,6 +331,16 @@ function noticeOf({ mode, fields, model }) {
 export function openImportPreview({ table, fields = [], rows = [], model, toast, onDone }) {
   if (typeof window.showModal !== 'function') { toast?.('当前环境不支持导入', 'danger'); return; }
   if (!model?.rows?.length) { toast?.('剪贴板里没有可导入的表格', 'info'); return; }
+  // 超限直接拦在预览之前：让用户先看到「要分几次」，而不是等他在这个弹层里
+  // 逐列配完 12 列、点了导入才被拒。
+  if (Number(model.dataRows) > IMPORT_ROW_LIMIT) {
+    const times = Math.ceil(Number(model.dataRows) / IMPORT_ROW_LIMIT);
+    toast?.(
+      `一次最多导入 ${IMPORT_ROW_LIMIT} 行，这次有 ${model.dataRows} 行 —— 请分 ${times} 次粘贴`,
+      'danger'
+    );
+    return;
+  }
 
   const isPreset = String(table?.kind || '') === 'preset';
   // 空表 + 块比表宽 → 按源结构重建列（新表默认带「名称/备注」两个空壳列，
@@ -440,9 +484,10 @@ async function executeImport(args) {
   try {
     return await writeImport(args, createdFields, createdRows);
   } catch (error) {
-    for (const id of createdRows.reverse()) {
-      try { await deleteRow(id); } catch (rollbackError) { /* 尽力而为 */ }
-    }
+    // 一次回滚一整批：逐条 deleteRow 在 2000 行时本身就要跑几十秒，
+    // 而回滚恰恰发生在「已经出错」的时候，不能再拖。
+    // 这一批刚插进去的行不可能有子项，不需要 deleteRow 里的 parent_id 交接。
+    try { await deleteRowsBulk(createdRows); } catch (rollbackError) { /* 尽力而为 */ }
     for (const field of createdFields.reverse()) {
       try { await deleteTableField(table, field.id); } catch (rollbackError) { /* 尽力而为 */ }
     }
@@ -476,9 +521,14 @@ async function writeImport({ table, model, plan, header, fields, mode, setNote }
   }
 
   // ② 建列：复用列直接拿 key，新建列写完立刻拿 key（否则行里没处放值）
+  //
+  // 「作为创建时间」的列跳过建列：它的值走结构列 record.created_at，
+  // 由 ③ 里的 insertRowsBulk 统一认领（规范化/去重/避让库里已有值）。
   const keyByIndex = new Map();
+  const createdAtIndex = active.find(item => item.action === 'created-at')?.index ?? null;
   const createCount = active.filter(item => item.action === 'create').length;
   for (const col of active) {
+    if (col.action === 'created-at') continue;
     if (col.action === 'reuse' && col.field) {
       keyByIndex.set(col.index, col.field.key);
       continue;
@@ -493,29 +543,57 @@ async function writeImport({ table, model, plan, header, fields, mode, setNote }
     keyByIndex.set(col.index, field.key);
   }
 
-  // ③ 写行：一条一次 INSERT（走 insertTableRow，预置表/自建表都由它分派）
-  for (let r = 0; r < dataRows.length; r += 1) {
-    if (r % 8 === 0) setNote(`正在写入第 ${r + 1}/${dataRows.length} 行…`);
+  // ②b 创建时间：有就沿用，没有就建。
+  //
+  // 它不在 plan 里（粘贴过来的数据没有「创建时间」这一列），所以不走 keyByIndex：
+  // 值由 insertRowsBulk 统一分配 —— 第一条是当前时间，其后每条 +1 微秒。
+  // 建失败了不算致命（列不存在而已），导入本身要继续。
+  const hasCreatedAt = (fields || []).some(item => String(item?.key) === CREATED_AT_KEY);
+  if (!hasCreatedAt) {
+    const seedField = await ensureCreatedAtField(table, fields).catch(() => null);
+    // 只把自己刚建的那一条记进回滚名单；沿用已有列时不能删别人的列
+    if (seedField) createdFields.push(seedField);
+  }
+
+  // ③ 写行：先把每行的 values 算好，再一次性批量插入。
+  //
+  // 以前是一条一次 insertTableRow（查 MAX(sort) + INSERT + 回查 id = 3 次 IPC/行），
+  // 2000 行就是 6000 次，界面会假死十几秒。这里拼成一条多值 INSERT，
+  // 一次 IPC 拿回全部 id —— 性能是这个功能能不能用的前提。
+  setNote(`正在写入 ${dataRows.length} 行…`);
+  const rowsValues = dataRows.map(row => {
     const values = {};
     for (const col of active) {
       const key = keyByIndex.get(col.index);
       if (!key) continue;
-      const value = coerceImportValue(col.field, dataRows[r][col.index], images);
+      const value = coerceImportValue(col.field, row[col.index], images);
       if (value !== undefined && value !== null) values[key] = value;
     }
-    const id = await insertTableRow(table, values);
-    if (id != null) createdRows.push(id);
-  }
+    // 用户指定的创建时间列：原样带上，规范化/去重交给 insertRowsBulk。
+    // 空单元格不带 —— 那一行回落到自动分配，不会因为一格空就把整批拒掉。
+    if (createdAtIndex != null) {
+      const raw = String(row[createdAtIndex]?.text ?? '').trim();
+      if (raw) values[CREATED_AT_KEY] = raw;
+    }
+    return values;
+  });
+  const { ids } = await insertRowsBulk(table, rowsValues);
+  createdRows.push(...ids);
   if (dataRows.length && !createdRows.length) throw new Error('行写入失败');
 
   await touchSheet(table.id).catch(() => {});
 
   // ④ 空表重建：原来的空壳列（名称/备注）隐藏而非删除。
   //    删掉是不可逆的，而用户可能只是先导一张表看看。
+  //
+  //    ⚠️ 创建时间列绝不参与隐藏：这一批每一行都刚给它写了值，
+  //    藏起来等于「导进去了但看不见」—— 曾经的 bug 就是这样：
+  //    列建好了、50 行时间戳严格递增，界面上一个像素都没有。
   const hiddenFields = [];
   if (mode === 'create') {
     const reused = new Set(active.filter(col => col.action === 'reuse' && col.field).map(col => String(col.field.id)));
     for (const field of fields) {
+      if (String(field?.key) === CREATED_AT_KEY) continue;
       if (reused.has(String(field.id))) continue;
       // 本来就隐藏的列不进「要恢复」名单：撤销时把用户的旧设置翻出来是二次伤害
       if (Number(field.visible) === 0) continue;
@@ -524,6 +602,12 @@ async function writeImport({ table, model, plan, header, fields, mode, setNote }
         hiddenFields.push(field);
       } catch (error) { /* 隐藏失败不影响导入结果 */ }
     }
+  }
+  // 之前被藏起来的创建时间列，导入之后必须有值也要看得见。
+  // 不进 hiddenFields：撤销该恢复的是「导入藏起来的东西」，不是「导入让人看见的」。
+  const createdField = (fields || []).find(item => String(item?.key) === CREATED_AT_KEY);
+  if (createdField && Number(createdField.visible) === 0) {
+    try { await patchTableField(table, createdField.id, { visible: 1 }); } catch (error) { /* 尽力而为 */ }
   }
 
   return {

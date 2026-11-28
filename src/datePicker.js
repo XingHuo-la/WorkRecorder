@@ -14,6 +14,7 @@ import { escapeHtml } from './htmlUtils.js';
 import {
   PRECISION_LEVELS,
   PRECISION_LABELS,
+  MICRO_PRECISION,
   normalizePrecision,
   parseDateValue,
   formatDateValue,
@@ -54,10 +55,17 @@ export function openDatePicker(anchorEl, options = {}) {
   // 时/分/秒 三段始终都留着：切精度只改「显示哪几段 / 写几位」，
   // 不把已经填好的秒洗掉 —— 否则「秒→分→秒」来回切一次，秒就没了。
   const draft = { hour: parsed.hour, minute: parsed.minute, second: parsed.second };
-  let precision = normalizePrecision(parsed.precision, fallbackPrecision);
+  // 微秒值（26 字符，系统生成的时间戳）在选择器里按「秒」编辑 ——
+  // 用户能选的只有 日/分/秒 三档，多一个「微秒」按钮是给人找麻烦。
+  let precision = parsed.precision === MICRO_PRECISION ? 'second' : normalizePrecision(parsed.precision, fallbackPrecision);
   // 打开时的原值。提交前拿最终串跟它比：一样就不写库，
   // 省掉「打开看一眼再点确定」产生的一次无意义 updated_at。
   const originalRaw = String(value ?? '').trim();
+  // 用户到底动过手没有。
+  // 只比字符串是不够的：微秒值会被 composed() 拼成到秒的 23 字符，
+  // 「打开日历看一眼 → 点确定」就会把微秒抹掉 —— 和当年静默丢秒是同一类 bug。
+  // 所以没动过手时直接用原值，一个字都不重拼。
+  let dirty = false;
 
   const el = document.createElement('div');
   el.className = 'sh-dp';
@@ -156,6 +164,9 @@ export function openDatePicker(anchorEl, options = {}) {
   };
 
   const commit = () => {
+    // 什么都没动就一个字都不写。空值例外 —— 空值点确定就是要落一个日期，
+    // 那本身就是「改了」，不能因为 dirty 还是 false 就吞掉。
+    if (!dirty && parsed.hasValue) { closeDatePicker(); return; }
     const next = composed();
     if (next !== originalRaw) onPick?.(next);
     closeDatePicker();
@@ -181,6 +192,10 @@ export function openDatePicker(anchorEl, options = {}) {
       paint();
       return;
     }
+    // 只有时/分/秒会改 draft（真正写进值里的东西）。
+    // 年/月滚轮只是「翻日历看」，选中日没动 —— 那不算动手，
+    // 否则用户滚两下看看再点确定，微秒时间戳就被重拼没了。
+    dirty = true;
     const max = UNIT_MAX[unit] ?? 59;
     // 时/分/秒循环：59 再往下滚回到 0，这是时间控件的常识（不是夹在边界不动）。
     draft[unit] = (draft[unit] + dir + max + 1) % (max + 1);
@@ -232,6 +247,7 @@ export function openDatePicker(anchorEl, options = {}) {
     const precBtn = event.target.closest('[data-prec]');
     if (precBtn) {
       precision = normalizePrecision(precBtn.dataset.prec);
+      dirty = true;
       paint();
       return;
     }
@@ -241,6 +257,7 @@ export function openDatePicker(anchorEl, options = {}) {
       selected = new Date(y, m - 1, d);
       viewYear = y;
       viewMonth = m - 1;
+      dirty = true;
       // 只到日的格子：点一天就是点完了，不用再点确定。
       if (precision === 'day') commit();
       else { paint(); el.querySelector('.sh-dp-day.is-on')?.focus?.(); }
@@ -250,6 +267,7 @@ export function openDatePicker(anchorEl, options = {}) {
       selected = new Date(today.getFullYear(), today.getMonth(), today.getDate());
       viewYear = selected.getFullYear();
       viewMonth = selected.getMonth();
+      dirty = true;
       if (precision === 'day') commit();
       else { paint(); el.querySelector('.sh-dp-day.is-on')?.focus?.(); }
       return;
@@ -299,6 +317,7 @@ export function openDatePicker(anchorEl, options = {}) {
     const max = UNIT_MAX[unit] ?? 59;
     draft[unit] = Math.min(max, Math.max(0, Number(input.value.replace(/\D/g, '') || 0)));
     input.value = pad2(draft[unit]);
+    dirty = true;
   });
 
   const onOutside = event => {
@@ -339,6 +358,7 @@ export function openDatePicker(anchorEl, options = {}) {
     selected = base;
     viewYear = base.getFullYear();
     viewMonth = base.getMonth();
+    dirty = true;
     paint();
     el.querySelector('.sh-dp-day.is-on')?.focus?.();
   };

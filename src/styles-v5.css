@@ -3141,8 +3141,33 @@ body[data-skin="v4"] .sh-table .sh-td-first .sh-cell {
   padding-left: calc(12px + var(--tree-indent, 0px)) !important;
 }
 
+/* 有层级的表再多留 6px 箭头位：三角的右缘在 13px 处，正文 12px 起步时两者
+   只差 0.5px，「▶汽机系统」读起来像正文前面沾了个墨点。留出这 6px 才是
+   「一个控件 + 一段文字」。只挂在 .has-tree 上 —— 平表不该凭空多出缩进。 */
+body[data-skin="v4"] .sh-table.has-tree .sh-td-first .sh-cell {
+  padding-left: calc(18px + var(--tree-indent, 0px)) !important;
+}
+
+/* 层级引导线：每一级祖先画一条 1px 竖线，位置对准该级折叠箭头的中心。
+   只挂在 td 的背景上、不上 .sh-cell —— cell 的 padding 一动，就地编辑的
+   「负边距抵消」立刻错位，而「编辑态与静态逐像素重合」是硬约束。
+   background-size 卡在缩进宽度内：多一级才多一条线。
+   浓度 40%：26% 实测是 (211,217,223) on (250,252,253)，在 150% 缩放的屏幕上
+   等于看不见 —— 一条看不见的线不如不画。 */
+body[data-skin="v4"] .sh-table td.sh-td-first.is-tree {
+  background-image: repeating-linear-gradient(
+    to right,
+    color-mix(in srgb, var(--text-muted) 40%, transparent) 0 1px,
+    transparent 1px 16px
+  ) !important;
+  background-repeat: no-repeat !important;
+  background-position: 7px 0 !important;
+  background-size: calc(var(--tree-indent, 0px) - 2px) 100% !important;
+}
+
 /* 全局 button 有 min-height:38px / padding 的 !important（MEMORY 里那条三连坑），
-   所以这里必须用 td 级前缀 + 三件套一起压回去。 */
+   所以这里必须用 td 级前缀 + 三件套一起压回去。
+   宽 12px 是硬上限：第一列的正文从 12px 起，再宽就压字、也抢第一次点击。 */
 body[data-skin="v4"] .sh-table td.sh-td-first > .sh-tree-caret {
   position: absolute !important;
   left: calc(1px + var(--tree-indent, 0px)) !important;
@@ -3153,31 +3178,44 @@ body[data-skin="v4"] .sh-table td.sh-td-first > .sh-tree-caret {
   align-items: center !important;
   justify-content: center !important;
   width: 12px !important;
-  height: 12px !important;
+  height: 20px !important;
   min-height: 0 !important;
   padding: 0 !important;
   border: 0 !important;
-  border-radius: 3px !important;
+  border-radius: 4px !important;
   background: transparent !important;
-  color: var(--text-muted) !important;
+  color: color-mix(in srgb, var(--text-muted) 85%, transparent) !important;
   cursor: pointer !important;
 }
 
 body[data-skin="v4"] .sh-table td.sh-td-first > .sh-tree-caret:hover {
-  background: color-mix(in srgb, var(--color-primary) 14%, transparent) !important;
+  background: color-mix(in srgb, var(--color-primary) 15%, transparent) !important;
   color: var(--color-primary) !important;
 }
 
-body[data-skin="v4"] .sh-table .sh-tree-caret .wr-icon {
-  width: 10px !important;
-  height: 10px !important;
-  transform: rotate(90deg) !important; /* 展开：箭头朝下 */
-  transition: transform .12s ease !important;
+/* 实心三角：9px 的方块用 clip-path 切出来。
+   为什么不用细线 chevron —— 1.5px 的线在 9px 尺寸下会糊成一个脏点，
+   看着像格子里沾了灰；实心三角在同样尺寸下轮廓清楚。
+   展开 = 转 90°（朝下），折叠 = 朝右，与文件夹树一致。 */
+body[data-skin="v4"] .sh-table .sh-tree-tri {
+  width: 9px !important;
+  height: 9px !important;
+  background: currentColor !important;
+  clip-path: polygon(26% 6%, 86% 50%, 26% 94%) !important;
+  transform: rotate(90deg) !important;
+  transition: transform .14s ease !important;
 }
 
-/* 折叠：箭头朝右（=「这里有东西，点开」），与文件夹树一致 */
-body[data-skin="v4"] .sh-table .sh-tree-caret.is-collapsed .wr-icon {
+body[data-skin="v4"] .sh-table .sh-tree-caret.is-collapsed .sh-tree-tri {
   transform: rotate(0deg) !important;
+}
+
+/* 就地编辑时把箭头藏掉：编辑态的 2px 内描边从 2px 起画，
+   箭头正好落在描边上，看起来像格子里飘着一个没人要的符号。
+   （Sir 2026-11-26 指出的那个「箭头感觉不太好」就是这一帧） */
+body[data-skin="v4"] .sh-table td.sh-td-first:has(.ft-cell-editing) > .sh-tree-caret {
+  opacity: 0 !important;
+  pointer-events: none !important;
 }
 
 /* 第 4 层起缩进封顶，改用「⋯ 祖父 / 父」前缀表达位置。
@@ -3725,4 +3763,223 @@ body[data-ui="v3"] .sh-dp .sh-dp-prec-btn.is-on {
   background: color-mix(in srgb, var(--color-primary) 18%, transparent) !important;
   color: var(--text-main) !important;
   font-weight: 600 !important;
+}
+
+/* ===================================================================
+   详情抽屉 · 附件格右下角的「＋」
+   -------------------------------------------------------------------
+   styles.css:13521 曾经把 .sh-detail-cell .ft-att-add 整块 display:none 掉了，
+   当时的理由是「抽屉里没有添加附件的入口」。现在入口有了（rowDrawer.js 的
+   data-add-att 绑定 → onAttachmentAdd），这条隐藏必须撤掉，否则用户在抽屉里
+   看到一张图、想再加一张，没有任何落点。
+
+   两个必须补的东西：
+   ① position:relative —— .sh-detail-cell 没有定位上下文，加号的 absolute
+      会一路找到抽屉外壳，直接飘到右下角去。
+   ② 常显微调 —— 抽屉格只有 30px 高（.rd-fields），18px 的加号 + 4px 偏移
+      会压住缩略图，所以缩到 17px 并降到 38% 透明度，悬停才满血。
+   =================================================================== */
+
+body[data-ui="v3"] .sh-detail-cell {
+  position: relative !important;
+}
+
+body[data-ui="v3"] .sh-detail-cell .ft-att-add {
+  display: inline-flex !important;
+  width: 17px !important;
+  height: 17px !important;
+  right: 4px !important;
+  bottom: 4px !important;
+  font-size: 11px !important;
+  opacity: .38 !important;
+}
+
+body[data-ui="v3"] .sh-detail-cell:hover .ft-att-add,
+body[data-ui="v3"] .sh-detail-cell .ft-att-add:hover {
+  opacity: 1 !important;
+  background: var(--color-primary) !important;
+}
+
+/* ===================================================================
+   字段面板 · 选项配色弹层底部的「完成」
+   -------------------------------------------------------------------
+   以前这个弹层没有落点：选完颜色只能点别处关掉，看起来像「没有确认键」。
+   更糟的是系统取色器改完色之后，弹层里的色块 / hex 框根本不更新
+   （旧代码只 repaintPreview），用户完全无法判断到底生效了没有。
+
+   这里只负责那个落点的样子。行为在 sheetPanels.js：
+   完成 = 收起并保留；再点一次色块 = 收起并撤销。
+   =================================================================== */
+
+body[data-ui="v3"] .sh-drawer .sh-color-actions {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 10px !important;
+  margin-top: 9px !important;
+  padding-top: 9px !important;
+  border-top: 1px solid var(--border-light, rgba(0, 0, 0, 0.07)) !important;
+}
+
+body[data-ui="v3"] .sh-drawer .sh-color-tip {
+  min-width: 0 !important;
+  color: var(--text-3, #8a93a0) !important;
+  font-family: inherit !important;
+  font-size: 11px !important;
+  line-height: 1.3 !important;
+}
+
+body[data-ui="v3"] .sh-drawer .sh-color-done {
+  flex: none !important;
+  height: 28px !important;
+  min-height: 28px !important;
+  padding: 0 14px !important;
+  border: 0 !important;
+  border-radius: 7px !important;
+  background: var(--color-primary) !important;
+  color: #fff !important;
+  font-family: inherit !important;
+  font-size: 11.5px !important;
+  font-weight: 600 !important;
+  line-height: 1 !important;
+  cursor: pointer !important;
+}
+
+body[data-ui="v3"] .sh-drawer .sh-color-done:hover {
+  filter: brightness(1.06) !important;
+}
+
+
+
+/* =========================================================================
+   「移入其他行下…」选择器（2026-11-26）
+   -------------------------------------------------------------------------
+   为什么用居中弹层而不是下拉：候选是一棵树、还带搜索，挂在屏底的行上下拉
+   会翻不掉；而这一步是结构改动，居中能把「哪些行不在候选里」和「子项会跟着走」
+   一次讲清楚 —— 移错了要再移回来，代价比多点一下大得多。
+   行高 32px：比表格行矮，七十行也就两屏，滚起来不费劲。
+   缩进用 --lv（0~6）× 16px，和表格里的树缩进同一个步长。
+   ========================================================================= */
+body[data-skin="v4"] .sh-move {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 10px !important;
+}
+
+body[data-skin="v4"] .sh-move-search input {
+  width: 100% !important;
+  height: 32px !important;
+  min-height: 0 !important;
+  padding: 0 10px !important;
+  border: 1px solid var(--v4-line-2) !important;
+  border-radius: 8px !important;
+  background: transparent !important;
+  color: var(--v4-text) !important;
+  font-family: inherit !important;
+  font-size: 12.5px !important;
+  outline: none !important;
+}
+
+body[data-skin="v4"] .sh-move-search input:focus {
+  border-color: color-mix(in srgb, var(--color-primary) 52%, var(--v4-line-2)) !important;
+}
+
+body[data-skin="v4"] .sh-move-list {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 1px !important;
+  max-height: min(44vh, 352px) !important;
+  overflow: auto !important;
+  padding: 4px !important;
+  border: 1px solid var(--v4-line-2) !important;
+  border-radius: 10px !important;
+}
+
+body[data-skin="v4"] .sh-move-item {
+  display: flex !important;
+  flex: none !important;
+  align-items: center !important;
+  gap: 8px !important;
+  width: 100% !important;
+  height: 32px !important;
+  min-height: 0 !important;
+  padding: 0 8px 0 calc(8px + var(--lv, 0) * 16px) !important;
+  border: 0 !important;
+  border-radius: 7px !important;
+  background: transparent !important;
+  color: var(--v4-text) !important;
+  font-family: inherit !important;
+  font-size: 12.5px !important;
+  font-weight: 400 !important;
+  line-height: 1 !important;
+  text-align: left !important;
+  cursor: pointer !important;
+}
+
+body[data-skin="v4"] .sh-move-item:hover {
+  background: var(--v4-surface-2) !important;
+}
+
+/* 已选：主色淡底 + 内描边。不用阴影 —— 这一层在弹层里，阴影会糊成脏边 */
+body[data-skin="v4"] .sh-move-item.is-picked {
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-primary) 42%, transparent) !important;
+  color: var(--color-primary) !important;
+}
+
+/* 当前父行：标出来但不抢眼，选它等于「什么都不做」 */
+body[data-skin="v4"] .sh-move-item.is-current {
+  color: var(--v4-text-3) !important;
+  cursor: default !important;
+}
+
+body[data-skin="v4"] .sh-move-item.is-root {
+  color: var(--v4-text-2) !important;
+  font-weight: 500 !important;
+}
+
+body[data-skin="v4"] .sh-move-name {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+
+body[data-skin="v4"] .sh-move-meta {
+  flex: none !important;
+  color: var(--v4-text-3) !important;
+  font-size: 11px !important;
+  font-variant-numeric: tabular-nums !important;
+}
+
+body[data-skin="v4"] .sh-move-flag {
+  flex: none !important;
+  padding: 2px 6px !important;
+  border-radius: 999px !important;
+  background: var(--v4-surface-3) !important;
+  color: var(--v4-text-3) !important;
+  font-size: 10.5px !important;
+  line-height: 1.4 !important;
+}
+
+body[data-skin="v4"] .sh-move-empty {
+  padding: 18px 8px !important;
+  color: var(--v4-text-3) !important;
+  font-size: 12px !important;
+  text-align: center !important;
+}
+
+body[data-skin="v4"] .sh-move-tip {
+  margin: 0 !important;
+  color: var(--v4-text-3) !important;
+  font-size: 11.5px !important;
+  line-height: 1.5 !important;
+}
+
+/* 过滤用 class 不用 hidden：条目是 display:flex !important 的按钮，
+   UA 的 [hidden]{display:none} 压不过它，滤完一行都藏不住 */
+body[data-skin="v4"] .sh-move-item.is-hide,
+body[data-skin="v4"] .sh-move-empty.is-hide {
+  display: none !important;
 }

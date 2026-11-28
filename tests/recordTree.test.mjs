@@ -5,6 +5,7 @@ import {
   buildForest,
   flattenVisibleTree,
   wouldCreateCycle,
+  moveCandidates,
   toId,
 } from '../src/recordTree.js';
 
@@ -127,6 +128,75 @@ eq('null', toId(null), null);
 eq('空串', toId(''), null);
 eq('undefined', toId(undefined), null);
 eq('非数字', toId('abc'), null);
+
+// ---------- 8. 移入候选：排自己 + 排全部后代 ----------
+console.log('\n[8] moveCandidates（「移入其他行下」的候选集）');
+{
+  // 结构：1 机组 → 2 系统 → 3 设备；1 还有个兄弟 7
+  const rows = [
+    { id: 1, parent_id: null, title: '机组' },
+    { id: 7, parent_id: null, title: '另一台机组' },
+    { id: 2, parent_id: 1, title: '系统' },
+    { id: 3, parent_id: 2, title: '设备' },
+    { id: 8, parent_id: 7, title: '别家的系统' },
+  ];
+
+  // 移「系统」：它和它的子项都不能选，但它自己那一支以外的全都该在
+  const sys = moveCandidates(rows, 2);
+  eq('移 2 → 排掉 {2,3}', [...sys.banned].sort(), [2, 3]);
+  eq('移 2 → 候选里没有 2 也没有 3', sys.entries.filter(e => [2, 3].includes(e.row.id)).length, 0);
+  eq('移 2 → 兄弟分支还在（1 / 7 / 8）', sys.entries.map(e => e.row.id), [1, 7, 8]);
+  eq('移 2 → 自己在候选里 0 次', sys.entries.filter(e => e.row.id === 2).length, 0);
+  eq('移 2 → 子孙在候选里 0 次', sys.entries.filter(e => e.row.id === 3).length, 0);
+
+  // 叶子节点：只排自己
+  const leaf = moveCandidates(rows, 3);
+  eq('移叶子 3 → 只排自己', [...leaf.banned], [3]);
+  eq('移叶子 3 → 候选剩 4 行', leaf.entries.length, 4);
+  ok('移叶子 3 → 自己的父（2）可以选', leaf.entries.some(e => e.row.id === 2));
+
+  // 根节点：整表都被排掉，「顶层」是唯一出路
+  const root = moveCandidates(rows, 1);
+  eq('移根 1 → 排掉自己整支 {1,2,3}', [...root.banned].sort(), [1, 2, 3]);
+  eq('移根 1 → 候选只剩另一支', root.entries.map(e => e.row.id), [7, 8]);
+
+  // 一行比它的父**先**出现（sort 顺序与父子顺序无关）—— 单轮扫描会漏
+  const reversed = [
+    { id: 3, parent_id: 2, title: '设备' },
+    { id: 2, parent_id: 1, title: '系统' },
+    { id: 1, parent_id: null, title: '机组' },
+    { id: 9, parent_id: null, title: '别的' },
+  ];
+  const rev = moveCandidates(reversed, 1);
+  eq('子比父先出现也收全后代', [...rev.banned].sort(), [1, 2, 3]);
+  eq('子比父先出现 → 候选只剩 9', rev.entries.map(e => e.row.id), [9]);
+
+  // 折叠状态不影响候选：接口里根本没有 collapsed，深度再深也铺开
+  const deep = [];
+  for (let i = 1; i <= 8; i += 1) deep.push({ id: i, parent_id: i === 1 ? null : i - 1, title: `L${i}` });
+  const deepPick = moveCandidates(deep, 8);
+  eq('8 层深也不会因为折叠少行', deepPick.entries.length, 7);
+  eq('候选里最深的那个 depth 仍是 7', Math.max(...deepPick.entries.map(e => e.depth)), 7);
+
+  // 提示文案里的「它下面的 N 行」= banned.size - 1
+  eq('提示行数 = banned.size - 1（移 2）', sys.banned.size - 1, 1);
+  eq('提示行数 = banned.size - 1（移根 1）', root.banned.size - 1, 2);
+
+  // 健壮性：行已被删 / id 是字符串 / 脏环
+  eq('selfId 不在表里 → 一个都不排', moveCandidates(rows, 999).banned.size, 1);
+  eq('selfId 不在表里 → 候选全在', moveCandidates(rows, 999).entries.length, 5);
+  eq('selfId 是字符串也认', [...moveCandidates(rows, '2').banned].sort(), [2, 3]);
+  ok('selfId 为 null 不抛', moveCandidates(rows, null).entries.length === 5);
+
+  const dirtyCycle = [
+    { id: 11, parent_id: 12, title: '环A' },
+    { id: 12, parent_id: 11, title: '环B' },
+    { id: 13, parent_id: 11, title: '挂环下' },
+  ];
+  const dirtyPick = moveCandidates(dirtyCycle, 13);
+  ok('脏环不会让候选计算死循环', dirtyPick.entries.length === 2, `实际 ${dirtyPick.entries.length}`);
+  ok('脏环不会把别人的子项算成自己的后代', dirtyPick.banned.size === 1, `banned=${dirtyPick.banned.size}`);
+}
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);

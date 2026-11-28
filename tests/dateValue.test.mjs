@@ -6,6 +6,7 @@
 
 import {
   PRECISION_LEVELS,
+  MICRO_PRECISION,
   normalizePrecision,
   precisionOf,
   parseDateValue,
@@ -121,6 +122,50 @@ const eq = (name, actual, expected) => ok(name, actual === expected, `实际 ${J
   eq('未知值退回回退档', normalizePrecision('week', 'second'), 'second');
   eq('回退档也未知 → minute', normalizePrecision('week', 'nope'), 'minute');
   eq('已知值原样', normalizePrecision('day', 'minute'), 'day');
+}
+
+// ---- 9. 第四档：微秒（系统生成的时间戳，用户不可选）----
+//
+// 这一档存在的唯一理由：record.created_at 要绝对唯一，靠毫秒 + 序号拼成 26 字符。
+// 它必须能被解析/格式化，否则那一列在表格里就是一个谁也不认识的字符串。
+{
+  const micro = '2026-11-18 16:30:22.123456';
+  eq('微秒认得出', precisionOf(micro), 'micro');
+  eq('常量对齐', MICRO_PRECISION, 'micro');
+  ok('微秒不在用户可选档里', !PRECISION_LEVELS.includes('micro'));
+  // 关键：不能被 normalizePrecision 悄悄降成分钟 —— 那等于又丢一次精度
+  eq('normalize 不认微秒', normalizePrecision('micro', 'second'), 'second');
+
+  const parsed = parseDateValue(micro);
+  eq('解析 hasValue', parsed.hasValue, true);
+  eq('解析精度', parsed.precision, 'micro');
+  eq('解析秒', parsed.second, 22);
+  eq('解析微秒', parsed.micro, 123456);
+
+  eq(
+    '格式化回原样',
+    formatDateValue({ year: 2026, month: 11, day: 18, hour: 16, minute: 30, second: 22, micro: 123456 }, 'micro'),
+    micro
+  );
+  eq(
+    '微秒补零',
+    formatDateValue({ year: 2026, month: 1, day: 5, hour: 9, minute: 3, second: 4, micro: 7 }, 'micro'),
+    '2026-01-05 09:03:04.000007'
+  );
+  // 手写小数：3 位按毫秒语义补齐，1 位按十万位
+  eq('3 位小数', parseDateValue('2026-11-18 16:30:22.123').micro, 123000);
+  eq('1 位小数', parseDateValue('2026-11-18 16:30:22.5').micro, 500000);
+  eq('3 位小数精度也是微秒', precisionOf('2026-11-18 16:30:22.123'), 'micro');
+
+  // 没有小数秒的值不能被误判成微秒
+  eq('无小数仍是秒', precisionOf('2026-11-18 16:30:22'), 'second');
+
+  // 列配置只给三档：微秒值不看列默认，看值自己
+  eq(
+    '列默认不会把微秒值降级',
+    fieldPrecisionOf({ options: JSON.stringify({ precision: 'minute' }) }),
+    'minute'
+  );
 }
 
 console.log(`\ndateValue: ${pass} 通过 / ${fail} 失败`);

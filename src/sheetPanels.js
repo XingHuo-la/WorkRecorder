@@ -373,6 +373,9 @@ export function openRowMenu(anchor, row, index, handlers = {}) {
     <button type="button" class="sh-menu-item" data-act="add-child">
       <svg class="wr-icon" aria-hidden="true"><use href="#ic-insert-right"/></svg>在此行下加子项
     </button>
+    <button type="button" class="sh-menu-item" data-act="move-to">
+      <svg class="wr-icon" aria-hidden="true"><use href="#ic-connector"/></svg>移入其他行下…
+    </button>
     <button type="button" class="sh-menu-item" data-act="promote" ${Number(row.parent_id) > 0 ? '' : 'disabled'}>
       <svg class="wr-icon" aria-hidden="true"><use href="#ic-insert-left"/></svg>提升一级
     </button>
@@ -719,6 +722,9 @@ export function openFieldPanel({ field = null, sheetName, tables = [], selfTable
     multiple: config.multiple === true,
     // 哪一行的预设调色板是展开的（一次只开一个，点开就顶掉上一个）
     colorOpen: -1,
+    // 展开调色板那一刻的颜色快照 { index, color }：收起时要还原成它。
+    // 弹层里改色是即时生效的（预览跟着变），没有这份快照就没有退路。
+    colorBefore: null,
   };
   // 这一列里实际出现过的值（宿主扫好传进来，面板不查库）。
   // 一律只留「还没被任何选项接住」的那些，面板上是「＋ 值（N 次）」的一排待补按钮。
@@ -863,6 +869,10 @@ export function openFieldPanel({ field = null, sheetName, tables = [], selfTable
                             <button type="button" class="sh-color-native" data-native="${index}">系统取色器</button>
                           </div>
                           <input type="color" class="sh-color-hidden" value="${escapeHtml(option.color || optionColor(option.label))}" data-color aria-label="自定义颜色" />
+                          <div class="sh-color-actions">
+                            <span class="sh-color-tip">再点一次色块可撤销</span>
+                            <button type="button" class="sh-color-done" data-color-done="${index}">完成</button>
+                          </div>
                         </div>`
                      : ''
                  }`
@@ -934,6 +944,47 @@ export function openFieldPanel({ field = null, sheetName, tables = [], selfTable
     previewCell.innerHTML = renderCell(previewField(), sampleValue(), previewCtx());
   };
 
+  // 取色后同步弹层里那三处显示：开关色块、hex 输入框、色值读数。
+  //
+  // 为什么不整块 paint()：paint 是 innerHTML 全量重建。用户在 hex 框里连打几个
+  // 字符时每敲一下就换掉输入框，焦点和光标全丢（中文输入法还会断字）；系统取色器
+  // 拖动时 input 是连发的，全量重画还会闪成一片。
+  const syncColorRow = index => {
+    const option = state.options[index];
+    if (!option) return;
+    const hex = option.color || optionColor(option.label);
+    const toggleDot = host.querySelector(`[data-color-toggle="${index}"] i`);
+    if (toggleDot) toggleDot.style.background = hex;
+    const row = host.querySelector(`[data-color-row="${index}"]`);
+    if (!row) return;
+    const hexInput = row.querySelector('[data-hex]');
+    // 用户正在打 hex 的时候别把他的手输抢掉
+    if (hexInput && document.activeElement !== hexInput) hexInput.value = hex;
+    const read = row.querySelector('.sh-color-read');
+    if (!read) return;
+    const dot = read.querySelector('i');
+    if (dot) dot.style.background = hex;
+    const code = read.querySelector('b');
+    if (code) code.textContent = hex;
+    const rgb = read.querySelector('span');
+    if (rgb) rgb.textContent = rgbText(hex);
+  };
+
+  // 系统取色器（<input type="color">）的落地。
+  //
+  // input 与 change 两个事件都要收：拖动时 input 连发，点「确定」才发 change；
+  // Windows 的取色对话框有路径只发 change —— 只挂 input 的表现就是
+  // 「在系统面板里点完确定，弹层里的颜色纹丝不动」，也就是「好像没有确认键」。
+  const applyNativeColor = input => {
+    const index = Number(input.closest('[data-color-row]')?.dataset.colorRow);
+    if (!Number.isInteger(index) || !state.options[index]) return;
+    const hex = String(input.value || '').toLowerCase();
+    if (!rgbOf(hex)) return;
+    state.options[index].color = hex;
+    syncColorRow(index);
+    repaintPreview();
+  };
+
   paint();
   host.querySelector('[data-name]')?.focus();
 
@@ -955,26 +1006,43 @@ export function openFieldPanel({ field = null, sheetName, tables = [], selfTable
     const hexInput = event.target.closest('[data-hex]');
     if (hexInput) {
       const index = Number(hexInput.closest('[data-color-row]')?.dataset.colorRow);
+      if (!Number.isInteger(index) || !state.options[index]) return;
       const rgb = rgbOf(hexInput.value);
-      if (Number.isInteger(index) && state.options[index] && rgb) {
+      // 打到一半（#1 / #158）不算错，不抢用户的光标、也不整块重画 ——
+      // 旧版这里 paint()，输入框每敲一个字符就被换掉，等于根本打不进颜色值。
+      // 只有凑齐一个合法颜色才落库；打残的值在 change（失焦）时退回原色。
+      if (rgb) {
         state.options[index].color = hexOf(rgb.r, rgb.g, rgb.b);
-        paint();
-      } else if (Number.isInteger(index) && state.options[index]) {
-        hexInput.value = state.options[index].color || '';
+        syncColorRow(index);
+        repaintPreview();
       }
       return;
     }
     const colorInput = event.target.closest('[data-color]');
     if (colorInput) {
-      const index = Number(colorInput.closest('[data-index]')?.dataset.index);
-      if (Number.isInteger(index) && state.options[index]) {
-        state.options[index].color = colorInput.value;
-        repaintPreview();
-      }
+      applyNativeColor(colorInput);
+      return;
     }
   });
 
   host.addEventListener('change', event => {
+    // 系统取色器「确定」：有些平台只到这里，input 一路不发
+    const nativeColor = event.target.closest('[data-color]');
+    if (nativeColor) {
+      applyNativeColor(nativeColor);
+      return;
+    }
+    // hex 框失焦：打了一半的值（#15、#158）退回当前真实颜色，
+    // 免得弹层里留一个假的十六进制让用户以为已经生效
+    const hexBox = event.target.closest('[data-hex]');
+    if (hexBox) {
+      const index = Number(hexBox.closest('[data-color-row]')?.dataset.colorRow);
+      const option = Number.isInteger(index) ? state.options[index] : null;
+      if (option && !rgbOf(hexBox.value)) {
+        hexBox.value = option.color || optionColor(option.label);
+      }
+      return;
+    }
     const tableSelect = event.target.closest('[data-target-table]');
     if (tableSelect) {
       state.targetSheetId = Number(tableSelect.value) || 0;
@@ -1044,7 +1112,26 @@ export function openFieldPanel({ field = null, sheetName, tables = [], selfTable
     const colorToggle = event.target.closest('[data-color-toggle]');
     if (colorToggle) {
       const index = Number(colorToggle.dataset.colorToggle);
-      state.colorOpen = state.colorOpen === index ? -1 : index;
+      if (state.colorOpen === index) {
+        // 再点一次同一个色块 = 收起 = 撤销。
+        // 弹层里的改动是即时生效的（拖动取色器时就能看到预览在变），
+        // 所以「收起」必须能把颜色还原回打开前，否则用户没有退路。
+        if (state.colorBefore && state.colorBefore.index === index) {
+          state.options[index].color = state.colorBefore.color;
+        }
+        state.colorOpen = -1;
+        state.colorBefore = null;
+      } else {
+        state.colorOpen = index;
+        state.colorBefore = { index, color: state.options[index]?.color || '' };
+      }
+      paint();
+      return;
+    }
+    const colorDone = event.target.closest('[data-color-done]');
+    if (colorDone) {
+      state.colorOpen = -1;
+      state.colorBefore = null;
       paint();
       return;
     }
@@ -1054,6 +1141,9 @@ export function openFieldPanel({ field = null, sheetName, tables = [], selfTable
       if (Number.isInteger(index) && state.options[index]) {
         state.options[index].color = colorDot.dataset.setColor;
         state.colorOpen = -1;
+        // 点预设色点是「确认」，不是「还在挑」—— 撤销快照必须作废，
+        // 否则下次再点开关色块收起时会把这一下刚选的颜色还原掉
+        state.colorBefore = null;
         paint();
       }
       return;

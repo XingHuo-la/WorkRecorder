@@ -1,9 +1,10 @@
 // 日期值的精度与格式化 —— 全应用唯一一份。
 //
 // 精度不另存标记，由字符串形状自证：
-//   2026-11-18            → day      只到日
-//   2026-11-18 16:30      → minute   到分
-//   2026-11-18 16:30:22   → second   到秒
+//   2026-11-18                  → day      只到日
+//   2026-11-18 16:30            → minute   到分
+//   2026-11-18 16:30:22         → second   到秒
+//   2026-11-18 16:30:22.123456  → micro    到微秒（系统生成的时间戳，见 stampValue.js）
 //
 // 为什么能不存标记：库里这一列本来就是 TEXT（预置表拆成 happened_date + happened_time
 // 两个 TEXT 列也一样，秒就在 happened_time 里，读的时候拼回去），
@@ -12,18 +13,29 @@
 // 反过来说，旧版把解析写死成「只认到分」（datePicker 的 parseValue 正则 + formatValue），
 // 等于每次在选择器里点一下别的日子就把秒静默截掉 —— 库里已经有 42 条 HH:MM:SS 的值在等着被吃掉。
 // 这一层存在的意义就是让「读 → 算 → 写」全程不丢精度。
+//
+// 微秒是第四档，但它**不是用户能选的档**：只由系统生成（record.created_at 的唯一性要求），
+// 用户在选择器里动手改时间，改完就是那一格的真实精度（到秒）。
 
+// 用户可以在选择器里主动选的档。微秒不在里面 —— 手编一个微秒值没有意义。
 export const PRECISION_LEVELS = ['day', 'minute', 'second'];
 export const PRECISION_LABELS = { day: '日', minute: '分', second: '秒' };
 
+// 值里可能出现的全部档位（含系统生成的微秒）。
+export const VALUE_PRECISIONS = ['day', 'minute', 'second', 'micro'];
+export const MICRO_PRECISION = 'micro';
+
 // 允许 1~2 位的月/日/时，是为了兜住手工粘进来的 `2026-1-5 9:30` 这类值。
-const FULL = /^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/;
+// 小数秒 1~6 位都收：系统生成的是定长 6 位，手写 `.5` 也不该被当成非法。
+const FULL = /^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2})(?:\.(\d{1,6}))?)?)?$/;
 
 export function pad2(value) {
   const num = Math.trunc(Math.abs(Number(value) || 0));
   return String(num).padStart(2, '0');
 }
 
+// 只认「用户能选的档」。micro 传进来会退回 fallback ——
+// 选择器内部靠这个把微秒值当成「秒」来编辑。
 export function normalizePrecision(value, fallback = 'minute') {
   if (PRECISION_LEVELS.includes(value)) return value;
   return PRECISION_LEVELS.includes(fallback) ? fallback : 'minute';
@@ -34,6 +46,7 @@ export function precisionOf(value, fallback = 'minute') {
   const raw = String(value ?? '').trim();
   const match = FULL.exec(raw);
   if (!match) return normalizePrecision(fallback);
+  if (match[7] != null) return MICRO_PRECISION;
   if (match[6] != null) return 'second';
   if (match[4] != null) return 'minute';
   return 'day';
@@ -46,7 +59,7 @@ export function parseDateValue(value, fallback = 'minute') {
   const precision = precisionOf(raw, fallback);
   const match = FULL.exec(raw);
   if (!match) {
-    return { hasValue: false, precision, year: null, month: null, day: null, hour: 0, minute: 0, second: 0 };
+    return { hasValue: false, precision, year: null, month: null, day: null, hour: 0, minute: 0, second: 0, micro: 0 };
   }
   return {
     hasValue: true,
@@ -57,13 +70,21 @@ export function parseDateValue(value, fallback = 'minute') {
     hour: match[4] != null ? Number(match[4]) : 0,
     minute: match[5] != null ? Number(match[5]) : 0,
     second: match[6] != null ? Number(match[6]) : 0,
+    // 微秒段：手写 `.5` 按 500000 补齐语义（5 位 = 十万位），
+    // 系统生成的永远是 6 位，两种都落在同一个数值空间里
+    micro: match[7] != null ? Number(String(match[7]).padEnd(6, '0')) : 0,
   };
 }
 
 // 按精度拼回字符串。day 档刻意不带时间 —— 这是「这一格只到日」的唯一表达方式。
 export function formatDateValue(parts, precision) {
-  const level = normalizePrecision(precision);
   const base = `${parts.year}-${pad2(parts.month)}-${pad2(parts.day)}`;
+  // micro 不在 PRECISION_LEVELS 里，不能走 normalizePrecision（会被降成 minute）
+  if (precision === MICRO_PRECISION) {
+    const micro = Math.max(0, Math.trunc(Number(parts.micro) || 0));
+    return `${base} ${pad2(parts.hour)}:${pad2(parts.minute)}:${pad2(parts.second)}.${String(micro).padStart(6, '0')}`;
+  }
+  const level = normalizePrecision(precision);
   if (level === 'day') return base;
   const hhmm = `${pad2(parts.hour)}:${pad2(parts.minute)}`;
   if (level === 'minute') return `${base} ${hhmm}`;

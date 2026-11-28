@@ -19,6 +19,20 @@ import { FIELD_TYPE_LABELS } from './fieldTypes.js';
 // 关联字段的值解析只有一份（relationField），别在这里抄第二份：
 // 「单选也存数组」这条如果两处不一致，读回来就会是 [3] 与 3 混着用。
 import { relationConfig, normalizeRelationIds } from './relationField.js';
+// created_at 有 UNIQUE INDEX 压着：同一个秒级时间戳插两行就是 INSERT 失败。
+// 所以「新建行的创建时间」一律走微秒分配器；updated_at 仍是秒级（不要求唯一）。
+import { bumpStamp, coerceStamp, currentStamp, stampBaseAfter, nextStamps } from './stampValue.js';
+
+// 「创建时间」列住在 record.created_at 这个结构列里，不在 custom 的 JSON 里。
+//
+// 为什么用**固定 key** 而不是 newFieldKey() 生成的 f_xxx：
+//   ① 读值不用再查一遍字段表 —— readTableRows 是热路径，每张表多一次 IPC 不值得；
+//   ② 任何地方看到 values.created_at 都就是「这条记录的出生时间」，不需要上下文；
+//   ③ sheet_field 的唯一约束是 UNIQUE(sheet_id, key)，跨表不冲突。
+// 代价：所有「把 values 整包写进 custom」的地方都必须把它摘出去，
+// 否则结构列会被抄成一份副本，改一处另一处不动。落点见 saveRowValues / presetCustomOf。
+export const CREATED_AT_KEY = 'created_at';
+export const CREATED_AT_LABEL = '创建时间';
 
 let adapter = null;
 
@@ -91,6 +105,10 @@ export function mergeFieldOptions(field, patch = {}) {
     else next[key] = value;
   });
   if (!next.source) next.source = 'custom';
+  // 「创建时间」列的身份是建表那一刻定的，字段面板不许把它改回普通列 ——
+  // 面板每次保存都会显式传 source:'custom'，不在这里按住，
+  // 用户改一下列名，这一列就变成一个永远空着的普通日期列（零报错）。
+  if (base.source === CREATED_AT_KEY) next.source = CREATED_AT_KEY;
   if (!Array.isArray(next.options)) next.options = [];
   if (!next.wrap) delete next.wrap;
   if (!next.dateOnly) delete next.dateOnly;
@@ -114,7 +132,12 @@ export function serializeOptions(configOrList) {
     return JSON.stringify({ source: 'custom', options: configOrList });
   }
   const config = configOrList || {};
-  const payload = { source: 'custom', options: Array.isArray(config.options) ? config.options : [] };
+  const payload = {
+    // 「创建时间」列是个例外：它的值不在 custom 里，而是 record.created_at 那一列。
+    // 不加这一行，重启之后字段就变回普通日期列，格子里永远是空的。
+    source: config.source === CREATED_AT_KEY ? CREATED_AT_KEY : 'custom',
+    options: Array.isArray(config.options) ? config.options : [],
+  };
   if (config.wrap) payload.wrap = true;
   if (config.dateOnly) payload.dateOnly = true;
   // 日期列的默认精度：day / minute / second。minute 不落库（省一个键）。
@@ -335,12 +358,31 @@ export async function createSheet({ name, taskId = null, templateKey = 'blank' }
   if (!sheetId) throw new Error('创建表格失败');
 
   let sort = 0;
-  for (const field of template.fields) {
+  // 每张新表自带一列「创建时间」，排在最前面：新建一行，第一眼就该看到它什么时候进来的。
+  // 它绑定的是 record.created_at（固定 key），不是 custom 里的一份拷贝 ——
+  // 拷贝等于两处时间，改一处另一处不动。
+  //
+  // 宽度 210：值是 26 字符（2026-11-18 16:30:22.123456），13px 字号量下来约 170px，
+  // 再加左右内边距 24px = 194。但列宽是**权重不是像素**（实际像素 = w × 可用宽 / 权重和），
+  // 和模板里那 1110 权重挤在一起时 190 会缩到 167px 左右 —— 正好卡在截断线上。
+  // 210 换算下来约 181px，留得住。列宽本来就是可以拖的。
+  const seedFields = [
+    {
+      key: CREATED_AT_KEY,
+      label: CREATED_AT_LABEL,
+      type: 'date',
+      options: { source: CREATED_AT_KEY },
+      width: 210,
+    },
+    ...template.fields,
+  ];
+  for (const field of seedFields) {
     await db().dbExecute(
       'INSERT INTO sheet_field (sheet_id, key, label, type, options, width, sort, visible) VALUES (?, ?, ?, ?, ?, ?, ?, 1)',
       [
         sheetId,
-        newFieldKey(),
+        // 模板里的字段没有 key（key 是建表那一刻才生成的），自带 key 的（创建时间）原样用
+        field.key || newFieldKey(),
         field.label,
         field.type,
         field.options ? serializeOptions(field.options) : null,
@@ -504,11 +546,24 @@ export async function loadRows(sheetId) {
       ORDER BY sort, id`,
     [sheetId]
   );
-  return (Array.isArray(rows) ? rows : []).map(item => ({ ...item, values: parseRowData(item) }));
+  return (Array.isArray(rows) ? rows : []).map(item => ({
+    ...item,
+    values: {
+      ...parseRowData(item),
+      // 把结构列摊进 values，渲染层才不用为「创建时间」单独开一条取值路径。
+      // 放最后覆盖：custom 里就算残留了同名脏键，也不许盖掉真实创建时间。
+      [CREATED_AT_KEY]: String(item.created_at ?? ''),
+    },
+  }));
 }
 
 export async function insertRow(sheetId, values = {}) {
   const stamp = nowStamp();
+  const createdAt = currentStamp();
+  // 复制行时 values 会带着源行的 created_at 一起过来。
+  // 它是结构列：既不该进 custom（否则库里多一份副本），也不该被复用
+  // （唯一索引不允许两行同一个创建时间，复制出来的必须是新时间）。
+  const { [CREATED_AT_KEY]: _ignoredCreatedAt, ...customValues } = values || {};
   // 排序值必须取 MAX(sort)+1，不能取 COUNT(*)：
   // 删过中间行之后 COUNT 比最大 sort 小，新记录会插到表格中间。
   const maxRows = await db().dbQuery(
@@ -519,7 +574,7 @@ export async function insertRow(sheetId, values = {}) {
   // kind 写 'sheet_row'：在表格里新建的行，出生地就是表格，删表时随表销毁。
   await db().dbExecute(
     "INSERT INTO record (kind, sheet_id, custom, sort, created_at, updated_at) VALUES ('sheet_row', ?, ?, ?, ?, ?)",
-    [sheetId, JSON.stringify(values), sort, stamp, stamp]
+    [sheetId, JSON.stringify(customValues), sort, createdAt, stamp]
   );
   const created = await db().dbQuery(
     'SELECT id FROM record WHERE sheet_id = ? AND sort = ? ORDER BY id DESC LIMIT 1',
@@ -539,11 +594,257 @@ export async function insertRowAt(sheetId, sortIndex, count = 1, values = {}) {
     at,
   ]);
   for (let i = 0; i < safeCount; i += 1) {
+    // 每行单独取一次创建时间：批量插入共用同一个值会直接撞唯一索引
+    // （values 里若带着源行的 created_at 也要摘掉，理由同 insertRow）
+    const { [CREATED_AT_KEY]: _ignoredCreatedAt, ...customValues } = values || {};
     await db().dbExecute(
       "INSERT INTO record (kind, sheet_id, custom, sort, created_at, updated_at) VALUES ('sheet_row', ?, ?, ?, ?, ?)",
-      [sheetId, JSON.stringify(values), at + i, stamp, stamp]
+      [sheetId, JSON.stringify(customValues), at + i, currentStamp(), stamp]
     );
   }
+}
+
+// ==========================================
+// 批量插入（剪贴板导入专用）
+// ==========================================
+//
+// 为什么必须有这一条路径：一次导入 2000 行，逐条走 insertRow 是
+// 2000 × 3 次 IPC（查 MAX(sort) + INSERT + 回查 id），实测十几秒、界面假死，
+// 而用户的要求是「性能第一」。
+//
+// 做法：把 N 行拼成一条多值 INSERT，一次 IPC 拿回全部 id。
+// db_query 在 Rust 侧是 prepare + query_map，对 `INSERT ... RETURNING` 会真的
+// step 并把结果集读出来，所以 id 一次拿全 —— 不需要新增 Rust 命令。
+const BULK_CHUNK = 200;
+
+/**
+ * 批量插入表格行。
+ *
+ * 创建时间由这里统一分配：**第一条 = 现在，其后每条 +1 微秒**，
+ * 并且起点会越过库里已有的最大值（上一次导入刚写完时，直接拿 now 会撞唯一索引）。
+ *
+ * @param {object} table
+ * @param {Array<object>} rowsValues 每行的 values（与单行插入同构）
+ * @returns {Promise<{ids: Array<number>, stamps: Array<string>}>}
+ */
+/**
+ * 合成这一批要写入的创建时间：用户指定的优先，没指定或认不出的回落到自动分配。
+ *
+ * 三条硬约束都是唯一索引逼出来的：
+ *   ① 形状必须规范 26 字符 —— 认不出的值直接丢弃（回落到自动分配），
+ *      因为 19 字符的值和 26 字符的值比较时行为就是错的；
+ *   ② 必须严格大于前一个 —— 批内两个相同的值会撞唯一索引，
+ *      整批 2000 行一起回滚；
+ *   ③ 不能撞库里已有的值 —— 粘贴来的历史数据很可能与库里重样。
+ *
+ * ②③ 只在「用户真的指定了创建时间列」时才需要（自动分配的值天然严格递增），
+ * 所以按列判断，不让所有导入都背上这次查询。
+ */
+async function resolveStamps(list, autoStamps) {
+  const provided = list.map(values => coerceStamp(values?.[CREATED_AT_KEY]));
+  if (!provided.some(Boolean)) return autoStamps;
+
+  const taken = new Set();
+  const valid = provided.filter(Boolean).sort();
+  if (valid.length) {
+    // 上界要多留 list.length 个微秒：让位是一路往后挪的，挪出来的值可能
+    // 落在「用户给的最后一个值」之外。不预留的话，第二次导入同一批时间
+    // 会一路挪进上一批的地盘，撞唯一索引整批回滚。
+    const upper = bumpStamp(valid[valid.length - 1], list.length + 1);
+    const rows = await db().dbQuery(
+      'SELECT created_at FROM record WHERE created_at >= ? AND created_at <= ?',
+      [valid[0], upper]
+    );
+    (rows || []).forEach(row => taken.add(String(row.created_at)));
+  }
+
+  const out = [];
+  for (let i = 0; i < list.length; i += 1) {
+    let value = provided[i] || autoStamps[i];
+    // 只保证「唯一」，**不强制「递增」**：用户给的是历史时间，硬把它拉成递增
+    // 等于篡改他的数据（2026-02 的会被推到 2026-11 的后面）。唯一索引认的是
+    // 唯一性，不是单调性；相撞就往后挪 1μs，挪出来的值同样占位。
+    let guard = 0;
+    while (taken.has(value) && guard < 100000) {
+      value = bumpStamp(value, 1);
+      guard += 1;
+    }
+    taken.add(value);
+    out.push(value);
+  }
+  return out;
+}
+
+export async function insertRowsBulk(table, rowsValues) {
+  const list = Array.isArray(rowsValues) ? rowsValues : [];
+  if (!table || !list.length) return { ids: [], stamps: [] };
+
+  const updatedAt = nowStamp();
+  const maxRows = await db().dbQuery('SELECT MAX(created_at) AS max_stamp FROM record');
+  const autoStamps = nextStamps(stampBaseAfter(maxRows?.[0]?.max_stamp), list.length);
+  if (!autoStamps.length) throw new Error('无法分配创建时间');
+  const stamps = await resolveStamps(list, autoStamps);
+
+  const ids = [];
+  const isPreset = table.kind === TABLE_KIND_PRESET;
+
+  // sort 一次性算好基线，chunk 内逐个 +1 —— 不能每行查一次 MAX。
+  // 两种表同一条规矩：追加到末尾（预置表 v18 起也按 sort 排序）。
+  let baseSort = 0;
+  if (isPreset) {
+    baseSort = await nextPresetSort();
+  } else {
+    const maxSort = await db().dbQuery(
+      'SELECT COALESCE(MAX(sort), -1) AS max_sort FROM record WHERE sheet_id = ?',
+      [table.id]
+    );
+    baseSort = Number(maxSort?.[0]?.max_sort ?? -1) + 1;
+  }
+
+  for (let start = 0; start < list.length; start += BULK_CHUNK) {
+    const chunk = list.slice(start, start + BULK_CHUNK);
+    const chunkStamps = stamps.slice(start, start + BULK_CHUNK);
+    const params = [];
+
+    let sql;
+    if (isPreset) {
+      // 预置表：值要落回真列，与 insertTableRow 保持同一套映射
+      sql = `INSERT INTO record (kind, title, body, tag, sub_tag, happened_date, happened_time,
+                                 status, custom, sort, created_at, updated_at, deleted_at)
+             VALUES ${chunk.map(() => "('log', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')").join(', ')}`;
+      chunk.forEach((values, offset) => {
+        const columns = presetColumnsOf(values);
+        const custom = presetCustomOf(values);
+        if (Array.isArray(values?.attachments) && values.attachments.length) {
+          custom.attachments = values.attachments;
+        }
+        params.push(
+          columns.title,
+          columns.body,
+          columns.tag,
+          columns.sub_tag,
+          columns.happened_date,
+          columns.happened_time,
+          columns.status,
+          JSON.stringify(custom),
+          String(baseSort + start + offset),
+          chunkStamps[offset],
+          updatedAt
+        );
+      });
+    } else {
+      sql = `INSERT INTO record (kind, sheet_id, custom, sort, created_at, updated_at)
+             VALUES ${chunk.map(() => "('sheet_row', ?, ?, ?, ?, ?)").join(', ')}`;
+      chunk.forEach((values, offset) => {
+        // 复制行带过来的 created_at 要摘掉：结构列不进 custom，也不许复用
+        const { [CREATED_AT_KEY]: _ignoredCreatedAt, ...customValues } = values || {};
+        params.push(
+          String(table.id),
+          JSON.stringify(customValues),
+          String(baseSort + start + offset),
+          chunkStamps[offset],
+          updatedAt
+        );
+      });
+    }
+
+    await db().dbExecute(sql, params);
+
+    // 拿 id 不走 `INSERT ... RETURNING`，而是按刚写入的那批创建时间**精确回查**。
+    //
+    // 为什么不用 RETURNING：它要求 db_query 对**写语句**也真的 step 出结果集。
+    // 本仓库的 db_query 确实如此，但这属于一个隐式约定 —— 换个适配器
+    // （调试壳、探针的假库）就不成立，表现是「导入 50 行，一行没写进去」。
+    //
+    // 为什么不用「区间」回查：用户指定「创建时间列」之后，这一批的值可能横跨几年
+    // （粘进来的就是历史数据），区间里会混进别人的行 —— 3 行导回 10 个 id，
+    // 触发下面的「批量写入只成功 N/M 行」把整批回滚掉。
+    // 精确 IN 查询仍然只有一次 IPC；chunk 上限 200 远低于 SQLite 的变量上限。
+    // 排序用 created_at：这批值严格递增，回查顺序就等于写入顺序。
+    const marks = chunkStamps.map(() => '?').join(', ');
+    const rows = await db().dbQuery(
+      `SELECT id FROM record WHERE created_at IN (${marks}) ORDER BY created_at, id`,
+      chunkStamps
+    );
+    (Array.isArray(rows) ? rows : []).forEach(row => {
+      const id = Number(row?.id);
+      if (Number.isInteger(id) && id > 0) ids.push(id);
+    });
+  }
+
+  if (ids.length !== list.length) {
+    throw new Error(`批量写入只成功 ${ids.length}/${list.length} 行`);
+  }
+  return { ids, stamps };
+}
+
+/**
+ * 批量软删除。导入失败回滚用 —— 逐条 deleteRow 是 2000 次 IPC，
+ * 而这一批刚插进去的行不可能有子项，不需要 deleteRow 里的 parent_id 交接。
+ */
+export async function deleteRowsBulk(ids) {
+  const list = (Array.isArray(ids) ? ids : []).map(Number).filter(id => Number.isInteger(id) && id > 0);
+  if (!list.length) return;
+  const stamp = nowStamp();
+  for (let start = 0; start < list.length; start += BULK_CHUNK) {
+    const chunk = list.slice(start, start + BULK_CHUNK);
+    await db().dbExecute(
+      `UPDATE record SET deleted_at = ?, kind = kind || '#deleted'
+        WHERE id IN (${chunk.map(() => '?').join(',')}) AND kind NOT LIKE '%#deleted'`,
+      [stamp, ...chunk]
+    );
+  }
+}
+
+/**
+ * 确保这张表有「创建时间」列：有就沿用，没有就建。
+ *
+ * 导入 50 行时调用一次，不是每行调用。
+ *
+ * @returns {Promise<object|null>} **只有真的新建了才返回字段对象**；
+ *   已经存在时返回 null。调用方拿返回值的唯一用途是「失败回滚时删掉自己建的东西」，
+ *   把已存在的列报上去，会让一次导入失败顺手删掉用户原有的列。
+ */
+export async function ensureCreatedAtField(table, fields = []) {
+  if (!table) return null;
+  const fromCaller = (fields || []).find(item => String(item?.key) === CREATED_AT_KEY);
+  if (fromCaller) return null;
+
+  // 沿用建表时的同一份配置，两处不能各写一套
+  const options = serializeOptions({ source: CREATED_AT_KEY });
+  if (table.kind === TABLE_KIND_PRESET) {
+    // 预置表字段是全局的（entity='log'），多张预置表共用一条定义
+    const existing = await db().dbQuery(
+      "SELECT id FROM field_def WHERE entity = 'log' AND key = ?",
+      [CREATED_AT_KEY]
+    );
+    if (existing?.[0]) return null;
+    // width 必须显式给：field_def.width 的默认是 160，
+    // 而 26 字符的时间戳在 13px 字号下要约 170px，160 会折行或截断。
+    await db().dbExecute(
+      'INSERT OR IGNORE INTO field_def (entity, key, label, type, options, width, sort, visible, builtin) VALUES (?, ?, ?, ?, ?, ?, 0, 1, 0)',
+      ['log', CREATED_AT_KEY, CREATED_AT_LABEL, 'date', options, 210]
+    );
+    const rows = await db().dbQuery(
+      "SELECT id, key, label, type, options FROM field_def WHERE entity = 'log' AND key = ?",
+      [CREATED_AT_KEY]
+    );
+    return rows?.[0] || null;
+  }
+  const existing = await db().dbQuery(
+    'SELECT id FROM sheet_field WHERE sheet_id = ? AND key = ?',
+    [table.id, CREATED_AT_KEY]
+  );
+  if (existing?.[0]) return null;
+  await db().dbExecute(
+    'INSERT OR IGNORE INTO sheet_field (sheet_id, key, label, type, options, width, sort, visible) VALUES (?, ?, ?, ?, ?, ?, 0, 1)',
+    [table.id, CREATED_AT_KEY, CREATED_AT_LABEL, 'date', options, 210]
+  );
+  const rows = await db().dbQuery(
+    'SELECT id, key, label, type, options FROM sheet_field WHERE sheet_id = ? AND key = ?',
+    [table.id, CREATED_AT_KEY]
+  );
+  return rows?.[0] || null;
 }
 
 export async function setRowHeight(rowId, height) {
@@ -563,8 +864,24 @@ export async function setRowHeight(rowId, height) {
 
 export async function saveRowValues(rowId, values) {
   const stamp = nowStamp();
-  await db().dbExecute('UPDATE record SET custom = ?, updated_at = ? WHERE id = ?', [
-    JSON.stringify(values),
+  // values 里带着摊平进来的 created_at（读的时候注进去的），它属于结构列。
+  // 不能跟着整包塞进 custom —— 否则库里会多一份副本，改一处另一处不动。
+  const { [CREATED_AT_KEY]: createdAt, ...custom } = values || {};
+  const next = String(createdAt ?? '').trim();
+  if (!next) {
+    // 没带创建时间 / 被清空：结构列一个字都不动（创建时间不允许变空）
+    await db().dbExecute('UPDATE record SET custom = ?, updated_at = ? WHERE id = ?', [
+      JSON.stringify(custom),
+      stamp,
+      rowId,
+    ]);
+    return;
+  }
+  // 用户在格子里改了创建时间：连结构列一起写。
+  // 值没变也照写 —— 多一次读当前值的 IPC 比多写一次贵得多。
+  await db().dbExecute('UPDATE record SET custom = ?, created_at = ?, updated_at = ? WHERE id = ?', [
+    JSON.stringify(custom),
+    next,
     stamp,
     rowId,
   ]);
@@ -774,6 +1091,9 @@ function presetCustomOf(values) {
   const out = {};
   for (const [key, value] of Object.entries(values || {})) {
     if (!key || key.startsWith('_')) continue;
+    // 创建时间是 record.created_at 结构列，不是自定义列。
+    // 抄进 custom 就等于库里有两份创建时间，改一处另一处不动。
+    if (key === CREATED_AT_KEY) continue;
     if (value === undefined) continue;
     const dataKey = customKeyOf(key);
     if (!dataKey || PRESET_COLUMN_KEY_SET.has(dataKey)) continue;
@@ -808,7 +1128,27 @@ function presetValues(row) {
     // 自定义列（v15 之后的「关联」「补充说明」这类）住在 custom 里，一并摊平。
     // 上面 7 个真列先写，这里再覆盖不了它们（customValuesOf 已挡掉同名键）。
     ...customValuesOf(custom),
+    // 结构列永远最后写：custom 里就算有同名脏键，也不许盖掉真实的创建时间。
+    [CREATED_AT_KEY]: String(row.created_at ?? ''),
   };
+}
+
+// 「预置表里的一行」= 没被移入任何自建表的 log 记录。这个条件在读写两侧
+// 必须逐字一致，否则「算出来的 MAX(sort)」和「看到的行」不是同一批。
+const PRESET_ROW_WHERE = "kind = 'log' AND deleted_at = '' AND (sheet_id IS NULL OR sheet_id = 0)";
+
+// 预置表下一行的 sort：MAX+1。与自建表 insertRow 同一条规矩 ——
+// 不能用 COUNT(*)：删过中间行之后 COUNT 比最大 sort 小，新行会插到中间。
+//
+// 注意这里**不过滤 deleted_at**（与自建表那条一致）：软删除的行还占着它的
+// sort，恢复时要回到原位。过滤掉会让新行复用一个「死人」的序号，恢复之后
+// 两行同号，只能靠 id 分先后 —— 用户看到的是「恢复的行跑到了别处」。
+async function nextPresetSort() {
+  const rows = await db().dbQuery(
+    `SELECT COALESCE(MAX(sort), -1) AS max_sort FROM record
+      WHERE kind = 'log' AND (sheet_id IS NULL OR sheet_id = 0)`
+  );
+  return Number(rows?.[0]?.max_sort ?? -1) + 1;
 }
 
 export async function readTableRows(table) {
@@ -816,13 +1156,20 @@ export async function readTableRows(table) {
   if (table.kind === TABLE_KIND_PRESET) {
     // 只读 sheet_id 为空的行：被「移入」某张表的记录已经属于那张表，
     // 再在预置表里出现一次就是一条记录两个家。
+    //
+    // v18 起行序由 `sort` 决定，与自建表同一套语义 —— 以前是
+    // `happened_date DESC, happened_time DESC, id DESC`，由此派生出两个
+    // 用户看得见的毛病：新建记录（日期=今天）永远跳到第一行；
+    // 「下方插入一行」插出来的行日期是空的，空串在倒序里排最后，
+    // 于是永远掉到整张表最底下，跟点的是哪一行毫无关系。
+    // 迁移把「升级那一刻看到的顺序」原样写成了 sort（0,1,2…），画面不变。
     const rows = await db().dbQuery(
       `SELECT id, custom, CAST(sort AS INTEGER) AS sort, height,
               created_at, updated_at, kind, title, body, parent_id, status,
               tag, sub_tag, happened_date, happened_time
          FROM record
         WHERE kind = 'log' AND deleted_at = '' AND (sheet_id IS NULL OR sheet_id = 0)
-        ORDER BY happened_date DESC, happened_time DESC, id DESC`
+        ORDER BY sort, id`
     );
     return (Array.isArray(rows) ? rows : []).map(item => ({
       ...item,
@@ -907,15 +1254,21 @@ export async function insertTableRow(table, values = {}, options = {}) {
   }
 
   const stamp = nowStamp();
+  // 创建时间必须唯一（UNIQUE INDEX 在 record.created_at 上），
+  // updated_at 不需要 —— 两列从这一版起形状不同：26 字符 vs 19 字符。
+  const createdAt = currentStamp();
   const columns = presetColumnsOf(values);
   // 新行没有旧 custom 可合并；自定义列（含关联）直接进 custom，与写回路径共用一份映射
   const custom = presetCustomOf(values);
   if (Array.isArray(values?.attachments) && values.attachments.length) custom.attachments = values.attachments;
+  // 行序：默认追加到末尾；「上方/下方插入 N 行」会显式传位置
+  // （调用方已经先把后面的行整体后移过，这里只管落位）。
+  const sortValue = options.sort == null ? await nextPresetSort() : Number(options.sort);
   if (Number.isFinite(parentId)) {
     await db().dbExecute(
       `INSERT INTO record (kind, title, body, tag, sub_tag, happened_date, happened_time,
                            status, custom, parent_id, sort, created_at, updated_at, deleted_at)
-       VALUES ('log', ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, '')`,
+       VALUES ('log', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')`,
       [
         columns.title,
         columns.body,
@@ -926,7 +1279,8 @@ export async function insertTableRow(table, values = {}, options = {}) {
         columns.status,
         JSON.stringify(custom),
         parentId,
-        stamp,
+        sortValue,
+        createdAt,
         stamp,
       ]
     );
@@ -934,7 +1288,7 @@ export async function insertTableRow(table, values = {}, options = {}) {
     await db().dbExecute(
       `INSERT INTO record (kind, title, body, tag, sub_tag, happened_date, happened_time,
                            status, custom, sort, created_at, updated_at, deleted_at)
-       VALUES ('log', ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, '')`,
+       VALUES ('log', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')`,
       [
         columns.title,
         columns.body,
@@ -944,7 +1298,8 @@ export async function insertTableRow(table, values = {}, options = {}) {
         columns.happened_time,
         columns.status,
         JSON.stringify(custom),
-        stamp,
+        sortValue,
+        createdAt,
         stamp,
       ]
     );
@@ -966,7 +1321,11 @@ export async function insertTableRow(table, values = {}, options = {}) {
 // ==========================================
 
 // 连着插 N 条空行（sheetPage 的「上方/下方插入 N 行」）。
-// 自建表要挪 sort 腾位置；预置表按时间排序，sort 没有意义，就是插 N 条。
+//
+// v18 起两种表走同一套语义：**先给后面的行整体腾出 N 个位置，再逐条落位**。
+// 以前预置表这一支直接丢弃 sortIndex、只插 N 条 —— 而那张表当时按日期排序，
+// 插出来的行日期为空、空串在倒序里排最后，于是无论点哪一行，新行都出现在
+// 整张表最底下。这条注释就是那个 bug 的墓碑。
 export async function insertTableRowsAt(table, sortIndex, count = 1, values = {}) {
   if (!table) return;
   if (table.kind !== TABLE_KIND_PRESET) {
@@ -974,7 +1333,14 @@ export async function insertTableRowsAt(table, sortIndex, count = 1, values = {}
     return;
   }
   const safeCount = Math.max(1, Math.min(50, Number(count) || 1));
-  for (let i = 0; i < safeCount; i += 1) await insertTableRow(table, values);
+  const at = Math.max(0, Number(sortIndex) || 0);
+  await db().dbExecute(
+    `UPDATE record SET sort = sort + ? WHERE ${PRESET_ROW_WHERE} AND sort >= ?`,
+    [safeCount, at]
+  );
+  for (let i = 0; i < safeCount; i += 1) {
+    await insertTableRow(table, values, { sort: at + i });
+  }
 }
 
 // 复制一行：两种表都是「拿一份 values 再插一条」，差别已经在 insertTableRow 里了。

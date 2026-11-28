@@ -58,12 +58,177 @@ fn add_column_if_missing(conn: &Connection, table: &str, column: &str, definitio
     Ok(())
 }
 
+// ==========================================
+// v17：created_at 升级成 26 字符微秒时间戳
+// ==========================================
+
+/// 19 字符的秒级段是不是规范形状 `YYYY-MM-DD HH:MM:SS`。
+///
+/// 只认定宽 —— 位置固定才能免解析地判断，也才能保证「字符串排序 = 时间排序」。
+fn is_stamp_head(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    if bytes.len() != 19 {
+        return false;
+    }
+    for (index, byte) in bytes.iter().enumerate() {
+        let ok = match index {
+            4 | 7 => *byte == b'-',
+            10 => *byte == b' ',
+            13 | 16 => *byte == b':',
+            _ => byte.is_ascii_digit(),
+        };
+        if !ok {
+            return false;
+        }
+    }
+    true
+}
+
+/// 把 `record.created_at` 全部改写成 26 字符 `YYYY-MM-DD HH:MM:SS.ffffff`。
+///
+/// 为什么必须回填：这一列上要建 UNIQUE INDEX，而历史数据是秒级的 ——
+/// 当年 `insertRowAt` 批量插 N 行时给它们共用同一个 `stamp` 变量，同秒重复是常态。
+/// 不回填，索引根本建不起来；勉强建成，也是「唯一性靠运气」。
+///
+/// 改写规则：**保住原本的秒**，同一秒内按 id 顺序补 6 位序号。
+/// 这样既唯一，又留住了原来「谁先谁后」的顺序 —— 不是把历史时间一律抹成现在。
+///
+/// 空值 / 认不出的脏值统一落在 1970-01-01 00:00:00 之后按序编号：
+/// 它们本来就是坏数据，但唯一索引不允许例外，得给它们一个确定的落脚点。
+fn backfill_micro_stamps(conn: &mut Connection) -> Result<usize, String> {
+    let mut stmt = conn
+        .prepare("SELECT id, COALESCE(created_at, '') FROM record ORDER BY created_at, id")
+        .map_err(|e| format!("读取旧时间戳失败: {}", e))?;
+    let rows: Vec<(i64, String)> = stmt
+        .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))
+        .map_err(|e| format!("读取旧时间戳失败: {}", e))?
+        .filter_map(|item| item.ok())
+        .collect();
+    drop(stmt);
+
+    const FALLBACK_HEAD: &str = "1970-01-01 00:00:00";
+
+    let tx = conn
+        .transaction()
+        .map_err(|e| format!("开启时间戳回填事务失败: {}", e))?;
+    let mut changed = 0usize;
+    let mut prev_head = String::new();
+    let mut seq: u32 = 0;
+
+    for (id, raw) in rows {
+        // 已经是规范 26 字符的（回滚旧版本后再升级会遇到）：原样保留，
+        // 但要把序号水位接上，免得后面新补的值跟它撞。
+        if raw.len() == 26 && raw.is_char_boundary(19) && is_stamp_head(&raw[..19]) {
+            let head = &raw[..19];
+            let order = raw[20..].parse::<u32>().unwrap_or(0);
+            if head == prev_head {
+                seq = seq.max(order);
+            } else {
+                prev_head = head.to_string();
+                seq = order;
+            }
+            continue;
+        }
+
+        let head = if raw.len() >= 19 && raw.is_char_boundary(19) && is_stamp_head(&raw[..19]) {
+            raw[..19].to_string()
+        } else {
+            FALLBACK_HEAD.to_string()
+        };
+
+        if head == prev_head {
+            seq = seq.saturating_add(1);
+        } else {
+            prev_head = head.clone();
+            seq = 0;
+        }
+        // 同一秒超过 999999 条时这里会自然变成 7 位（{:06} 是下限不是上限）。
+        // 一秒百万条不可能发生；真发生了也只是不整齐，但依然唯一 —— 唯一索引认的是唯一性。
+        let target = format!("{}.{:06}", head, seq);
+        if target != raw {
+            tx.execute(
+                "UPDATE record SET created_at = ?1 WHERE id = ?2",
+                rusqlite::params![target, id],
+            )
+            .map_err(|e| format!("回填时间戳失败（id={}）: {}", id, e))?;
+            changed += 1;
+        }
+    }
+
+    tx.commit()
+        .map_err(|e| format!("提交时间戳回填失败: {}", e))?;
+    Ok(changed)
+}
+
+/// 把预置表「现在看起来的顺序」写成 sort：0,1,2…
+///
+/// 为什么需要它：v18 起预置表改成按 sort 排序（新建记录落到最后一行、
+/// 上下插入精确到行），但历史行全是 sort=0。不回填的话升级瞬间整张表会
+/// 按 id 重排，用户会以为数据被动了。
+///
+/// 排序口径必须与改动前 readTableRows 里那条 SQL **逐字一致** ——
+/// 它就是「用户升级前最后看到的顺序」。
+fn backfill_preset_sort(conn: &mut Connection) -> Result<usize, String> {
+    // ① 活着的行：按升级前看到的顺序编号
+    let mut stmt = conn
+        .prepare(
+            "SELECT id FROM record
+              WHERE kind = 'log' AND deleted_at = '' AND (sheet_id IS NULL OR sheet_id = 0)
+              ORDER BY happened_date DESC, happened_time DESC, id DESC",
+        )
+        .map_err(|e| format!("读取预置表行序失败: {}", e))?;
+    let mut ids: Vec<i64> = stmt
+        .query_map([], |row| row.get::<_, i64>(0))
+        .map_err(|e| format!("读取预置表行序失败: {}", e))?
+        .filter_map(|item| item.ok())
+        .collect();
+    drop(stmt);
+
+    // ② 软删除的行排在后面接着编号。为什么连它们也要编：
+    // 它们的 sort 若留着 0，用户点「恢复」时那一行会插到表格最前面，
+    // 而它本来在哪儿只有 sort 知道。
+    {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id FROM record
+                  WHERE kind = 'log' AND deleted_at <> '' AND (sheet_id IS NULL OR sheet_id = 0)
+                  ORDER BY id",
+            )
+            .map_err(|e| format!("读取已删除行序失败: {}", e))?;
+        let dead: Vec<i64> = stmt
+            .query_map([], |row| row.get::<_, i64>(0))
+            .map_err(|e| format!("读取已删除行序失败: {}", e))?
+            .filter_map(|item| item.ok())
+            .collect();
+        drop(stmt);
+        ids.extend(dead);
+    }
+
+    if ids.is_empty() {
+        return Ok(0);
+    }
+
+    let tx = conn
+        .transaction()
+        .map_err(|e| format!("开启行序回填事务失败: {}", e))?;
+    let mut changed = 0usize;
+    for (index, id) in ids.iter().enumerate() {
+        tx.execute(
+            "UPDATE record SET sort = ?1 WHERE id = ?2",
+            rusqlite::params![index as i64, *id],
+        )
+        .map_err(|e| format!("回填行序失败（id={}）: {}", id, e))?;
+        changed += 1;
+    }
+    tx.commit()
+        .map_err(|e| format!("提交行序回填失败: {}", e))?;
+    Ok(changed)
+}
+
 // 🛡️ 应用启动时的数据迁移逻辑
 fn init_and_migrate_db() -> Result<(), String> {
     init_and_migrate_db_at(&get_db_file_path(), &get_data_file_path())
-}
-
-// 参数化的版本：迁移逻辑不读全局路径，测试才能拿数据库副本跑一遍。
+}// 参数化的版本：迁移逻辑不读全局路径，测试才能拿数据库副本跑一遍。
 // 迁移是不可逆的（改表名、建视图），必须在副本上验证过再让它碰真实数据。
 fn init_and_migrate_db_at(db_path: &str, json_path: &str) -> Result<(), String> {
     let mut conn = Connection::open(db_path).map_err(|e| format!("无法打开数据库: {}", e))?;
@@ -763,6 +928,85 @@ fn init_and_migrate_db_at(db_path: &str, json_path: &str) -> Result<(), String> 
         }
         conn.execute_batch("PRAGMA user_version = 16;")
             .map_err(|e| format!("数据库升级到 v16 失败: {}", e))?;
+    }
+
+    // v17：created_at 升级成 26 字符微秒时间戳（毫秒 + 同毫秒内序号），并建唯一索引。
+    //
+    // 起因：Sir 要把「每行创建时间」当成可排序的唯一标识来用，粘贴多行时
+    // 第一条取当前时间、其后每条 +1 微秒 —— 于是这一列从「展示字段」变成了
+    // 「标识字段」，必须绝对唯一。
+    //
+    // 顺序不能反：先回填（消掉历史同秒重复），再建唯一索引。
+    if schema_version < 17 {
+        let changed = backfill_micro_stamps(&mut conn)?;
+        if changed > 0 {
+            println!("✅ 已把 {} 条记录的创建时间升级到微秒精度", changed);
+        }
+        conn.execute_batch("PRAGMA user_version = 17;")
+            .map_err(|e| format!("数据库升级到 v17 失败: {}", e))?;
+    }
+
+    // v18：预置表（工作记录）的行序改成「手动顺序」。
+    //
+    // 起因：Sir 点「新建记录」期望新行出现在最后一行、「下方插入一行」期望贴着
+    // 点的那一行，但预置表一直按 happened_date/time 倒序排、sort 完全不参与：
+    // 新建（日期=今天）永远跳到最上面，插入的新行（日期为空）永远掉到最底下。
+    //
+    // 做法：把「现在看到的顺序」原地冻结成 sort，此后与自建表同一套语义。
+    // 一次性成本（几十条 UPDATE），运行时零开销 —— 排序仍走同一条 ORDER BY sort,id。
+    if schema_version < 18 {
+        let changed = backfill_preset_sort(&mut conn)?;
+        if changed > 0 {
+            println!("✅ 已把预置表 {} 行的行序冻结为手动顺序", changed);
+        }
+        // 顺手修一个已发布的 bug：往空表里导入时，「空表重建」把所有没被复用的
+        // 列都隐藏了 —— 创建时间列也在里面。于是列建好了、值写对了（50 行
+        // 微秒递增），用户在界面上一个像素也看不到，反馈是「导入没什么不同」。
+        // 这里把被误藏的创建时间列恢复可见；用户想藏可以再手动藏。
+        let _ = conn.execute(
+            "UPDATE sheet_field SET visible = 1 WHERE key = 'created_at' AND visible = 0",
+            [],
+        );
+        let _ = conn.execute(
+            "UPDATE field_def SET visible = 1 WHERE key = 'created_at' AND visible = 0",
+            [],
+        );
+        conn.execute_batch("PRAGMA user_version = 18;")
+            .map_err(|e| format!("数据库升级到 v18 失败: {}", e))?;
+    }
+
+    // v17 的索引形态 —— 无条件校正，不放在版本判断里。
+    //
+    // 为什么必须是「部分索引」：record.created_at 的建表默认值是空串，
+    // 任何「压根没给 created_at 的插入」都会拿到 ''。全表唯一索引会让
+    // 第二条这样的插入直接报 UNIQUE constraint failed —— 一个和业务无关的
+    // 默认值把整个写入路径炸掉。空串本来也不该参与唯一性判断。
+    //
+    // 为什么放在版本判断外面：最早一版代码建的就是全表唯一索引，
+    // 已经升到 17 的库不会重跑迁移，只能靠这里把形态掰回来。
+    // 索引定义里有没有 WHERE 一查就知道，代价是一次 sqlite_master 查询。
+    {
+        let existing: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_record_created_uid'",
+                [],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .unwrap_or(None);
+        let needs_rebuild = match existing.as_deref() {
+            None => true,
+            Some(sql) => !sql.to_uppercase().contains("WHERE"),
+        };
+        if needs_rebuild {
+            let _ = conn.execute_batch("DROP INDEX IF EXISTS idx_record_created_uid");
+            if let Err(err) = conn.execute_batch(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_record_created_uid
+                   ON record(created_at) WHERE created_at <> ''",
+            ) {
+                // 建不起来不能让应用打不开：唯一性暂时没被强制，但数据一条没动
+                eprintln!("⚠️ created_at 唯一索引建不起来（数据可能仍有重复）: {}", err);
+            }
+        }
     }
 
     let json_exists = Path::new(json_path).exists();
@@ -1472,7 +1716,13 @@ mod tests {
         let conn = Connection::open(&db).unwrap();
 
         // ① 行数守恒
-        let n: i64 = conn.query_row("SELECT COUNT(*) FROM record", [], |r| r.get(0)).unwrap();
+        //
+        // 只数未删除的：v13 起删除是软删除（kind 加 #deleted 后缀 + 写 deleted_at），
+        // 而 logs / todos / sheet_row 三个视图都带 `deleted_at = ''` 过滤。
+        // 拿全表 COUNT(*) 去比三视图之和，库里只要有一条删过的记录就对不上。
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM record WHERE deleted_at = ''", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(n, before.0 + before.1 + before.2, "record 行数应等于三表之和");
 
         // ② 视图列名必须与旧表完全一致：前端 90 余处 SQL 全靠列名取值
@@ -2252,6 +2502,292 @@ mod tests {
             Some(&Value::Bool(false)),
             "v16 覆盖了用户显式关掉的换行设置"
         );
+
+        drop(conn);
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    // v17：created_at 从秒级（19 字符）升级到微秒级（26 字符）+ 唯一索引。
+    //
+    // 抓四件事：
+    //   ① 历史同秒重复被拆开（当年 insertRowAt 批量插 N 行共用同一个 stamp，重复是必然的）
+    //   ② 原本的秒不许被改掉（不能把历史时间一律抹成「现在」）
+    //   ③ 同秒内保持 id 顺序（谁先创建谁在前）
+    //   ④ 唯一索引真的建起来了 —— 再插一条重复必须失败
+    #[test]
+    fn v17_upgrades_created_at_to_unique_micro_stamps() {
+        let tmp = std::env::temp_dir().join("wr-v17-micro-stamp");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).expect("创建临时目录失败");
+        let db = tmp.join("t.db");
+        let json = tmp.join("t.json");
+        init_and_migrate_db_at(&db.to_string_lossy(), &json.to_string_lossy())
+            .expect("全新库迁移失败");
+
+        // 造历史数据：同一个秒里三条（复刻当年 insertRowAt 的写法），外加一条空值。
+        // 先把索引摘掉 —— v17 已经跑过一次，不摘根本插不进重复值。
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch("DROP INDEX IF EXISTS idx_record_created_uid;")
+            .unwrap();
+        for (title, stamp) in [
+            ("v17-first", "2026-11-18 16:30:22"),
+            ("v17-second", "2026-11-18 16:30:22"),
+            ("v17-third", "2026-11-18 16:30:22"),
+            ("v17-later", "2026-11-18 16:31:00"),
+            ("v17-empty", ""),
+        ] {
+            conn.execute(
+                "INSERT INTO record (kind, title, created_at, updated_at) VALUES ('log', ?1, ?2, '')",
+                rusqlite::params![title, stamp],
+            )
+            .unwrap();
+        }
+        conn.execute_batch("PRAGMA user_version = 16;").unwrap();
+        drop(conn);
+
+        init_and_migrate_db_at(&db.to_string_lossy(), &json.to_string_lossy())
+            .expect("v17 迁移失败");
+
+        let conn = Connection::open(&db).unwrap();
+        let mut stmt = conn
+            .prepare("SELECT title, created_at FROM record ORDER BY id")
+            .unwrap();
+        let rows: Vec<(String, String)> = stmt
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+            .unwrap()
+            .filter_map(|item| item.ok())
+            .collect();
+        drop(stmt);
+
+        // ① 形状：全部 26 字符、秒级段规范、第 20 位是小数点
+        for (title, stamp) in &rows {
+            assert_eq!(stamp.len(), 26, "{} 的时间戳不是 26 字符：{}", title, stamp);
+            assert!(
+                stamp.is_char_boundary(19) && is_stamp_head(&stamp[..19]),
+                "{} 的秒级段形状不对：{}",
+                title,
+                stamp
+            );
+            assert_eq!(&stamp[19..20], ".", "{} 缺小数点：{}", title, stamp);
+        }
+
+        let by_title = |want: &str| -> String {
+            rows.iter()
+                .find(|(title, _)| title == want)
+                .map(|(_, stamp)| stamp.clone())
+                .unwrap_or_default()
+        };
+
+        // ② 原本的秒保住了
+        assert_eq!(by_title("v17-first"), "2026-11-18 16:30:22.000000");
+        assert!(
+            by_title("v17-later").starts_with("2026-11-18 16:31:00."),
+            "v17-later 的秒被改了：{}",
+            by_title("v17-later")
+        );
+        // ③ 同秒内按 id 递增
+        assert_eq!(by_title("v17-second"), "2026-11-18 16:30:22.000001");
+        assert_eq!(by_title("v17-third"), "2026-11-18 16:30:22.000002");
+        // 空值有确定的落脚点
+        assert!(
+            by_title("v17-empty").starts_with("1970-01-01 00:00:00."),
+            "空值没落到兜底位置：{}",
+            by_title("v17-empty")
+        );
+
+        // 唯一性：总数 = 去重数
+        let total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM record", [], |r| r.get(0))
+            .unwrap();
+        let distinct: i64 = conn
+            .query_row("SELECT COUNT(DISTINCT created_at) FROM record", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(total, distinct, "回填之后仍有重复的 created_at");
+
+        // ④ 唯一索引存在，而且真的在拦非空重复
+        let indexes: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_record_created_uid'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(indexes, 1, "唯一索引没建起来");
+        let dup = conn.execute(
+            "INSERT INTO record (kind, title, created_at, updated_at) VALUES ('log', 'v17-dup', ?1, '')",
+            rusqlite::params![by_title("v17-first")],
+        );
+        assert!(dup.is_err(), "唯一索引没拦住重复的 created_at");
+
+        // ④b 但空串必须放行：created_at 的建表默认值就是 ''，
+        // 「没给创建时间的插入」不能因为唯一索引而失败（那是默认值，不是业务数据）
+        let index_sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_record_created_uid'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            index_sql.to_uppercase().contains("WHERE"),
+            "唯一索引必须是部分索引（排除空串），实际：{}",
+            index_sql
+        );
+        for round in 0..2 {
+            let blank = conn.execute(
+                "INSERT INTO record (kind, title, created_at, updated_at) VALUES ('log', ?1, '', '')",
+                rusqlite::params![format!("v17-blank-{round}")],
+            );
+            assert!(
+                blank.is_ok(),
+                "空 created_at 被唯一索引挡住了（第 {} 条）：{:?}",
+                round + 1,
+                blank.err()
+            );
+        }
+
+        // ⑤ 幂等：再跑一次，一个值都不许变
+        drop(conn);
+        init_and_migrate_db_at(&db.to_string_lossy(), &json.to_string_lossy())
+            .expect("二次迁移失败");
+        let conn = Connection::open(&db).unwrap();
+        let again: String = conn
+            .query_row(
+                "SELECT created_at FROM record WHERE title = 'v17-first'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(again, "2026-11-18 16:30:22.000000", "二次迁移把已有值改了");
+
+        drop(conn);
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    // v18：预置表的行序从「按日期倒序」冻结成「按 sort」。
+    //
+    // 这一条迁移最怕的不是报错，是**静默重排**：sort 全被写成 0，于是整张表
+    // 按 id 排，用户升级完发现「顺序全变了」。所以这里同时验两件事：
+    //   ① 冻结出来的顺序 = 升级前那条 ORDER BY 的结果（一个不差）；
+    //   ② sort 是 0..N-1 连续无洞 —— 新建行 MAX+1 才能稳定落到最后一行。
+    #[test]
+    fn v18_freezes_preset_row_order_and_unhides_created_at() {
+        let tmp = std::env::temp_dir().join("wr-v18-preset-order");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).expect("创建临时目录失败");
+        let db = tmp.join("t.db");
+        let json = tmp.join("t.json");
+        init_and_migrate_db_at(&db.to_string_lossy(), &json.to_string_lossy()).expect("全新库迁移失败");
+
+        // 造历史数据：插入顺序与日期顺序故意错开，而且有两条同一秒（要靠 id 分先后）
+        let conn = Connection::open(&db).unwrap();
+        for (title, date, time, stamp) in [
+            ("mid", "2026-11-18", "16:30", "2026-11-18 16:30:00.000000"),
+            ("oldest", "2026-11-17", "", "2026-11-17 09:00:00.000000"),
+            ("newest", "2026-11-25", "15:01", "2026-11-25 15:01:00.000000"),
+            ("tie-a", "2026-11-18", "16:30", "2026-11-18 16:30:01.000000"),
+            ("tie-b", "2026-11-18", "16:30", "2026-11-18 16:30:02.000000"),
+        ] {
+            conn.execute(
+                "INSERT INTO record (kind, title, happened_date, happened_time, sort, created_at, updated_at)
+                 VALUES ('log', ?1, ?2, ?3, 0, ?4, '')",
+                rusqlite::params![title, date, time, stamp],
+            )
+            .unwrap();
+        }
+        // 自建表的行不受影响：它们本来就按 sort 排
+        conn.execute(
+            "INSERT INTO record (kind, sheet_id, sort, created_at, updated_at)
+             VALUES ('sheet_row', 99, 0, '2026-11-25 15:02:00.000000', '')",
+            [],
+        )
+        .unwrap();
+        // 被「空表重建」误藏的创建时间列
+        conn.execute(
+            "INSERT INTO sheet (id, name, kind) VALUES (99, '导入表', 'table')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sheet_field (sheet_id, key, label, type, visible) VALUES (99, 'created_at', '创建时间', 'date', 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute_batch("PRAGMA user_version = 17;").unwrap();
+        drop(conn);
+
+        init_and_migrate_db_at(&db.to_string_lossy(), &json.to_string_lossy()).expect("v18 迁移失败");
+
+        let conn = Connection::open(&db).unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT title, sort FROM record
+                  WHERE kind = 'log' AND (sheet_id IS NULL OR sheet_id = 0)
+                  ORDER BY sort, id",
+            )
+            .unwrap();
+        let order: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .filter_map(|item| item.ok())
+            .collect();
+        drop(stmt);
+
+        // ① 与升级前那条 ORDER BY 逐字对应的结果
+        assert_eq!(
+            order,
+            vec!["newest", "tie-b", "tie-a", "mid", "oldest"],
+            "冻结出来的行序与升级前看到的不一致：{:?}",
+            order
+        );
+
+        // ② 连续无洞
+        let mut stmt = conn
+            .prepare(
+                "SELECT sort FROM record WHERE kind = 'log' AND (sheet_id IS NULL OR sheet_id = 0) ORDER BY sort",
+            )
+            .unwrap();
+        let sorts: Vec<i64> = stmt
+            .query_map([], |row| row.get::<_, f64>(0).map(|v| v as i64))
+            .unwrap()
+            .filter_map(|item| item.ok())
+            .collect();
+        drop(stmt);
+        assert_eq!(sorts, vec![0, 1, 2, 3, 4], "sort 不是 0..N-1 连续：{:?}", sorts);
+
+        // ③ 自建表的行一条都没被碰
+        let custom_sort: f64 = conn
+            .query_row("SELECT sort FROM record WHERE sheet_id = 99", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(custom_sort, 0.0, "v18 不该碰自建表的 sort");
+
+        // ④ 被误藏的创建时间列恢复可见
+        let visible: i64 = conn
+            .query_row(
+                "SELECT visible FROM sheet_field WHERE sheet_id = 99 AND key = 'created_at'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(visible, 1, "被误藏的创建时间列没恢复");
+
+        // ⑤ 幂等：再跑一次，sort 一个都不许变
+        conn.execute_batch("PRAGMA user_version = 17;").unwrap();
+        drop(conn);
+        init_and_migrate_db_at(&db.to_string_lossy(), &json.to_string_lossy()).expect("二次迁移失败");
+        let conn = Connection::open(&db).unwrap();
+        let again: Vec<String> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT title FROM record WHERE kind = 'log' AND (sheet_id IS NULL OR sheet_id = 0) ORDER BY sort, id",
+                )
+                .unwrap();
+            stmt.query_map([], |row| row.get::<_, String>(0))
+                .unwrap()
+                .filter_map(|item| item.ok())
+                .collect()
+        };
+        assert_eq!(again, order, "二次迁移把行序改了");
 
         drop(conn);
         let _ = fs::remove_dir_all(&tmp);

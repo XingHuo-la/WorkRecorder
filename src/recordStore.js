@@ -12,6 +12,9 @@
 // 依赖注入 adapter（与 sheetStore 一致），好处是调试壳能换假数据。
 
 import { wouldCreateCycle, toId } from './recordTree.js';
+// created_at 现在要绝对唯一（库里有 UNIQUE INDEX 压着），必须走微秒时间戳。
+// updated_at 仍然是秒级 —— 那一列不需要唯一，26 字符只会让所有显示地方变难看。
+import { currentStamp } from './stampValue.js';
 // 只为一个纯函数（字段 key → custom 里的键）。抄一份的代价是两处规则漂移：
 // 老网格生成的字段 key 带 `custom.` 前缀，剥前缀的规则必须与 sheetStore 完全一致，
 // 否则「删行清引用」会漏掉那批字段，界面留下灰块。
@@ -267,9 +270,20 @@ export async function createRecord(fields = {}) {
     sub_tag: fields.subTag ?? '',
     record_type: fields.recordType ?? (kind === 'log' ? 'log' : ''),
     custom: JSON.stringify(fields.custom || {}),
-    created_at: stamp,
+    created_at: currentStamp(),
     updated_at: stamp,
   };
+
+  // 预置表（工作记录）的行序从 v18 起由 `sort` 决定 —— 与表格里新建行同一条规矩。
+  // 不给 sort 的记录会落在默认值 0 上，表现为「新记的事跑到表格最上面第二条」。
+  // 只在「会出现在预置表里」的那一类记录上算：kind='log' 且没被移入某张表。
+  if (kind === 'log' && fields.sheetId == null) {
+    const rows = await db().dbQuery(
+      `SELECT COALESCE(MAX(sort), -1) AS max_sort FROM record
+        WHERE kind = 'log' AND (sheet_id IS NULL OR sheet_id = 0)`
+    );
+    defaults.sort = Number(rows?.[0]?.max_sort ?? -1) + 1;
+  }
 
   // 这两列可空，且必须落成 SQL NULL，不能走参数
   const nullable = {

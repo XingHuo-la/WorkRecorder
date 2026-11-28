@@ -271,3 +271,52 @@ export function buildAncestorChain(byId, id, opts = {}) {
 
   return chain;
 }
+
+/**
+ * 「移入其他行下」的候选集：排掉自己 + 自己的全部后代，其余整棵树铺开。
+ *
+ * 为什么必须排掉后代：把 A 挂到 A 的孙子下面会让 A→孙子→A 成环，那几个节点
+ * 从任何根都走不到。buildForest 有兜底（摘掉当根重铺，一行不丢），但那是给
+ * 历史脏数据用的 —— 不该让用户在一个正常操作里自己造出环来。
+ *
+ * 为什么不受折叠影响：折叠着的行就选不到，这个功能等于废了。候选一律全铺开，
+ * 由调用方负责视觉（缩进封顶到 6 级，再深就只差 16px，看不出层级）。
+ *
+ * @param {Array} rows 当前表整批记录（含 parent_id）
+ * @param {number|string} selfId 被移动的那一行
+ * @param {{indentMax?:number, indentStep?:number}} [opts]
+ * @returns {{banned: Set<number>, entries: Array, selfId: number|null}}
+ *          banned 含自己（所以「排掉几行」= banned.size - 1）
+ */
+export function moveCandidates(rows, selfId, opts = {}) {
+  const list = (Array.isArray(rows) ? rows : []).filter(Boolean);
+  const self = toId(selfId);
+  const banned = new Set();
+  if (self !== null) {
+    banned.add(self);
+    // 迭代到不动点，不用递归：一行可能比它的父晚被扫到（sort 顺序与父子顺序无关），
+    // 扫一轮不够；而递归要带深度上限，反而要猜用户能建多深。
+    // 环不会让它死循环 —— banned 只增不减，且有界于行数。
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const item of list) {
+        const id = toId(item.id);
+        if (id === null || banned.has(id)) continue;
+        const parentId = toId(item.parent_id);
+        if (parentId !== null && banned.has(parentId)) {
+          banned.add(id);
+          grew = true;
+        }
+      }
+    }
+  }
+
+  const entries = flattenVisibleTree(list, new Set(), {
+    indentMax: opts.indentMax == null ? 6 : opts.indentMax,
+    indentStep: opts.indentStep,
+    pathPrefix: false,
+  }).filter(entry => !banned.has(toId(entry.row.id)));
+
+  return { banned, entries, selfId: self };
+}

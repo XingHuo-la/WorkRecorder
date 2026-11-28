@@ -13518,7 +13518,11 @@ input.sh-width-input { height: 24px !important; }
   background: var(--color-primary) !important;
 }
 
-.sh-detail-cell .ft-att-add { display: none !important; }
+/* 抽屉里的附件格也要有「＋」—— 这里原本是 display:none，
+   理由是「抽屉里没有添加附件的入口」。现在入口有了（rowDrawer.js 的 data-add-att
+   → onAttachmentAdd 已经在 normalizeHandlers 白名单里），加号必须跟着回来，
+   否则「已经有附件 → 想再加一张」在抽屉里没有落点。
+   定位相关的补充在 styles-v5.css（.sh-detail-cell 缺 position:relative）。 */
 
 /* ==========================================================================
    设计层 6 · UI 改造 v1.1.5（2026-11-12）

@@ -6,7 +6,7 @@
 
 import { escapeHtml } from './htmlUtils.js';
 // 行层级：建森林 / 折叠展开 / 缩进降级都是纯函数，表格这一层只负责把结果画出来
-import { flattenVisibleTree } from './recordTree.js';
+import { flattenVisibleTree, moveCandidates } from './recordTree.js';
 import { serializeTSV, parseTSV, createGrid, resolveKeyIntent } from './gridCore.js';
 // 内部剪贴板的「值 → 哪一列」决策：纯函数放在 pasteMap，能单测（跨表最容易出错的就是这里）
 import { adaptClipValue, resolveBlockTargets, resolveRowTargets } from './pasteMap.js';
@@ -680,7 +680,7 @@ function renderSheet({ resetScroll = false } = {}) {
 
     <div class="sh-table-wrap">
       <div class="sh-table-scroll" data-scroll>
-        <table class="sh-table" style="min-width:${tableWidth(state.fields)}px">
+        <table class="sh-table${hasTreeView() ? ' has-tree' : ''}" style="min-width:${tableWidth(state.fields)}px">
           ${buildColgroup(state.fields)}
           <thead>${buildHead(state.fields)}</thead>
           <tbody data-tbody></tbody>
@@ -729,7 +729,14 @@ function restoreScroll(prev) {
 function renderBodyRows(reset) {
   const tbody = host?.querySelector('[data-tbody]');
   if (!tbody) return;
-  const list = filterRows(state.rows);
+  // 必须用 rowsInView()（建过森林、去过折叠的可见序列），不能用 filterRows()：
+  // filterRows 是平铺全量，折叠起来的分支照样在列表里 —— 结果就是
+  // 「点了折叠，子项还在」，而且子项的层级 meta 在森林里已经不存在，
+  // 于是它被画成根行（无缩进），DOM 行号与 rowAt() 的索引从此整体错位。
+  const list = rowsInView();
+  // 同一份快照：行和 meta 必须来自同一次计算，否则中途 viewCache 被重建
+  // （换视图、改筛选、折叠状态的异步落地）就会再错位一次。
+  const metaMap = viewCache.meta;
 
   if (reset) {
     tbody.innerHTML = '';
@@ -759,7 +766,7 @@ function renderBodyRows(reset) {
         notes: notesForRecord(row.id),
         // 关联列：整表一次性查好的 id → 标题（见 reloadRelationTitles）
         relationTitles: state.relationTitles,
-        tree: treeMetaOf(row),
+        tree: treeMetaIn(metaMap, row),
       })
     )
     .join('');
@@ -1532,6 +1539,180 @@ async function promoteRow(row) {
 }
 
 /**
+ * 「移入其他行下…」：把**已有的**一行挂到任意一行下面。
+ *
+ * 为什么需要它：「加子项」只能新建一行，已有行想换位置只能删了重建 ——
+ * 那等于丢掉它的创建时间和所有格内容。全应用只有这里能改已有行的 parent_id。
+ *
+ * 四条硬约束：
+ *  ① 候选里排掉自己和自己所有后代。挂到后代下面就是成环，那几个节点从任何根
+ *     都走不到；buildForest 有兜底（摘掉当根），但那是给脏数据用的，不该让
+ *     用户自己走到那一步。→ 落在 recordTree.moveCandidates（有单测）
+ *  ② 候选树**不受折叠影响**：折叠着就选不到里面的行，这个功能等于废了。
+ *     → 同上
+ *  ③ 移完要展开新父行的整条祖先链。否则行确实移过去了，却藏在一个收起来的
+ *     父行里 —— 用户看到的是「点了移入，这行没了」。
+ *  ④ 不做「拖拽成子项」：拖拽的命中区会和行高拖动（行号栏下缘 5px）、框选打架，
+ *     而这条路只要一次点击，不抢任何手势。
+ */
+async function openMovePicker(row) {
+  if (!row || !state.sheet) return;
+  if (typeof window.showModal !== 'function') { toast('当前环境不支持移入', 'danger'); return; }
+
+  const selfId = Number(row.id);
+  // 自己 + 全部后代一次算干净，候选整棵树铺开（不受折叠影响）——这两个约束
+  // 都在 moveCandidates 里，纯函数、有单测，页面层只管画。
+  const { banned, entries } = moveCandidates(state.rows, selfId);
+  const currentParent = Number(row.parent_id) > 0 ? Number(row.parent_id) : null;
+
+  // 日期只是帮人分辨同名的行，取「第一列可见的日期字段」而不是写死某个 key：
+  // 预置表的键是 happened_date（拆了日期+时间两列），自建表叫什么都可能。
+  const dateKey = state.fields.find(field => field.type === 'date' && Number(field.visible) !== 0)?.key;
+
+  const items = entries.map(entry => {
+    const id = Number(entry.row.id);
+    const title = rowTitle(entry.row.values, state.fields) || '（空行）';
+    const date = dateKey ? String(entry.row.values?.[dateKey] ?? '').trim() : '';
+    const level = Math.max(0, Math.min(6, Number(entry.depth) - 1));
+    const isCurrent = id === currentParent;
+    return `<button type="button" class="sh-move-item${isCurrent ? ' is-current' : ''}"
+        data-move-to="${id}" data-text="${escapeHtml(`${title} ${date}`.toLowerCase())}"
+        style="--lv:${level}">
+      <span class="sh-move-name">${escapeHtml(title)}</span>
+      ${date ? `<span class="sh-move-meta">${escapeHtml(date)}</span>` : ''}
+      ${isCurrent ? '<span class="sh-move-flag">当前</span>' : ''}
+    </button>`;
+  }).join('');
+
+  // 提示要跟着实际内容说：候选里**根本没有**它自己和它的后代（不是灰度掉），
+  // 所以不能写「灰色的是…」—— 列表里一条灰的都没有，用户会去找一圈。
+  const descendants = Math.max(0, banned.size - 1);
+  const tip = descendants
+    ? `列表里没有它自己和它下面的 ${descendants} 行 —— 挂到自己子树下就成了死循环。移过去时，那 ${descendants} 行会跟着一起走。`
+    : '列表里没有它自己 —— 挂到自己下面就成了死循环。移到别处时，它的子项会跟着一起走。';
+
+  const shell = `<div class="sh-move">
+    <div class="sh-move-search">
+      <input type="search" data-move-search placeholder="搜内容或日期" spellcheck="false" />
+    </div>
+    <div class="sh-move-list" data-move-list>
+      <button type="button" class="sh-move-item is-root" data-move-to="" data-text="">
+        <span class="sh-move-name">顶层（移出当前层级）</span>
+      </button>
+      ${items}
+    </div>
+    <p class="sh-move-tip">${tip}</p>
+  </div>`;
+
+  let picked;
+  window.showModal('移入到哪一行下面', shell, bodyEl => {
+    const list = bodyEl.querySelector('[data-move-list]');
+    const input = bodyEl.querySelector('[data-move-search]');
+    const empty = document.createElement('div');
+    empty.className = 'sh-move-empty is-hide';
+    empty.textContent = '没有匹配的行';
+    list.appendChild(empty);
+
+    input?.addEventListener('input', () => {
+      const keyword = input.value.trim().toLowerCase();
+      let shown = 0;
+      list.querySelectorAll('[data-move-to]').forEach(item => {
+        // 「顶层」永远留着：搜不到任何行时，用户至少还能把这一行提出来
+        const isRoot = item.dataset.moveTo === '';
+        const hit = isRoot || !keyword || (item.dataset.text || '').includes(keyword);
+        // 用 class 不用 hidden：这些条目是 display:flex !important 的按钮，
+        // UA 的 [hidden]{display:none} 会被压过去，滤完一行都藏不住。
+        item.classList.toggle('is-hide', !hit);
+        if (hit && !isRoot) shown += 1;
+      });
+      empty.classList.toggle('is-hide', shown > 0);
+    });
+
+    list?.addEventListener('click', event => {
+      const item = event.target.closest('[data-move-to]');
+      if (!item) return;
+      list.querySelectorAll('.is-picked').forEach(el => el.classList.remove('is-picked'));
+      item.classList.add('is-picked');
+      picked = item.dataset.moveTo === '' ? null : Number(item.dataset.moveTo);
+    });
+    input?.focus();
+  }, async () => {
+    if (picked === undefined) { toast('先点一行，再点「移入」', 'info'); return false; }
+    return moveRowTo(row, picked);
+  }, { btnText: '移入' });
+}
+
+/**
+ * 真的改父行，并负责三件收尾：展开祖先链、重画、登记一步撤销。
+ * @returns {Promise<boolean>} true = 改动生效（弹层可以关）
+ */
+async function moveRowTo(row, targetId) {
+  if (!row || !state.sheet) return false;
+  const before = Number(row.parent_id) > 0 ? Number(row.parent_id) : null;
+  const next = targetId == null ? null : Number(targetId);
+  if (next === before) {
+    toast(next == null ? '它已经在顶层了' : '它已经在这一行下面了', 'info');
+    return true;
+  }
+  try {
+    await setRowParent(row.id, next);
+  } catch (error) {
+    toast(`移入失败：${error?.message || error}`, 'danger');
+    return false;
+  }
+
+  // 约束③：把新父行的整条祖先链展开。链在**改动前**的 rows 上算 ——
+  // 这一行的父改了，但目标行的祖先没变，用哪一份都行，用旧的更省一次查询。
+  if (next != null) {
+    const chain = [];
+    let cursor = next;
+    let guard = 0;
+    while (cursor != null && guard < 64) {
+      chain.push(cursor);
+      const item = state.rows.find(entry => Number(entry.id) === cursor);
+      const pid = Number(item?.parent_id);
+      cursor = Number.isInteger(pid) && pid > 0 ? pid : null;
+      guard += 1;
+    }
+    const current = new Set(effectiveCollapsed(filterRows(state.rows)));
+    let changed = false;
+    chain.forEach(id => { if (current.delete(id)) changed = true; });
+    if (changed) {
+      state.collapsed = current;
+      collapsedVersion += 1;
+      await setSheetCollapsed(state.sheet.id, [...current]).catch(() => {});
+    }
+  }
+
+  try {
+    await reloadRows();
+    await touchSheet(state.sheet.id);
+  } catch (error) {
+    console.warn('[sheetPage] 移入后刷新失败', error);
+  }
+  renderSheet();
+
+  const target = next == null ? null : state.rows.find(entry => Number(entry.id) === next);
+  const targetLabel = next == null ? '' : (rowTitle(target?.values, state.fields) || '那一行');
+  toast(next == null ? '已移到顶层' : `已移入「${targetLabel}」下`);
+
+  undoStack.push({
+    label: next == null ? '移出层级' : '移入其他行下',
+    undo: async () => {
+      await setRowParent(row.id, before);
+      await reloadRows();
+      renderSheet();
+    },
+    redo: async () => {
+      await setRowParent(row.id, next);
+      await reloadRows();
+      renderSheet();
+    },
+  });
+  return true;
+}
+
+/**
  * 把一张表挂到这一行（T07）。
  *
  * 语义是「挂载」不是「从属」：表本来就是独立表，只是被这一行指过来了。
@@ -1595,6 +1776,7 @@ function openRowMenuFor(anchorEl, row) {
     height: value => applyRowHeight(row, value),
     'autofit-row': () => autoFitRow(row),
     'add-child': () => addChildRow(row),
+    'move-to': () => openMovePicker(row),
     promote: () => promoteRow(row),
     delete: () => removeRow(row),
   });
@@ -2636,7 +2818,8 @@ async function autoFitRow(row) {
 }
 
 function openDetail(row) {
-  const list = filterRows(state.rows);
+  // 用可见序列而不是平铺全量：抽屉上的「第 N / M 条」要和屏幕上看到的顺序一致
+  const list = rowsInView();
   const index = list.findIndex(item => String(item.id) === String(row.id)) + 1;
   openRowDrawer({
     row,
@@ -3108,14 +3291,43 @@ function effectiveCollapsed(filtered) {
   return parents;
 }
 
-/** 某一行的层级信息（缩进 / 是否有子项 / 是否折叠 / 路径前缀）。平表返回 null。 */
-function treeMetaOf(row) {
-  if (!row) return null;
-  rowsInView();
-  const meta = viewCache.meta.get(String(row.id)) || null;
+/**
+ * 从一份既成的 meta 表里取某行的层级信息。
+ *
+ * 单独拎出来是因为「行列表」和「meta」必须是同一次计算的两半：
+ * 渲染循环里先取 rows、再逐行问 treeMetaOf，中途 viewCache 一旦被重建，
+ * 就会拿新 meta 配旧行 —— 表现为「折叠没反应」「子行不缩进」「编辑错行」。
+ *
+ * @param {Map<string, object>} metaMap  viewCache.meta 的快照
+ * @param {object} row
+ */
+function treeMetaIn(metaMap, row) {
+  if (!row || !(metaMap instanceof Map)) return null;
+  const meta = metaMap.get(String(row.id)) || null;
   // 深度 1 且没有子项 = 普通行，不画任何层级装饰
   if (!meta || (meta.depth <= 1 && !meta.hasChildren)) return null;
   return meta;
+}
+
+/** 某一行的层级信息（缩进 / 是否有子项 / 是否折叠 / 路径前缀）。平表返回 null。 */
+function treeMetaOf(row) {
+  if (!row) return null;
+  rowsInView(); // 确保 viewCache 就绪
+  return treeMetaIn(viewCache.meta, row);
+}
+
+/**
+ * 这张表在**当前视图**里到底有没有层级。
+ *
+ * 只给 table 打一个 class 用：有层级时第一列要留 6px 箭头位，平表一像素都不动
+ * （补出来的空白没有任何道理，也不该让所有既有表跟着走样）。
+ * 判据是 treeMetaOf 而非 parent_id：子项全被折叠起来的那一屏，屏幕上只剩父行，
+ * 而父行恰恰是唯一还带箭头的一行 —— 只看 parent_id 会把它判成平表。
+ */
+function hasTreeView() {
+  const rows = rowsInView();
+  const metaMap = viewCache.meta;
+  return rows.some(row => treeMetaIn(metaMap, row) !== null);
 }
 
 async function toggleCollapsed(rowId) {
