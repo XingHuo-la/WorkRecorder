@@ -1,8 +1,31 @@
 import { appData, loadData, dbExecute, dbQuery } from './data.js'; 
 import { escapeHtml, escapeInlineJsString } from './htmlUtils.js';
+import { logToFile } from './logger.js';
 const check = window.__TAURI__.updater?.check;
 const relaunch = window.__TAURI__.process?.relaunch;
 const { invoke } = window.__TAURI__.core || window.__TAURI__;
+
+/**
+ * 把检查更新抛出的异常翻成一句人话。
+ *
+ * 为什么要有这个函数：原来这里是 `catch (error) { alert("❌ 检查更新失败") }`，
+ * error 被接住就扔了 —— 线上分不清是断网、代理、还是 latest.json 压根没发，
+ * 用户只能看到「失败」两个字，排查全靠猜（2026-11-28 就为此查了半天）。
+ */
+function describeUpdateError(error) {
+  if (!error) return '未知错误（连错误对象都没拿到）';
+  const text = typeof error === 'string' ? error : (error.message || String(error));
+  if (/10054|ECONNRESET|connection error/i.test(text)) {
+    return `${text}\n\n（连接被强制中断 —— 这台机器直连 github.com 会被重置，需要走代理）`;
+  }
+  if (/10060|ETIMEDOUT|timed? ?out/i.test(text)) {
+    return `${text}\n\n（连接超时 —— 检查代理是否开启、是否允许访问 github.com）`;
+  }
+  if (/404|not found/i.test(text)) {
+    return `${text}\n\n（更新清单取不到 —— 可能是这个版本还没发布 release）`;
+  }
+  return text;
+}
 
 let showAllInactive = false;
 const FREECELL_PREFERENCES = [
@@ -459,6 +482,14 @@ export function initSettingsModule() {
   const updateBtn = document.getElementById('check-update-btn');
   if (updateBtn) {
       updateBtn.onclick = async () => {
+          // 插件没注册时 check 是 undefined，`await check()` 会扔一句
+          // "check is not a function"，比网络错误更难猜，先挡一下。
+          if (typeof check !== 'function') {
+              const missing = '更新器不可用：window.__TAURI__.updater.check 缺失（updater 插件没注册）';
+              logToFile('error', missing);
+              alert(`❌ 检查更新失败\n\n${missing}`);
+              return;
+          }
           try {
               updateBtn.innerText = "🔄 正在检查..."; updateBtn.disabled = true;
               const update = await check();
@@ -468,7 +499,11 @@ export function initSettingsModule() {
                       await update.downloadAndInstall(() => {}); await relaunch();
                   }, { btnText: "🚀 立即升级并重启" });
               } else alert("✨ 当前已经是最新版本啦！");
-          } catch (error) { alert("❌ 检查更新失败"); } finally { updateBtn.innerText = "🔍 检查更新"; updateBtn.disabled = false; }
+          } catch (error) {
+              const reason = describeUpdateError(error);
+              logToFile('error', `检查更新失败 :: ${reason}`);
+              alert(`❌ 检查更新失败\n\n${reason}`);
+          } finally { updateBtn.innerText = "🔍 检查更新"; updateBtn.disabled = false; }
       };
   }
   renderSettingsTags();

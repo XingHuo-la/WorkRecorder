@@ -1,6 +1,6 @@
 [package]
 name = "work_recorder"
-version = "1.1.8"
+version = "1.1.9"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -35,7 +35,15 @@ tauri-plugin-single-instance = "2"
 # （锁文件里没有，还得现编 C）。TLS 由 updater 那条 `rustls-no-provider` 提供，
 # provider 由下面的 rustls 依赖在下载命令里自己装（updater 只在检查更新时装，
 # 指望不上）。
-reqwest = { version = "0.13", default-features = false }
+#
+# ⚠️ `system-proxy` 必须显式开：reqwest 0.13 的**默认** feature 里含它（读 Windows
+# 注册表 ProxyEnable / ProxyServer），而 updater 与本文件两边都写了 default-features
+# = false，默认 feature 全被关掉 —— 结果用户在 Clash 里打开「系统代理」也没人看，
+# 更新器只认 HTTPS_PROXY 环境变量（用户级注册表里又是空的），于是直连 github.com
+# 被 RST（os error 10054），弹窗只剩一句「检查更新失败」。2026-11-28 实测：
+# 不带环境变量 19.5s 后 10054；带 HTTPS_PROXY=127.0.0.1:7897 时 200 / 0.7s。
+# 它只认 ProxyServer，不认 PAC（AutoConfigURL），也不认 socks5:// 写法的 ProxyServer。
+reqwest = { version = "0.13", default-features = false, features = ["system-proxy"] }
 # 只为了 install_default()：http 源直接下，https 源要有 provider 才能握手。
 # 版本与 feature 跟 updater 那条保持一致（0.23 + ring），不引入新的编译单元。
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
